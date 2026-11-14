@@ -1,31 +1,37 @@
 import Foundation
 
-// MARK: - 书库扫描：目录即结构
-// <书库根>/<作者名(一本书)>/<章节名(一章)>/<文件>
-// 不依赖任何清单文件，不写回用户目录，不联网。
+// MARK: - 书库入口：三个固定分区，目录即分类
+//
+// 本地小说/
+//   小说/    每个电子书文件 = 一本书（txt / md / epub / pdf）
+//   漫画/    每个文件夹 = 一部漫画，部 → 话 多层，图片目录或 pdf 单话
+//   整理/    原有格式：作者文件夹 → 章节文件夹 → 正文 + 插图 + 音视频
+//
+// 分类不再靠内容猜测：书在哪个分区就是哪一类，用户在「文件」App 里怎么放就怎么显示。
+// 缺少某个分区时按空处理，不报错、不猜。
 
 /// 识别出的目录层级
 enum LibraryLayout: String {
-    /// 标准书库根：作者文件夹 → 章节文件夹 → 文件（两层）
-    case libraryRoot
-    /// 用户直接选中了某个作者文件夹：其下即章节文件夹
-    case singleBook
-    /// 用户直接选中了某个章节文件夹：其下即 txt / 图片 / 音视频
-    case chapterFolder
+    /// 三分区书库根（小说 / 漫画 / 整理）
+    case sections
+    /// 用户直接选中了某一个分区目录（其下即书）
+    case singleSection
+    /// 兼容旧版：根目录下直接是作者文件夹（全部归入「整理」）
+    case legacyRoot
     /// 目录可读，但没有可识别内容
     case empty
     /// 目录读取失败（权限失效 / 不存在 / iCloud 未下载）
     case unreadable
 }
 
-/// 扫描诊断：把「为什么没出现书」明确告诉用户，而不是一律显示「没找到结构」
+/// 扫描诊断：把「为什么没出现书」明确告诉用户
 struct ScanDiagnostics {
     let library: Library
     let layout: LibraryLayout
     /// 根目录读到的可见条目数；-1 表示读取失败
     let topLevelItemCount: Int
     let readError: String?
-    /// 成功时的摘要（如「已载入 2 本书 / 12 章」）
+    /// 成功时的摘要（如「小说 3 · 漫画 5 · 整理 2」）
     let summary: String
     /// 未得到书时的具体原因与建议
     let failureHint: String?
@@ -34,47 +40,10 @@ struct ScanDiagnostics {
 enum BookScanner {
 
     /// 兼容原接口（单元测试与既有调用点使用）
-    static func scan(rootURL: URL, cleanTitles: Bool = false, fileManager: FileManager = .default) -> Library {
-        scanWithDiagnostics(rootURL: rootURL, cleanTitles: cleanTitles, fileManager: fileManager).library
-    }
-
-    /// 从用户选中的「书库内任意文件」反推最合适的书库根目录。
-    ///
-    /// iOS 的 .folder 目录选择器在部分文件提供者上不可用，且要求「选中一个
-    /// 文件夹项目」才会回调；选普通文件则是所有文件提供者都支持的能力。
-    /// 候选为「文件所在目录 / 父目录 / 祖父目录」，取能识别出最多书的层级；
-    /// 书数相同取章节数多的，再相同取更靠近书库根的一层。
-    static func bestRoot(from fileURL: URL,
-                         cleanTitles: Bool = false,
-                         fileManager: FileManager = .default) -> URL {
-        var candidates: [URL] = []
-        var current = fileURL.deletingLastPathComponent()
-        for _ in 0..<3 {
-            candidates.append(current)
-            let parent = current.deletingLastPathComponent()
-            if parent.path == current.path { break }
-            current = parent
-        }
-
-        var best = candidates[0]
-        var bestBooks = -1
-        var bestChapters = -1
-        var bestDepth = -1
-        for (depth, candidate) in candidates.enumerated() {
-            let books = scan(rootURL: candidate, cleanTitles: cleanTitles,
-                             fileManager: fileManager).books
-            let bookCount = books.count
-            let chapterCount = books.reduce(0) { $0 + $1.chapters.count }
-            if bookCount > bestBooks
-                || (bookCount == bestBooks && chapterCount > bestChapters)
-                || (bookCount == bestBooks && chapterCount == bestChapters && depth > bestDepth) {
-                best = candidate
-                bestBooks = bookCount
-                bestChapters = chapterCount
-                bestDepth = depth
-            }
-        }
-        return best
+    static func scan(rootURL: URL, cleanTitles: Bool = false,
+                     fileManager: FileManager = .default) -> Library {
+        scanWithDiagnostics(rootURL: rootURL, cleanTitles: cleanTitles,
+                            fileManager: fileManager).library
     }
 
     /// 带诊断的扫描：自动识别用户选中的层级，并显式上报读取错误
@@ -87,7 +56,6 @@ enum BookScanner {
         do {
             listed = try listDirectory(at: rootURL, fileManager: fileManager)
         } catch {
-            // 不再吞掉错误：权限失效 / iCloud 文件未下载 / 目录被删，都能看到真实原因
             let hint = "无法读取该目录（\(error.localizedDescription)）。"
                 + "常见原因：目录访问权限已失效、文件夹被移动或删除、或文件在 iCloud 上尚未下载。"
                 + "请重新点「选择书库目录」再选一次。"
@@ -97,91 +65,95 @@ enum BookScanner {
                                    summary: "目录读取失败", failureHint: hint)
         }
 
-        let all = listed.all
-        let folders = listed.dirs
-        let mediaFiles = all.filter {
-            !isDirectory($0, fileManager: fileManager)
-                && MediaResolver.classify($0.lastPathComponent) != nil
-        }
-        let total = all.count
+        let total = listed.all.count
 
-        // 情形 A：没有子文件夹，但根目录里直接是 txt / 图片 / 音视频
-        // → 用户选中的是「章节文件夹」本身，包装成一本单章书
-        if folders.isEmpty {
-            if !mediaFiles.isEmpty {
-                let chapter = makeChapter(rootURL, cleanTitles: cleanTitles)
-                let book = Book(folderURL: rootURL,
-                                title: rootURL.lastPathComponent,
-                                chapters: [chapter],
-                                profile: makeProfile(chapterFolders: [rootURL],
-                                                     fileManager: fileManager))
-                let lib = Library(rootURL: rootURL, books: [book])
-                return ScanDiagnostics(library: lib, layout: .chapterFolder,
-                                       topLevelItemCount: total, readError: nil,
-                                       summary: "识别为单个章节文件夹：1 本书 / 1 章（\(mediaFiles.count) 个媒体文件）",
-                                       failureHint: nil)
-            }
-            let hint = total == 0
-                ? "这个目录是空的。请选择包含「作者文件夹」的那一层书库根目录。"
-                : "这个目录里有 \(total) 个条目，但没有子文件夹，也没有 txt / 图片 / 视频。"
-                    + "请确认选择的是包含作者文件夹的书库根目录，而不是某个文件所在的位置。"
-            return ScanDiagnostics(library: Library(rootURL: rootURL, books: []),
-                                   layout: .empty, topLevelItemCount: total,
-                                   readError: nil, summary: "未发现可识别内容", failureHint: hint)
-        }
-
-        // 情形 B：有子文件夹。探测第一个子文件夹，判断它是「作者」还是「章节」
-        let probe = folders[0]
-        let nested = (try? listDirectory(at: probe, fileManager: fileManager))?.dirs ?? []
-
-        if !nested.isEmpty {
-            // B1 标准书库根：子文件夹 = 作者（一本书），其下的子文件夹 = 章节
-            let books: [Book] = folders.map { bookFolder in
-                let chapterFolders = subdirectories(at: bookFolder, fileManager: fileManager)
-                let chapters: [Chapter] = chapterFolders.map {
-                    makeChapter($0, cleanTitles: cleanTitles)
-                }
-                return Book(folderURL: bookFolder,
-                            title: bookFolder.lastPathComponent,
-                            chapters: NaturalSort.sorted(chapters) { $0.rawName },
-                            profile: makeProfile(chapterFolders: chapterFolders,
-                                                 fileManager: fileManager))
-            }
-            let lib = Library(rootURL: rootURL, books: NaturalSort.sorted(books) { $0.title })
-            let chapterCount = lib.books.reduce(0) { $0 + $1.chapters.count }
-            let summary = "书库根目录：\(total) 个顶层条目 → \(lib.books.count) 本书 / \(chapterCount) 章"
-            let hint = lib.books.isEmpty
-                ? "没有找到作者文件夹，请确认选择的是包含作者文件夹的那一层。"
-                : nil
-            return ScanDiagnostics(library: lib, layout: .libraryRoot,
+        // 情形 1：直接选中了某一个分区（小说 / 漫画 / 整理）
+        // 仅当目录名是分区名、且内部没有再嵌分区目录时才这样判定，
+        // 避免书库根恰好叫「小说」时被误当成单个分区。
+        if let section = LibrarySection(folderName: rootURL.lastPathComponent),
+           !looksLikeLibraryRoot(listed, fileManager: fileManager) {
+            let books = section.scan(rootURL: rootURL, cleanTitles: cleanTitles,
+                                     fileManager: fileManager)
+            let lib = Library(rootURL: rootURL, books: books)
+            return ScanDiagnostics(library: lib, layout: .singleSection,
                                    topLevelItemCount: total, readError: nil,
-                                   summary: summary, failureHint: hint)
+                                   summary: "「\(section.category.label)」分区：\(books.count) 本",
+                                   failureHint: books.isEmpty ? section.emptyHint : nil)
         }
 
-        // B2 子文件夹里没有更深的子文件夹 → 用户选中的是「单个作者文件夹」
-        // 把 root 当作一本书，其下的文件夹当作章节
-        let chapters: [Chapter] = folders.map { makeChapter($0, cleanTitles: cleanTitles) }
-        let book = Book(folderURL: rootURL,
-                        title: rootURL.lastPathComponent,
-                        chapters: NaturalSort.sorted(chapters) { $0.rawName },
-                        profile: makeProfile(chapterFolders: folders,
-                                             fileManager: fileManager))
-        let lib = Library(rootURL: rootURL, books: [book])
-        return ScanDiagnostics(library: lib, layout: .singleBook,
-                               topLevelItemCount: total, readError: nil,
-                               summary: "识别为单本书（作者文件夹）：1 本书 / \(chapters.count) 章",
-                               failureHint: nil)
+        // 情形 2：三分区书库根
+        let presentSections = LibrarySection.allCases.filter { section in
+            var isDir: ObjCBool = false
+            let url = rootURL.appendingPathComponent(section.folderName)
+            return fileManager.fileExists(atPath: url.path, isDirectory: &isDir) && isDir.boolValue
+        }
+        if !presentSections.isEmpty {
+            var books: [Book] = []
+            var parts: [String] = []
+            for section in presentSections {
+                let dir = rootURL.appendingPathComponent(section.folderName)
+                let found = section.scan(rootURL: dir, cleanTitles: cleanTitles,
+                                         fileManager: fileManager)
+                books.append(contentsOf: found)
+                parts.append("\(section.category.label) \(found.count)")
+            }
+
+            // 升级前放的书：根目录里还有非分区文件夹 → 按「整理」规则扫出来，不丢书
+            let looseDirs = listed.dirs.filter {
+                LibrarySection(folderName: $0.lastPathComponent) == nil
+            }
+            if !looseDirs.isEmpty {
+                var legacyCount = 0
+                for dir in looseDirs {
+                    let found = OrganizedScanner.scan(rootURL: dir, cleanTitles: cleanTitles,
+                                                      fileManager: fileManager)
+                    legacyCount += found.count
+                    books.append(contentsOf: found)
+                }
+                if legacyCount > 0 { parts.append("根目录旧结构 \(legacyCount)（归入整理）") }
+            }
+
+            let lib = Library(rootURL: rootURL, books: NaturalSort.sorted(books) { $0.title })
+            let hint = lib.books.isEmpty
+                ? "「\(presentSections.map { $0.folderName }.joined(separator: " / "))」里还没有可识别的书。"
+                    + "小说分区放 txt / epub / pdf 文件；漫画分区每部一个文件夹，里面按「部 → 话」放图片或 pdf。"
+                : nil
+            return ScanDiagnostics(library: lib, layout: .sections,
+                                   topLevelItemCount: total, readError: nil,
+                                   summary: parts.joined(separator: " · "),
+                                   failureHint: hint)
+        }
+
+        // 情形 3：兼容旧书库（根下直接是作者文件夹）→ 全部按「整理」规则扫描
+        let legacy = OrganizedScanner.scan(rootURL: rootURL, cleanTitles: cleanTitles,
+                                           fileManager: fileManager)
+        if !legacy.isEmpty {
+            let lib = Library(rootURL: rootURL, books: legacy)
+            return ScanDiagnostics(library: lib, layout: .legacyRoot,
+                                   topLevelItemCount: total, readError: nil,
+                                   summary: "旧版书库结构：\(legacy.count) 本（已归入「整理」）",
+                                   failureHint: nil)
+        }
+
+        let hint = total == 0
+            ? "这个目录是空的。请在「本地小说」里建三个文件夹：小说 / 漫画 / 整理。"
+            : "这个目录里有 \(total) 个条目，但没有识别到书。"
+                + "请确认选择的是「本地小说」这一层，里面包含 小说 / 漫画 / 整理 三个文件夹。"
+        return ScanDiagnostics(library: Library(rootURL: rootURL, books: []),
+                               layout: .empty, topLevelItemCount: total,
+                               readError: nil, summary: "未发现可识别内容",
+                               failureHint: hint)
     }
 
-    // MARK: - 内部工具
+    // MARK: - 内部工具（三个分区扫描器共用）
 
-    private struct DirectoryListing {
+    struct DirectoryListing {
         let all: [URL]
         let dirs: [URL]
     }
 
     /// 读取目录；失败时抛出，交由上层形成诊断，不再静默返回空数组
-    private static func listDirectory(at url: URL, fileManager: FileManager) throws -> DirectoryListing {
+    static func listDirectory(at url: URL, fileManager: FileManager) throws -> DirectoryListing {
         let items = try fileManager.contentsOfDirectory(
             at: url,
             includingPropertiesForKeys: [.isDirectoryKey],
@@ -193,7 +165,7 @@ enum BookScanner {
                                 dirs: NaturalSort.sorted(dirs) { $0.lastPathComponent })
     }
 
-    private static func isDirectory(_ url: URL, fileManager: FileManager) -> Bool {
+    static func isDirectory(_ url: URL, fileManager: FileManager) -> Bool {
         if let values = try? url.resourceValues(forKeys: [.isDirectoryKey]) {
             return values.isDirectory ?? false
         }
@@ -201,53 +173,55 @@ enum BookScanner {
         return fileManager.fileExists(atPath: url.path, isDirectory: &flag) && flag.boolValue
     }
 
-    /// 列出目录下的子文件夹；读取失败返回空（用于章节层，主目录错误已在上层捕获）
-    private static func subdirectories(at url: URL, fileManager: FileManager) -> [URL] {
+    /// 列出目录下的子文件夹；读取失败返回空
+    static func subdirectories(at url: URL, fileManager: FileManager) -> [URL] {
         (try? listDirectory(at: url, fileManager: fileManager))?.dirs ?? []
     }
 
-    private static func makeChapter(_ folder: URL, cleanTitles: Bool) -> Chapter {
-        let raw = folder.lastPathComponent
-        return Chapter(folderURL: folder,
-                       rawName: raw,
-                       title: cleanTitles ? ChapterTitleCleaner.clean(raw) : raw)
+    static func files(in url: URL, fileManager: FileManager) -> [URL] {
+        guard let listing = try? listDirectory(at: url, fileManager: fileManager) else { return [] }
+        return listing.all.filter { !isDirectory($0, fileManager: fileManager) }
     }
 
-    /// 采样前几章统计「有正文的章节数 / 图片数 / 音视频数」，用于自动分类。
-    ///
-    /// 只列目录、不读文件内容，且最多看 3 章：一本书的形态在开头几章就已经稳定，
-    /// 全量遍历会让大书库的扫描变慢（几百本书 × 上百章）。
-    private static let profileSampleLimit = 3
+    /// 目录名是不是三分区之一（用于判断用户选中的是分区本身还是书库根）
+    private static func looksLikeLibraryRoot(_ listing: DirectoryListing,
+                                             fileManager: FileManager) -> Bool {
+        listing.dirs.contains { LibrarySection(folderName: $0.lastPathComponent) != nil }
+    }
 
-    private static func makeProfile(chapterFolders: [URL],
-                                    fileManager: FileManager) -> BookProfile {
-        let sample = Array(chapterFolders.prefix(profileSampleLimit))
-        guard !sample.isEmpty else { return .empty }
-
-        var textChapters = 0
-        var images = 0
-        var videos = 0
-
-        for folder in sample {
-            guard let listing = try? listDirectory(at: folder, fileManager: fileManager) else { continue }
-            var hasText = false
-            for item in listing.all where !isDirectory(item, fileManager: fileManager) {
-                guard let kind = MediaResolver.classify(item.lastPathComponent) else { continue }
-                switch kind {
-                case .text:
-                    hasText = true
-                case .image, .animatedImage:
-                    images += 1
-                case .video, .audio:
-                    videos += 1
-                }
-            }
-            if hasText { textChapters += 1 }
+    /// 从整本正文里按「第X章」切章（epub 优先用 spine 自带的分章；无匹配则整本一章）
+    static func makeSliceChapters(fileURL: URL, cleanTitles: Bool) -> [Chapter] {
+        let bookTitle = fileURL.deletingPathExtension().lastPathComponent
+        var slices: [ChapterSplitter.Slice] = []
+        if MediaResolver.isEpub(fileURL) {
+            slices = EpubParser.slices(url: fileURL)
         }
-
-        return BookProfile(sampledChapters: sample.count,
-                           textChapters: textChapters,
-                           images: images,
-                           videos: videos)
+        if slices.isEmpty, let text = try? TextLoader.loadDocument(fileURL) {
+            slices = ChapterSplitter.split(text)
+        }
+        guard !slices.isEmpty else {
+            let title = cleanTitles ? ChapterTitleCleaner.clean(bookTitle) : bookTitle
+            return [Chapter(folderURL: fileURL,
+                            rawName: fileURL.lastPathComponent,
+                            title: title,
+                            kind: .slice)]
+        }
+        if slices.count == 1 {
+            let chapterTitle = cleanTitles
+                ? ChapterTitleCleaner.clean(bookTitle)
+                : bookTitle
+            return [Chapter(folderURL: fileURL,
+                            rawName: fileURL.lastPathComponent,
+                            title: chapterTitle,
+                            kind: .slice,
+                            range: slices[0].range)]
+        }
+        return slices.map { slice in
+            Chapter(folderURL: fileURL,
+                    rawName: slice.title,
+                    title: cleanTitles ? ChapterTitleCleaner.clean(slice.title) : slice.title,
+                    kind: .slice,
+                    range: slice.range)
+        }
     }
 }

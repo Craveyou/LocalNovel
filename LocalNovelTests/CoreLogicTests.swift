@@ -92,8 +92,8 @@ final class CoreLogicTests: XCTestCase {
         XCTAssertEqual(library.books.first?.chapters.map { $0.rawName }, ["01_第一章", "02_第二章"])
     }
 
-    /// 导入层级自动识别：选中不同层级都能得到书，且诊断可读
-    func testLayoutAutoDetection() throws {
+    /// 旧版书库（根下直接是作者文件夹）仍能被识别，全部归入「整理」
+    func testLegacyLayoutAutoDetection() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LocalNovelLayout-" + UUID().uuidString)
         let author = root.appendingPathComponent("作者甲")
@@ -104,50 +104,132 @@ final class CoreLogicTests: XCTestCase {
         try Data("x".utf8).write(to: chapter1.appendingPathComponent("正文.txt"))
         defer { try? FileManager.default.removeItem(at: root) }
 
-        // 选书库根
-        let r1 = BookScanner.scanWithDiagnostics(rootURL: root)
-        XCTAssertEqual(r1.layout, .libraryRoot)
-        XCTAssertEqual(r1.library.books.count, 1)
-        XCTAssertEqual(r1.library.books.first?.chapters.count, 2)
-        XCTAssertNil(r1.failureHint)
-
-        // 只选作者文件夹
-        let r2 = BookScanner.scanWithDiagnostics(rootURL: author)
-        XCTAssertEqual(r2.layout, .singleBook)
-        XCTAssertEqual(r2.library.books.count, 1)
-        XCTAssertEqual(r2.library.books.first?.chapters.count, 2)
-
-        // 只选章节文件夹
-        let r3 = BookScanner.scanWithDiagnostics(rootURL: chapter1)
-        XCTAssertEqual(r3.layout, .chapterFolder)
-        XCTAssertEqual(r3.library.books.count, 1)
-        XCTAssertEqual(r3.library.books.first?.chapters.count, 1)
+        let report = BookScanner.scanWithDiagnostics(rootURL: root)
+        XCTAssertEqual(report.layout, .legacyRoot)
+        XCTAssertEqual(report.library.books.count, 1)
+        XCTAssertEqual(report.library.books.first?.chapters.count, 2)
+        XCTAssertEqual(report.library.books.first?.category, .organized)
+        XCTAssertNil(report.failureHint)
 
         // 空目录：明确给出失败提示，而不是笼统一句「没找到结构」
         let empty = root.appendingPathComponent("空目录")
         try FileManager.default.createDirectory(at: empty, withIntermediateDirectories: true)
-        let r4 = BookScanner.scanWithDiagnostics(rootURL: empty)
-        XCTAssertEqual(r4.layout, .empty)
-        XCTAssertNotNil(r4.failureHint)
+        let r2 = BookScanner.scanWithDiagnostics(rootURL: empty)
+        XCTAssertEqual(r2.layout, .empty)
+        XCTAssertNotNil(r2.failureHint)
     }
 
-    /// 从书库内选中的任意文件反推书库根（选文件通道）
-    func testBestRootFromPickedFile() throws {
+    /// 三分区书库：目录即分类，小说 / 漫画 / 整理各归各位
+    func testThreeSectionsScan() throws {
         let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("LocalNovelTests-" + UUID().uuidString)
-        let libRoot = root.appendingPathComponent("书库")
-        let author = libRoot.appendingPathComponent("作者甲")
-        let chapter = author.appendingPathComponent("01_序章")
-        try FileManager.default.createDirectory(at: chapter, withIntermediateDirectories: true)
-        let textFile = chapter.appendingPathComponent("正文.txt")
-        try Data("x".utf8).write(to: textFile)
+            .appendingPathComponent("LocalNovelSections-" + UUID().uuidString)
+        let fm = FileManager.default
+
+        // 小说：一个 txt 就是一本
+        let novelDir = root.appendingPathComponent("小说")
+        try fm.createDirectory(at: novelDir, withIntermediateDirectories: true)
+        try Data("第一章 起风\n内容\n第二章 落雨\n内容".utf8)
+            .write(to: novelDir.appendingPathComponent("斗破.txt"))
+
+        // 漫画：漫画名 → 第1部 → 第1话 → 图片；另有 第5话.pdf
+        let comic = root.appendingPathComponent("漫画").appendingPathComponent("某漫画")
+        let part1 = comic.appendingPathComponent("第1部").appendingPathComponent("第1话")
+        try fm.createDirectory(at: part1, withIntermediateDirectories: true)
+        for name in ["1.jpg", "2.jpg"] {
+            try Data("x".utf8).write(to: part1.appendingPathComponent(name))
+        }
+        try Data("x".utf8).write(to: comic.appendingPathComponent("第5话.pdf"))
+
+        // 整理：作者 → 章节 → 正文
+        let organized = root.appendingPathComponent("整理")
+            .appendingPathComponent("作者乙")
+            .appendingPathComponent("第01章")
+        try fm.createDirectory(at: organized, withIntermediateDirectories: true)
+        try Data("正文".utf8).write(to: organized.appendingPathComponent("正文.txt"))
+
+        defer { try? fm.removeItem(at: root) }
+
+        let report = BookScanner.scanWithDiagnostics(rootURL: root)
+        XCTAssertEqual(report.layout, .sections)
+        XCTAssertEqual(report.library.count(in: .novel), 1)
+        XCTAssertEqual(report.library.count(in: .comic), 1)
+        XCTAssertEqual(report.library.count(in: .organized), 1)
+
+        let comicBook = try XCTUnwrap(report.library.books(in: .comic).first)
+        XCTAssertEqual(comicBook.title, "某漫画")
+        // 一话图片目录 + 一个 pdf 单话
+        XCTAssertEqual(comicBook.chapters.count, 2)
+        XCTAssertEqual(comicBook.chapters[0].groupName, "第1部")
+        XCTAssertEqual(comicBook.chapters[0].title, "第1话")
+        XCTAssertTrue(comicBook.chapters[0].canDeleteFromDisk)
+        XCTAssertEqual(comicBook.chapters[1].kind, .file)
+
+        let organizedBook = try XCTUnwrap(report.library.books(in: .organized).first)
+        XCTAssertEqual(organizedBook.chapters.count, 1)
+    }
+
+    /// 单独选中某个分区也能扫（导入后直接验证）
+    func testSingleSectionScan() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LocalNovelOneSection-" + UUID().uuidString)
+        let novelDir = root.appendingPathComponent("小说")
+        try FileManager.default.createDirectory(at: novelDir, withIntermediateDirectories: true)
+        try Data("第一章 a\nb".utf8).write(to: novelDir.appendingPathComponent("书一.txt"))
+        try Data("x".utf8).write(to: novelDir.appendingPathComponent("封面.jpg"))
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let picked = BookScanner.bestRoot(from: textFile)
-        XCTAssertEqual(picked.lastPathComponent, "书库")
-        let lib = BookScanner.scan(rootURL: picked)
-        XCTAssertEqual(lib.books.count, 1)
-        XCTAssertEqual(lib.books.first?.chapters.count, 1)
+        let report = BookScanner.scanWithDiagnostics(rootURL: novelDir)
+        XCTAssertEqual(report.layout, .singleSection)
+        XCTAssertEqual(report.library.books.count, 1)
+        XCTAssertEqual(report.library.books.first?.category, .novel)
+    }
+
+    /// 单文件小说按「第X章」切分，切不出来就整本一章
+    func testNovelChapterSplit() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LocalNovelSplit-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let multi = root.appendingPathComponent("多章.txt")
+        try Data("第一章 起风\n甲\n第二章 落雨\n乙\n第三章 天晴\n丙".utf8).write(to: multi)
+        let chapters = BookScanner.makeSliceChapters(fileURL: multi, cleanTitles: false)
+        XCTAssertEqual(chapters.count, 3)
+        XCTAssertEqual(chapters[0].title, "第一章 起风")
+        XCTAssertEqual(chapters[0].kind, .slice)
+        XCTAssertNotNil(chapters[0].range)
+
+        let single = root.appendingPathComponent("无章节名.txt")
+        try Data("整本都是正文，没有任何章节标题。".utf8).write(to: single)
+        let one = BookScanner.makeSliceChapters(fileURL: single, cleanTitles: false)
+        XCTAssertEqual(one.count, 1)
+        XCTAssertEqual(one[0].title, "无章节名")
+    }
+
+    /// 切片正文按区间取，不会串到下一章
+    func testSliceTextIsolation() throws {
+        let text = "第一章 甲\nAAA\n第二章 乙\nBBB"
+        let slices = ChapterSplitter.split(text)
+        XCTAssertEqual(slices.count, 2)
+        let first = TextLoader.substring(text, range: slices[0].range)
+        XCTAssertTrue(first.contains("AAA"))
+        XCTAssertFalse(first.contains("BBB"))
+    }
+
+    /// 漫画 pdf 单话：装配成 pdf 章节而不是空章节
+    func testPdfChapterResolve() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LocalNovelPDF-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let pdf = root.appendingPathComponent("第1话.pdf")
+        try Data("%PDF-1.4".utf8).write(to: pdf)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let chapter = Chapter(folderURL: pdf, rawName: "第1话.pdf", title: "第1话", kind: .file)
+        let content = MediaResolver.resolveChapter(chapter)
+        XCTAssertEqual(content.pdfURL?.lastPathComponent, "第1话.pdf")
+        XCTAssertTrue(content.isPdfChapter)
+        XCTAssertNil(content.textURL)
     }
 
     /// 空章节 / 缺正文不崩溃

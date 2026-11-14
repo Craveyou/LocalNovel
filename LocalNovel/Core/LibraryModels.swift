@@ -30,20 +30,64 @@ struct MediaItem: Identifiable, Hashable {
     }
 }
 
-/// 章节 = 章节名文件夹
+/// 章节的三种来源
+enum ChapterKind: String, Codable {
+    /// 章节目录：正文.txt + 按序号图片 + 章末音视频（整理 / 漫画）
+    case folder
+    /// 单文件章节：一章就是一个 pdf / txt / epub（漫画单话、小说整本）
+    case file
+    /// 单文件小说里切出来的一段（虚拟章节，不占磁盘）
+    case slice
+}
+
+/// 章节
 struct Chapter: Identifiable, Hashable {
-    var id: String { folderURL.path }
+    /// 章节目录 / 单文件 / 小说源文件（slice 时指向整本文件）
     let folderURL: URL
-    /// 文件夹原名，用于排序
+    /// 原名，用于排序
     let rawName: String
-    /// 展示标题（可选去掉序号前缀）
+    /// 展示标题
     let title: String
+    let kind: ChapterKind
+    /// 卷名（漫画的「第1部」这类中间层），无则为 nil
+    let groupName: String?
+    /// slice 章节在整本正文里的区间（UTF-16 偏移，与 NSString 一致）
+    let range: NSRange?
+
+    init(folderURL: URL,
+         rawName: String,
+         title: String,
+         kind: ChapterKind = .folder,
+         groupName: String? = nil,
+         range: NSRange? = nil) {
+        self.folderURL = folderURL
+        self.rawName = rawName
+        self.title = title
+        self.kind = kind
+        self.groupName = groupName
+        self.range = range
+    }
+
+    /// 同一个整本文件会切出多个 slice，必须带区间偏移才能唯一
+    var id: String {
+        if let range { return "\(folderURL.path)#\(range.location)" }
+        return folderURL.path
+    }
+
+    /// 列表里的完整标题：有卷名时显示「卷名 · 章名」
+    var displayTitle: String {
+        guard let groupName, !groupName.isEmpty, groupName != title else { return title }
+        return "\(groupName) · \(title)"
+    }
+
+    /// 能否删除源文件：slice 属于整本文件，只能隐藏，不能单独删
+    var canDeleteFromDisk: Bool { kind != .slice }
 }
 
 /// 一章解析后的内容：正文 → 图片（序号）→ 章末音视频
 struct ChapterContent {
     let chapter: Chapter
-    /// 每章只有一个 txt；nil 表示该章缺正文
+    /// 每章只有一个正文文件；nil 表示该章缺正文
     let textURL: URL?
     /// 按序号自然排序后的图片（含动图）
     let images: [MediaItem]
@@ -51,31 +95,14 @@ struct ChapterContent {
     let avMedia: [MediaItem]
     /// 扫描时被忽略的文件（用于调试提示，不参与渲染）
     let ignoredFiles: [String]
+    /// 漫画 pdf 章节：按页渲染，不抽文本
+    let pdfURL: URL?
 
     var hasAVMedia: Bool { !avMedia.isEmpty }
+    var isPdfChapter: Bool { pdfURL != nil }
 }
 
-/// 书 = 作者名文件夹
-struct Book: Identifiable, Hashable {
-    var id: String { folderURL.path }
-    let folderURL: URL
-    /// 作者名即书名
-    let title: String
-    let chapters: [Chapter]
-    /// 内容构成画像（只采样前几章），用于自动判定分类
-    let profile: BookProfile
-
-    init(folderURL: URL, title: String, chapters: [Chapter],
-         profile: BookProfile = .empty) {
-        self.folderURL = folderURL
-        self.title = title
-        self.chapters = chapters
-        self.profile = profile
-    }
-}
-
-/// 书库分类：小说 / 漫画 / 整理
-/// 「整理」= 原有那种图文混排的作者文件夹（正文 + 按序号插图 + 章末媒体）。
+/// 书库分区：目录名就是唯一依据，不再靠内容猜
 enum BookCategory: String, Codable, CaseIterable, Identifiable, Hashable {
     case novel
     case comic
@@ -91,6 +118,9 @@ enum BookCategory: String, Codable, CaseIterable, Identifiable, Hashable {
         }
     }
 
+    /// 该分类在文档目录下的文件夹名
+    var folderName: String { label }
+
     var symbol: String {
         switch self {
         case .novel: return "text.book.closed"
@@ -101,57 +131,46 @@ enum BookCategory: String, Codable, CaseIterable, Identifiable, Hashable {
 
     var hint: String {
         switch self {
-        case .novel: return "以文字为主，几乎没有插图"
-        case .comic: return "以图片为主，正文很少或没有"
-        case .organized: return "图文混排：正文 + 序号插图 + 章末音视频"
+        case .novel: return "每本一个文件：txt / md / epub / pdf"
+        case .comic: return "每部一个文件夹，按「部 → 话」分层，图片或 pdf"
+        case .organized: return "作者文件夹 → 章节文件夹 → 正文 + 插图 + 音视频"
+        }
+    }
+
+    /// 目录结构示例（用于空态与说明文件）
+    var structureExample: String {
+        switch self {
+        case .novel:
+            return "小说/书名.txt（也支持 .md / .epub / .pdf）"
+        case .comic:
+            return "漫画/漫画名/第1部/第1话/001.jpg\n漫画/漫画名/第5话.pdf"
+        case .organized:
+            return "整理/作者名/第01章/正文.txt + 1.jpg"
         }
     }
 }
 
-/// 一本书的内容构成画像（只统计采样章节，扫描时顺带算出，不读文件内容）
-struct BookProfile: Hashable {
-    /// 实际探测的章节数
-    let sampledChapters: Int
-    /// 其中有 txt 正文的章节数
-    let textChapters: Int
-    /// 采样章节里的图片总数（含动图）
-    let images: Int
-    /// 采样章节里的视频 / 音频总数
-    let videos: Int
+/// 一本书
+struct Book: Identifiable, Hashable {
+    var id: String { folderURL.path }
+    /// 书目录；单文件小说时为该文件本身
+    let folderURL: URL
+    let title: String
+    /// 由所在分区决定，不再推断
+    let category: BookCategory
+    let chapters: [Chapter]
+    /// 小说单文件：章节还没切（首次打开时才解析正文），先给一章占位
+    let chaptersDeferred: Bool
 
-    static let empty = BookProfile(sampledChapters: 0, textChapters: 0,
-                                   images: 0, videos: 0)
-
-    var imagesPerChapter: Double {
-        guard sampledChapters > 0 else { return 0 }
-        return Double(images) / Double(sampledChapters)
-    }
-
-    var textRatio: Double {
-        guard sampledChapters > 0 else { return 0 }
-        return Double(textChapters) / Double(sampledChapters)
-    }
-}
-
-/// 自动分类规则（与 Validation/validate_core.py 里的等价实现保持一致）
-enum BookCategoryRule {
-    static func auto(_ profile: BookProfile) -> BookCategory {
-        // 没有采到章节：不猜，归到「整理」
-        guard profile.sampledChapters > 0 else { return .organized }
-
-        // 完全没有正文：有图就是漫画，没图也归整理
-        if profile.textChapters == 0 {
-            return profile.images > 0 ? .comic : .organized
-        }
-
-        // 有正文但基本没图：小说
-        if profile.imagesPerChapter < 1.5 { return .novel }
-
-        // 有正文、但绝大多数章节没正文且图很多：按漫画算（图解类）
-        if profile.imagesPerChapter >= 4 && profile.textRatio < 0.5 { return .comic }
-
-        // 正文 + 插图并存：就是原来的「整理」类型
-        return .organized
+    init(folderURL: URL, title: String,
+         category: BookCategory = .organized,
+         chapters: [Chapter],
+         chaptersDeferred: Bool = false) {
+        self.folderURL = folderURL
+        self.title = title
+        self.category = category
+        self.chapters = chapters
+        self.chaptersDeferred = chaptersDeferred
     }
 }
 
@@ -159,4 +178,12 @@ enum BookCategoryRule {
 struct Library {
     let rootURL: URL
     let books: [Book]
+
+    func books(in category: BookCategory) -> [Book] {
+        books.filter { $0.category == category }
+    }
+
+    func count(in category: BookCategory) -> Int {
+        books.lazy.filter { $0.category == category }.count
+    }
 }

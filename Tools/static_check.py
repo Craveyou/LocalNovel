@@ -197,8 +197,9 @@ def main():
     check("保留原 scan(rootURL:) 接口（单元测试兼容）",
           "static func scan(rootURL:" in scanner)
     check("新增带诊断的层级自动识别", "scanWithDiagnostics" in scanner)
-    check("覆盖 三层选法（书库根 / 作者 / 章节）",
-          all(t in scanner for t in [".libraryRoot", ".singleBook", ".chapterFolder"]))
+    check("三层结构改为「分区 → 书 → 章」，仍保留旧书库兼容",
+          all(t in scanner for t in [".sections", ".singleSection", ".legacyRoot"])
+          and "OrganizedScanner.scan(rootURL: dir" in scanner)
     check("目录读取失败不再被静默吞掉", "throw" in scanner and "readError" in scanner)
     check("保存书签后不再 stop→resolve→start 两段式",
           "func saveRootFolder(_ url: URL) -> URL" in access
@@ -216,19 +217,20 @@ def main():
     check("选择器失败 / 无选择 / 空结果都有醒目反馈",
           "applyImportFailure" in store and "applyNoSelection" in store
           and "headline =" in store and "importProgress" in store)
-    check("选文件通道由 bestRoot 反推书库根",
-          "static func bestRoot(from" in scanner and "BookScanner.bestRoot" in store
-          and "handleFileImport" in store)
+    check("导入不再反推书库根，按分区直接复制",
+          "preferred: BookCategory?" in (APP / "Core" / "BookImporter.swift").read_text(encoding="utf-8")
+          and "suggestedSection(for:" in (APP / "Core" / "BookImporter.swift").read_text(encoding="utf-8")
+          and "bestRoot" not in store)
     check("点导入按钮瞬间即有醒目反馈（不再「无任何提示」）",
           "noteImportStarted" in store and "noteImportStarted" in welcome
           and "headline =" in store and "library.headline" in welcome)
     check("iPhone 第一屏可见三种导入方式",
-          all(t in sidebar for t in ["导入书里的任意文件", "导入书库目录", "重新读取"]))
+          all(t in sidebar for t in ["导入书籍文件", "导入书籍文件夹", "重新读取"]))
     check("UI 明确引导零交互路径（文件 App → 本地小说）",
-          "我的 iPhone → 本地小说" in welcome and "导入书里的任意文件" in welcome)
+          "我的 iPhone → 本地小说" in welcome and "导入书籍文件" in welcome)
     check("UI 明确说明「点文件夹需点打开 / 点文件立即导入」",
           "右上角「打开」" in welcome and "立即开始导入" in welcome
-          and "右上角「打开」" in sidebar)
+          and "右上角「打开」" in store)
     check("提供 App 文档目录零权限兜底", "useAppDocuments" in store and "usingAppDocuments" in store)
     check("Info.plist 开启文件共享（文档目录可见）", "UIFileSharingEnabled" in plist)
     check("诊断信息在 iPhone 第一栏也可见", "library.diagnostics" in sidebar)
@@ -341,7 +343,7 @@ def main():
           and "DocumentsBootstrap.guideFileName" in resolver)
     check("切回前台补写说明文件", "DocumentsBootstrap.ensureVisibleInFilesApp()" in store)
     check("版本号提升以刷新系统元数据",
-          "<string>7</string>" in plist and "CURRENT_PROJECT_VERSION = 7" in pbx)
+          "<string>8</string>" in plist and "CURRENT_PROJECT_VERSION = 8" in pbx)
     check("UI 给出「文件 App 搜索本地小说」兜底路径",
           "搜索框搜「本地小说」" in welcome and "搜索「本地小说」" in store)
     check("AppIcon asset catalog（1024 + Contents.json）",
@@ -440,7 +442,7 @@ def main():
     check("章节支持多选批量删除（全选 / 计数 / 二次确认）",
           "isSelecting" in chapters and "selectedIds" in chapters
           and "confirmBatchDelete" in chapters and "deleteSelected(in:" in chapters
-          and "toggleSelectAll" in chapters and "已选 \\(selectedIds.count) 章" in chapters)
+          and "toggleSelectAll" in chapters and "已选 \\(selectedIds.count)" in chapters)
     check("批量删除一次重扫，只读目录同样改为隐藏",
           "func deleteChapters" in store and "hidden += 1" in store
           and "invalidateCaches()" in store)
@@ -448,34 +450,107 @@ def main():
           "private var currentBook: Book?" in chapters
           and "library.library?.books.first" in chapters)
 
-    print("\n== J. 书库分类：小说 / 漫画 / 整理 ==")
+    print("\n== J. 三分区书库：小说 / 漫画 / 整理（目录即分类） ==")
     models = (APP / "Core" / "LibraryModels.swift").read_text(encoding="utf-8")
-    scanner = (APP / "Core" / "BookScanner.swift").read_text(encoding="utf-8")
+    sections = (APP / "Core" / "BookSections.swift").read_text(encoding="utf-8")
     sidebar = (APP / "Views" / "LibrarySidebar.swift").read_text(encoding="utf-8")
-    check("分类枚举三档：小说 / 漫画 / 整理",
-          "enum BookCategory" in models
+    check("三个固定分区：小说 / 漫画 / 整理",
+          "enum LibrarySection" in sections
           and all(f'return "{v}"' in models for v in ("小说", "漫画", "整理")))
-    check("「整理」定义为原有图文混排类型", "图文混排" in models)
-    check("自动判定规则：无正文有图→漫画，图少→小说，其余→整理",
-          "enum BookCategoryRule" in models
-          and "textChapters == 0" in models and "imagesPerChapter < 1.5" in models
-          and "return .organized" in models)
-    check("书带内容画像，扫描器采样前几章统计",
-          "let profile: BookProfile" in models
-          and "makeProfile(chapterFolders:" in scanner
-          and "profileSampleLimit = 3" in scanner)
-    check("手动分类覆盖可持久化，可恢复自动判定",
-          "categoryOverrides" in store and "library.bookCategories.v1" in store
-          and "func setCategory" in store and "hasManualCategory" in store)
-    check("书库顶部有四档筛选，按分类过滤列表",
-          "enum CatalogFilter" in sidebar and "pickerStyle(.segmented)" in sidebar
-          and "library.books(lib.books, in: filter.category)" in sidebar)
-    check("每本书显示分类标签，可一键改分类",
-          "library.category(for: book)" in sidebar
-          and "Label(category.label, systemImage: category.symbol)" in sidebar
-          and "恢复自动判定" in sidebar)
-    check("分类下没有书时给出可操作空态",
-          "ContentUnavailableView" in sidebar and "查看全部" in sidebar)
+    check("分区目录名与分类标签一致（小说 / 漫画 / 整理）",
+          "var folderName: String { label }" in models
+          and "var folderName: String { category.folderName }" in sections)
+    check("分类由所在分区决定，不再按内容猜、也不再手动改",
+          "let category: BookCategory" in models
+          and "BookCategoryRule" not in models
+          and "categoryOverrides" not in store
+          and "setCategory" not in store
+          and "CategoryFilter" not in sidebar)
+    check("书库根同时扫描三个分区并汇总计数",
+          "for section in presentSections" in scanner
+          and "summ" in scanner and "layout: .sections" in scanner)
+    check("漫画：漫画名 → 部 → 话 任意层，图片目录与 pdf 单话混排",
+          "enum ComicScanner" in sections
+          and "maxDepth = 5" in sections
+          and "MediaResolver.isImageFile" in sections
+          and "MediaResolver.isPDF" in sections
+          and "groupName: pdfGroup" in sections)
+    check("漫画中间层记为卷名，列表按「部 · 话」展示",
+          "group.joined(separator: \" · \")" in sections
+          and "var displayTitle: String" in models
+          and "groupName" in models)
+    check("小说：每个电子书文件一本书（txt / md / epub / pdf）",
+          "enum NovelScanner" in sections
+          and "bookExtensions" in sections
+          and "category: .novel" in sections)
+    check("整理：沿用作者 → 章节的旧结构",
+          "enum OrganizedScanner" in sections
+          and "chapterFolders" in sections
+          and "category: .organized" in sections)
+    check("旧版根目录书库不丢书（自动归入整理）",
+          "legacyRoot" in scanner and "looseDirs" in scanner)
+    check("首页就是三个文件夹卡片，点进去看该分区的书",
+          "func sectionCard(" in sidebar and "openedSection" in sidebar
+          and "library.count(in: category)" in sidebar
+          and "navigationTitle(openedSection?.label ?? \"书库\")" in sidebar)
+    check("分区内有书列表、无书给结构示例空态",
+          "List(books, id: \\.id, selection: $selection)" in sidebar
+          and "ContentUnavailableView" in sidebar
+          and "emptyDescription" in sidebar)
+    check("启动即建好三个分区目录（打开「文件」App 就能放书）",
+          "for section in LibrarySection.allCases" in bootstrap
+          and "section.folderName" in bootstrap)
+
+    print("\n== K. 小说格式：自动分章 / epub / pdf ==")
+    splitter = (APP / "Core" / "ChapterSplitter.swift").read_text(encoding="utf-8")
+    epub = (APP / "Core" / "EpubParser.swift").read_text(encoding="utf-8")
+    zip_src = (APP / "Core" / "ZipArchive.swift").read_text(encoding="utf-8")
+    pdf_view = (APP / "Views" / "PdfChapterView.swift").read_text(encoding="utf-8")
+    text_loader = (APP / "Core" / "TextLoader.swift").read_text(encoding="utf-8")
+    check("单文件小说按「第X章 / Chapter N / 序章番外」自动分章",
+          "enum ChapterSplitter" in splitter
+          and "第[0-9０-９一二三四五六七八九十百千万零〇两]" in splitter
+          and "Chapter\\\\s+\\\\d" in splitter
+          and "序章|序言|楔子" in splitter)
+    check("切不出章节就整本一章（绝不把书弄丢）",
+          "guard headings.count >= 2 else" in splitter
+          and "return [Slice(title: \"\", range: full)]" in splitter)
+    check("章节按 UTF-16 区间切片，正文不串章",
+          "NSRange(location: heading.start" in splitter
+          and "func substring(_ text: String, range: NSRange)" in text_loader)
+    check("小说扫描只给占位章，进入书时才后台切章（大书库启动不卡）",
+          "chaptersDeferred" in models
+          and "chaptersDeferred: true" in sections
+          and "func ensureChapters(for book: Book)" in store
+          and "DispatchQueue.global" in store)
+    check("epub 自解析：zip 中央目录 + container.xml + opf + spine",
+          "struct ZipArchive" in zip_src
+          and "compression_decode_buffer" in zip_src
+          and "META-INF/container.xml" in epub
+          and "spineOrder" in epub and "manifestItems" in epub)
+    check("epub 按 spine 分章，标题取 h1/h2/title",
+          "for (index, item) in ordered.enumerated()" in epub
+          and "func heading(in html: String)" in epub
+          and "h1\", \"h2\", \"h3\", \"title\"" in epub)
+    check("pdf 小说抽取文字，扫描件给出可操作提示",
+          "PDFDocument(url: url)" in text_loader
+          and "pdfWithoutText" in text_loader
+          and "漫画 PDF 请放进「漫画」分区" in text_loader)
+    check("漫画 pdf 单话按页懒渲染（可见才转图）",
+          "func image(url: URL, page: Int, maxPixel: CGFloat) async" in pdf_view
+          and "thumbnail(of:" in pdf_view
+          and "LazyVStack(spacing: 0)" in pdf_view)
+    check("漫画阅读满宽逐页、无圆角无间距",
+          "struct ComicPageView" in (APP / "Views" / "ComicPageView.swift").read_text(encoding="utf-8")
+          and "isComic" in reader and "comicBody" in reader
+          and "LazyVStack(spacing: 0)" in reader)
+    check("漫画章节单位显示为「话」，小说 / 整理为「章」",
+          "book.category == .comic ? \"话\" : \"章\"" in sidebar
+          and "currentBook?.category == .comic ? \"话\" : \"章\"" in chapters)
+    check("整本切片章节只能隐藏，不误删原文件",
+          "var canDeleteFromDisk: Bool" in models
+          and "整本文件里切出来的一章" in chapters
+          and "chapter.canDeleteFromDisk" in store)
 
     print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")
     if FAIL:

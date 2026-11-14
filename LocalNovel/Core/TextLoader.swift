@@ -1,18 +1,26 @@
 import Foundation
 import CoreFoundation
+import PDFKit
 
 // MARK: - 正文读取：编码自动检测 + 段落切分
-// TXT 常见编码为 UTF-8 / GB18030 / Big5；检测失败时给出明确错误，不静默返回乱码。
+// 支持 txt / md（自动识别 UTF-8 / UTF-16 / GB18030 / Big5）、epub（解包取文字）、pdf（抽取文字）。
+// 检测失败时给出明确错误，不静默返回乱码。
 
 enum TextLoader {
     enum TextError: LocalizedError {
         case unreadable(URL)
         case undecodable(URL)
+        case pdfWithoutText(URL)
+        case epubUnreadable(URL)
+        case unsupported(String)
 
         var errorDescription: String? {
             switch self {
-            case .unreadable(let u):  return "无法读取文件：\(u.lastPathComponent)"
-            case .undecodable(let u): return "无法识别文本编码：\(u.lastPathComponent)（建议另存为 UTF-8）"
+            case .unreadable(let u):     return "无法读取文件：\(u.lastPathComponent)"
+            case .undecodable(let u):    return "无法识别文本编码：\(u.lastPathComponent)（建议另存为 UTF-8）"
+            case .pdfWithoutText(let u): return "这个 PDF 没有可选文字（可能是扫描件）：\(u.lastPathComponent)。漫画 PDF 请放进「漫画」分区，会按页显示。"
+            case .epubUnreadable(let u): return "无法解析 epub：\(u.lastPathComponent)（文件可能损坏或加密）"
+            case .unsupported(let s):    return "不支持的格式：\(s)"
             }
         }
     }
@@ -22,13 +30,69 @@ enum TextLoader {
         .utf8, .utf16, .utf16BigEndian
     ]
 
-    /// GB18030 / Big5 在 Swift 里用 CFString 编码常量桥接
-    private static let cfEncodings: [CFStringEncodings] = [.GB_18030_2000, .big5]
+    /// 整本文本缓存：epub 解包 / pdf 抽文字都不便宜，切章与阅读共用一次结果。
+    /// 只留最近 8 本，避免大书库把内存吃满。
+    private static let documentCache: NSCache<NSString, NSString> = {
+        let cache = NSCache<NSString, NSString>()
+        cache.countLimit = 8
+        return cache
+    }()
 
+    /// GB18030 / Big5 在 Swift 里用 CFString 编码常量桥接
+    private static let cfEncodings: [CFStringEncoding] = [.GB_18030_2000, .big5]
+
+    /// 纯文本读取（txt / md）
     static func load(_ url: URL) throws -> String {
         guard let data = try? Data(contentsOf: url) else { throw TextError.unreadable(url) }
         if let text = decode(data) { return normalize(text) }
         throw TextError.undecodable(url)
+    }
+
+    /// 按扩展名读取「一本书的全文」：txt / md / epub / pdf
+    static func loadDocument(_ url: URL) throws -> String {
+        let key = cacheKey(url)
+        if let hit = documentCache.object(forKey: key) { return hit as String }
+        let text = try loadDocumentUncached(url)
+        documentCache.setObject(text as NSString, forKey: key)
+        return text
+    }
+
+    private static func loadDocumentUncached(_ url: URL) throws -> String {
+        let ext = MediaResolver.fileExtension(url.lastPathComponent)
+        switch ext {
+        case "epub":
+            return try EpubParser.plainText(url: url)
+        case "pdf":
+            return try loadPDF(url)
+        case "txt", "text", "md", "markdown", "":
+            return try load(url)
+        default:
+            throw TextError.unsupported(ext)
+        }
+    }
+
+    private static func cacheKey(_ url: URL) -> NSString {
+        let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+        let stamp = values?.contentModificationDate?.timeIntervalSince1970 ?? 0
+        let size = values?.fileSize ?? 0
+        return "\(url.path)|\(stamp)|\(size)" as NSString
+    }
+
+    private static func loadPDF(_ url: URL) throws -> String {
+        guard let document = PDFDocument(url: url) else { throw TextError.unreadable(url) }
+        guard let text = document.string,
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw TextError.pdfWithoutText(url)
+        }
+        return normalize(text)
+    }
+
+    /// 按区间取正文（章节切片）；区间越界时返回整段可用的部分
+    static func substring(_ text: String, range: NSRange) -> String {
+        let ns = text as NSString
+        let safe = NSIntersectionRange(range, NSRange(location: 0, length: ns.length))
+        guard safe.length > 0 else { return "" }
+        return ns.substring(with: safe)
     }
 
     private static func decode(_ data: Data) -> String? {
@@ -44,7 +108,7 @@ enum TextLoader {
     }
 
     /// 去 BOM、统一换行、去掉行尾空白
-    private static func normalize(_ s: String) -> String {
+    static func normalize(_ s: String) -> String {
         var t = s
         if t.hasPrefix("\u{FEFF}") { t.removeFirst() }
         return t

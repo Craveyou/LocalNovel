@@ -1,19 +1,23 @@
 import SwiftUI
 
-// MARK: - 第三栏：连续滚动阅读器
-// 固定结构：正文 → 按序号图片（含动图）→ 章末音视频 → 下一章。
+// MARK: - 第三栏：阅读器
+// 三种形态：
+//   · 小说 / 整理：正文 → 按序号图片（含动图）→ 章末音视频 → 下一章
+//   · 漫画（图片章节）：满宽逐页连排，无圆角无间距，点击进全屏
+//   · 漫画（pdf 单话）：按页渲染，滑到哪页渲染哪页
 //
 // 需长期保留的三条约束：
 // 1) 不用 .task + @State content 的异步状态机。自动恢复「上次读的章节」时
 //    task 不重跑，content 永远为 nil，表现就是「一直显示载入章节」。
 //    内容全部同步取自 LibraryStore 的缓存。
 // 2) 滚动时不修改任何上层 @State：锚点记录走 ProgressStore.noteAnchor 节流写盘，
-//    动图可见性下沉到 InlineMediaView 自己的 @State，避免整页重绘导致卡顿。
+//    动图可见性下沉到子视图自己的 @State，避免整页重绘导致卡顿。
 // 3) 全屏大图关闭后要能定位回刚看的那张图（pendingAnchor + ScrollViewReader）。
 
 struct ReaderView: View {
     let chapter: Chapter
     let nextChapter: Chapter?
+    let isComic: Bool
     let onOpenNext: (Chapter) -> Void
 
     @EnvironmentObject private var library: LibraryStore
@@ -26,9 +30,11 @@ struct ReaderView: View {
 
     init(chapter: Chapter,
          nextChapter: Chapter? = nil,
+         isComic: Bool = false,
          onOpenNext: @escaping (Chapter) -> Void = { _ in }) {
         self.chapter = chapter
         self.nextChapter = nextChapter
+        self.isComic = isComic
         self.onOpenNext = onOpenNext
     }
 
@@ -37,27 +43,35 @@ struct ReaderView: View {
     private var ignoredHint: String? { library.ignoredHint(for: chapter) }
 
     var body: some View {
-        scrollBody(content)
-            .navigationTitle(chapter.title)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button { showSettings = true } label: {
-                        Label("设置", systemImage: "gearshape")
-                    }
+        Group {
+            if let pdf = content.pdfURL {
+                PdfChapterView(url: pdf)
+            } else if isComic {
+                comicBody(content)
+            } else {
+                scrollBody(content)
+            }
+        }
+        .navigationTitle(chapter.title)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button { showSettings = true } label: {
+                    Label("设置", systemImage: "gearshape")
                 }
             }
-            .sheet(isPresented: $showSettings) { SettingsView() }
-            .fullScreenCover(item: $galleryItem) { item in
-                // 关闭时回传当前图片 → 换算成插图锚点，滚动定位回这张
-                MediaGalleryView(items: content.images, initial: item) { closed in
-                    pendingAnchor = imageAnchor(for: closed, in: content)
-                }
+        }
+        .sheet(isPresented: $showSettings) { SettingsView() }
+        .fullScreenCover(item: $galleryItem) { item in
+            // 关闭时回传当前图片 → 换算成插图锚点，滚动定位回这张
+            MediaGalleryView(items: content.images, initial: item) { closed in
+                pendingAnchor = imageAnchor(for: closed, in: content)
             }
-            .onDisappear { ProgressStore.shared.flushAnchors() }
+        }
+        .onDisappear { ProgressStore.shared.flushAnchors() }
     }
 
-    // MARK: 滚动内容
+    // MARK: 小说 / 整理：段落流
 
     private func scrollBody(_ content: ChapterContent) -> some View {
         let paragraphs = self.paragraphs
@@ -110,7 +124,6 @@ struct ReaderView: View {
                             .padding(.top, 8)
                     }
 
-                    // 4. 章末：下一章 / 已是最后一章
                     chapterFooter
 
                     Color.clear.frame(height: 40)
@@ -118,68 +131,118 @@ struct ReaderView: View {
                 .padding(.horizontal, 20)
                 .padding(.vertical, 16)
             }
-            .onAppear {
-                guard let anchor = ProgressStore.shared.anchor(for: chapter.id) else { return }
-                // LazyVStack 首屏布局需要一点时间，太早 scrollTo 会被忽略，导致「记忆不生效」
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-                    proxy.scrollTo(anchor, anchor: .top)
-                }
-            }
-            // 全屏大图关闭后：滚回刚看的那张图，并把记忆锚点更新为它
+            .onAppear { restoreAnchor(proxy) }
             .onChange(of: pendingAnchor) { _, anchor in
-                guard let anchor else { return }
-                // 等 fullScreenCover 收起动画结束再定位，避免滚动被覆盖视图吞掉
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                    withAnimation(.easeInOut(duration: 0.25)) {
-                        proxy.scrollTo(anchor, anchor: .center)
+                scrollToPendingAnchor(anchor, proxy: proxy)
+            }
+        }
+    }
+
+    // MARK: 漫画：满宽逐页
+
+    private func comicBody(_ content: ChapterContent) -> some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ForEach(content.images.indices, id: \.self) { index in
+                        let item = content.images[index]
+                        ComicPageView(item: item) { galleryItem = item }
+                            .id("blk-i\(index)")
+                            .onAppear {
+                                ProgressStore.shared.noteAnchor("blk-i\(index)",
+                                                                for: chapter.id)
+                            }
                     }
-                    ProgressStore.shared.noteAnchor(anchor, for: chapter.id)
-                    pendingAnchor = nil
+
+                    if content.images.isEmpty {
+                        ContentUnavailableView("这一话没有图片",
+                                               systemImage: "photo",
+                                               description: Text("检查该文件夹里是否放进去了 jpg / png 等图片"))
+                            .padding(.top, 60)
+                    }
+
+                    VStack(spacing: 8) {
+                        Text("\(content.images.count) 页")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        chapterFooter
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.top, 16)
+
+                    Color.clear.frame(height: 40)
                 }
             }
+            .onAppear { restoreAnchor(proxy) }
+            .onChange(of: pendingAnchor) { _, anchor in
+                scrollToPendingAnchor(anchor, proxy: proxy)
+            }
+        }
+    }
+
+    // MARK: 锚点
+
+    private func restoreAnchor(_ proxy: ScrollViewProxy) {
+        guard let anchor = ProgressStore.shared.anchor(for: chapter.id) else { return }
+        // LazyVStack 首屏布局需要一点时间，太早 scrollTo 会被忽略，导致「记忆不生效」
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            proxy.scrollTo(anchor, anchor: .top)
+        }
+    }
+
+    private func scrollToPendingAnchor(_ anchor: String?, proxy: ScrollViewProxy) {
+        guard let anchor else { return }
+        // 等 fullScreenCover 收起动画结束再定位，避免滚动被覆盖视图吞掉
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            withAnimation(.easeInOut(duration: 0.25)) {
+                proxy.scrollTo(anchor, anchor: .center)
+            }
+            ProgressStore.shared.noteAnchor(anchor, for: chapter.id)
+            pendingAnchor = nil
         }
     }
 
     // MARK: 章末导航
 
-    @ViewBuilder
     private var chapterFooter: some View {
-        if let next = nextChapter {
-            Button {
-                onOpenNext(next)
-            } label: {
-                HStack(spacing: 12) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("下一章")
-                            .font(.caption)
+        Group {
+            if let next = nextChapter {
+                Button {
+                    onOpenNext(next)
+                } label: {
+                    HStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("下一章")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text(next.displayTitle)
+                                .font(.body.weight(.medium))
+                                .lineLimit(2)
+                                .multilineTextAlignment(.leading)
+                        }
+                        Spacer(minLength: 8)
+                        Image(systemName: "chevron.right")
+                            .font(.footnote.weight(.semibold))
                             .foregroundStyle(.secondary)
-                        Text(next.title)
-                            .font(.body.weight(.medium))
-                            .lineLimit(2)
-                            .multilineTextAlignment(.leading)
                     }
-                    Spacer(minLength: 8)
-                    Image(systemName: "chevron.right")
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(.secondary)
+                    .padding(14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 12))
+                    .contentShape(RoundedRectangle(cornerRadius: 12))
                 }
-                .padding(14)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 12))
-                .contentShape(RoundedRectangle(cornerRadius: 12))
+                .buttonStyle(.plain)
+                .padding(.top, 28)
+            } else {
+                VStack(spacing: 6) {
+                    Image(systemName: "checkmark.circle")
+                        .font(.title3)
+                    Text(isComic ? "已是最后一话" : "已是最后一章")
+                        .font(.footnote.weight(.medium))
+                }
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity)
+                .padding(.top, 28)
             }
-            .buttonStyle(.plain)
-            .padding(.top, 28)
-        } else {
-            VStack(spacing: 6) {
-                Image(systemName: "checkmark.circle")
-                    .font(.title3)
-                Text("已是最后一章")
-                    .font(.footnote.weight(.medium))
-            }
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity)
-            .padding(.top, 28)
         }
     }
 

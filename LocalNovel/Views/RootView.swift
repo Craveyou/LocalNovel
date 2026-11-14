@@ -24,6 +24,7 @@ struct RootView: View {
             if let chapter = selectedChapter {
                 ReaderView(chapter: chapter,
                            nextChapter: nextChapter(after: chapter),
+                           isComic: latestBook()?.category == .comic,
                            onOpenNext: { next in selectedChapter = next })
                     .id(chapter.id) // 切章时重建，重置滚动与播放器
             } else {
@@ -95,19 +96,20 @@ struct WelcomeView: View {
                 Text("本地小说阅读器")
                     .font(.title.bold())
 
-                Text("书库结构：作者文件夹（= 一本书）→ 章节文件夹（= 一章）→ 正文.txt、按序号命名的图片、音视频。")
+                Text("书库分三个文件夹：小说（每本一个 txt / epub / pdf 文件）、漫画（部 → 话，图片或 pdf）、整理（原来那种 作者 → 章节 的图文混排）。")
                     .font(.subheadline)
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: 520)
 
                 VStack(alignment: .leading, spacing: 10) {
-                    Label("最省事：把书放进「本地小说」目录", systemImage: "star.fill")
+                    Label("最省事：把书放进「本地小说」的三个文件夹", systemImage: "star.fill")
                         .font(.headline)
                     Text("1. 打开「文件」App → 我的 iPhone → 本地小说\n"
-                       + "2. 把【作者文件夹】整个复制进去（里面是章节文件夹）\n"
-                       + "3. 回到本 App —— 书会自动出现，无需点任何按钮、无需授权\n\n"
-                       + "提示：放的是作者文件夹本身，不要再多包一层「书」文件夹。\n"
+                       + "2. 小说/ 放 txt、md、epub、pdf（一个文件就是一本）\n"
+                       + "3. 漫画/ 放漫画名文件夹：第1部 → 第1话 → 图片，或直接用 第5话.pdf\n"
+                       + "4. 整理/ 放作者文件夹 → 章节文件夹 → 正文.txt + 按序号图片 + 音视频\n\n"
+                       + "回到本 App —— 书会自动出现，无需点任何按钮、无需授权。\n"
                        + "看不到「本地小说」目录？在「文件」App 顶部搜索框搜「本地小说」即可找到；"
                        + "目录里有一份「放书说明.txt」，App 启动时会自动生成。")
                         .font(.subheadline)
@@ -123,7 +125,7 @@ struct WelcomeView: View {
                         .font(.headline)
                     Text("选中的书会被复制进「本地小说」，之后重启也能读（会占用一份额外空间）。"
                        + "在文件选择器里：进入文件夹后要点右上角「打开」才会确认选择；"
-                       + "或直接点书里任意一个 txt / 图片文件，会立即开始导入。")
+                       + "或直接点任意一个 txt / 图片 / pdf 文件，会立即开始导入。")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -166,18 +168,20 @@ struct WelcomeView: View {
 
                 HStack(spacing: 12) {
                     Button {
+                        library.importTargetSection = nil
                         library.noteImportStarted(ImportMode.file.label)
                         library.activeImport = .file
                     } label: {
-                        Label("导入书里的任意文件（推荐）", systemImage: "doc.badge.plus")
+                        Label("导入书籍文件（推荐）", systemImage: "doc.badge.plus")
                     }
                     .buttonStyle(.borderedProminent)
 
                     Button {
+                        library.importTargetSection = nil
                         library.noteImportStarted(ImportMode.folder.label)
                         library.activeImport = .folder
                     } label: {
-                        Label("导入书库目录（文件夹）", systemImage: "folder.badge.plus")
+                        Label("导入书籍文件夹", systemImage: "folder.badge.plus")
                     }
                     .buttonStyle(.bordered)
                 }

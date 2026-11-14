@@ -1,14 +1,14 @@
 import SwiftUI
 
-// MARK: - 第二栏：章节目录（文件夹名即章节名，天然准确）
+// MARK: - 第二栏：章节目录
 // 支持：
 //   * 左滑删除单章（二次确认）
 //   * 多选批量删除：点右上「选择」进入，勾选后底部「删除」
+//   * 小说单文件：首次进入时在后台按「第X章」切分，切完自动刷新
 //   * 「上次读到哪一章」的记忆在换书 / 再次进入时可靠恢复
 //
-// 注意：book 是 RootView 传下来的值快照，删除章节后它不会自动更新。
-// 因此列表一律读 currentBook —— 每次渲染从 LibraryStore 的最新扫描结果里取，
-// 否则删完还显示已删的章节。
+// 注意：book 是 RootView 传下来的值快照，删除章节 / 分章完成后它不会自动更新。
+// 因此列表一律读 currentBook —— 每次渲染从 LibraryStore 的最新扫描结果里取。
 
 struct ChapterListView: View {
     let book: Book?
@@ -32,8 +32,12 @@ struct ChapterListView: View {
             if let book = currentBook {
                 chapterList(book)
                     .navigationTitle(book.title)
-                    .onAppear { restoreSelection(in: book) }
+                    .onAppear {
+                        library.ensureChapters(for: book)
+                        restoreSelection(in: book)
+                    }
                     .onChange(of: book.id) { _, _ in restoreSelection(in: book) }
+                    .onChange(of: book.chapters.count) { _, _ in restoreSelection(in: book) }
                     .onChange(of: selection) { _, new in
                         if let chapter = new {
                             ProgressStore.shared.setLastChapter(chapter.id, for: book.id)
@@ -67,7 +71,7 @@ struct ChapterListView: View {
             ),
             presenting: pendingDelete
         ) { chapter in
-            Button("删除《\(chapter.title)》", role: .destructive) {
+            Button("删除《\(chapter.displayTitle)》", role: .destructive) {
                 let message = library.deleteChapter(chapter)
                 if selection?.id == chapter.id { selection = nil }
                 pendingDelete = nil
@@ -75,7 +79,7 @@ struct ChapterListView: View {
             }
             Button("取消", role: .cancel) { pendingDelete = nil }
         } message: { chapter in
-            Text("《\(chapter.title)》将从书库移除。若该文件夹在 App 文档目录内，源文件会被一并删除且不可恢复；若在只读的外部目录，则改为隐藏，可在「设置 → 书库」里恢复。")
+            Text(deleteHint(for: chapter))
         }
         .alert(
             "删除结果",
@@ -111,21 +115,45 @@ struct ChapterListView: View {
                 }
                 Button("取消", role: .cancel) {}
             } message: {
-                Text("这些章节的文件夹会被删除且不可恢复；若在只读的外部目录，则改为隐藏，可在「设置 → 书库」里恢复。")
+                Text("源文件会被删除且不可恢复；整本小说里切出来的章节与只读目录则改为隐藏，可在「设置 → 书库」里恢复。")
             }
+        } else if library.isSplitting(book) && book.chapters.count <= 1 {
+            VStack(spacing: 14) {
+                ProgressView()
+                Text("正在按「第X章」分章…")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Text("第一次打开需要读一遍整本正文，之后会记住结果。")
+                    .font(.footnote)
+                    .foregroundStyle(.tertiary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 32)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             List(book.chapters, id: \.id, selection: $selection) { chapter in
-                Text(chapter.title)
-                    .font(.body)
-                    .padding(.vertical, 3)
-                    .tag(chapter)
-                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                        Button(role: .destructive) {
-                            pendingDelete = chapter
-                        } label: {
-                            Label("删除", systemImage: "trash")
-                        }
-                    }
+                chapterRow(chapter)
+            }
+        }
+    }
+
+    private func chapterRow(_ chapter: Chapter) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            if let group = chapter.groupName, !group.isEmpty {
+                Text(group)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Text(chapter.title)
+                .font(.body)
+                .padding(.vertical, 1)
+        }
+        .tag(chapter)
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button(role: .destructive) {
+                pendingDelete = chapter
+            } label: {
+                Label("删除", systemImage: "trash")
             }
         }
     }
@@ -143,7 +171,7 @@ struct ChapterListView: View {
                 Image(systemName: isOn ? "checkmark.circle.fill" : "circle")
                     .font(.title3)
                     .foregroundStyle(isOn ? Color.accentColor : Color.secondary)
-                Text(chapter.title)
+                Text(chapter.displayTitle)
                     .font(.body)
                     .foregroundStyle(.primary)
                 Spacer(minLength: 0)
@@ -152,7 +180,7 @@ struct ChapterListView: View {
             .padding(.vertical, 3)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(isOn ? "已选中 \(chapter.title)" : chapter.title)
+        .accessibilityLabel(isOn ? "已选中 \(chapter.displayTitle)" : chapter.displayTitle)
     }
 
     private func batchBar(_ book: Book) -> some View {
@@ -164,7 +192,7 @@ struct ChapterListView: View {
 
             Spacer(minLength: 0)
 
-            Text("已选 \(selectedIds.count) 章")
+            Text("已选 \(selectedIds.count) \(unit)")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
 
@@ -182,6 +210,17 @@ struct ChapterListView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .background(.regularMaterial)
+    }
+
+    private var unit: String {
+        currentBook?.category == .comic ? "话" : "章"
+    }
+
+    private func deleteHint(for chapter: Chapter) -> String {
+        if !chapter.canDeleteFromDisk {
+            return "《\(chapter.displayTitle)》是整本文件里切出来的一章，只能隐藏，不会删除原文件；可在「设置 → 书库」里恢复。"
+        }
+        return "《\(chapter.displayTitle)》将从书库移除。若该文件在 App 文档目录内，源文件会被一并删除且不可恢复；若在只读的外部目录，则改为隐藏。"
     }
 
     // MARK: 选择与删除

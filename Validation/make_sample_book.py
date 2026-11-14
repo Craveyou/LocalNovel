@@ -1,24 +1,31 @@
 #!/usr/bin/env python3
-"""生成与用户真实结构一致的示例书（作者文件夹 / 章节文件夹 / txt+图片+动图+音视频）。
+"""生成与用户真实结构一致的示例书。
+
+三分区结构：
+  小说/   每个文件一本书（txt / epub / pdf）
+  漫画/   漫画名 → 第几部 → 第几话 → 图片；另有 pdf 单话
+  整理/   作者名 → 章节名 → txt + 序号图片 + 动图 + 音视频
+
 用途：给 S1 等价验证提供真实目录树，也作为 Xcode 工程里可直接导入的样例数据。
-仅使用本地 Pillow + ffmpeg，不联网。
+仅使用本地 Pillow + reportlab + zipfile，不联网。
 """
 from pathlib import Path
 import shutil
 import subprocess
+import zipfile
 
 from PIL import Image, ImageDraw
+from reportlab.pdfgen import canvas
 
 ROOT = Path(__file__).resolve().parent.parent / "SampleBook"
 
 
-def png(path: Path, label: str, color=(70, 110, 170)):
-    img = Image.new("RGB", (480, 300), color)
+def png(path: Path, label: str, color=(70, 110, 170), size=(480, 300)):
+    img = Image.new("RGB", size, color)
     d = ImageDraw.Draw(img)
-    d.rectangle([20, 20, 460, 280], outline=(255, 255, 255), width=3)
+    d.rectangle([20, 20, size[0] - 20, size[1] - 20], outline=(255, 255, 255), width=3)
     d.text((40, 130), label, fill=(255, 255, 255))
     img.save(path)
-    return img
 
 
 def animated_gif(path: Path):
@@ -50,6 +57,42 @@ def make_audio(path: Path):
     ], check=True)
 
 
+def make_pdf(path: Path, pages):
+    c = canvas.Canvas(str(path), pagesize=(480, 700))
+    for i, text in enumerate(pages):
+        c.setFont("Helvetica-Bold", 24)
+        c.drawString(60, 620, text)
+        c.setFont("Helvetica", 13)
+        c.drawString(60, 580, f"page {i + 1} / {len(pages)}")
+        c.rect(40, 80, 400, 460)
+        c.showPage()
+    c.save()
+
+
+def make_epub(path: Path, title: str, chapters):
+    """最小可用 epub：mimetype + container.xml + OPF + 若干 xhtml"""
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
+        z.writestr("META-INF/container.xml", """<?xml version="1.0"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+</container>""")
+        items, refs = [], []
+        for i, (name, body) in enumerate(chapters, start=1):
+            href = f"text/ch{i:02d}.xhtml"
+            items.append(f'<item id="c{i}" href="{href}" media-type="application/xhtml+xml"/>')
+            refs.append(f'<itemref idref="c{i}"/>')
+            z.writestr(f"OEBPS/{href}", f"""<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><head><title>{name}</title></head>
+<body><h1>{name}</h1><p>{body}</p></body></html>""")
+        z.writestr("OEBPS/content.opf", f"""<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>{title}</dc:title></metadata>
+  <manifest>{''.join(items)}</manifest>
+  <spine>{''.join(refs)}</spine>
+</package>""")
+
+
 def write_text(path: Path, lines):
     path.write_text("\n\n".join(lines) + "\n", encoding="utf-8")
 
@@ -59,8 +102,49 @@ def main():
         shutil.rmtree(ROOT)
     ROOT.mkdir(parents=True)
 
-    # 书 1：墨青山
-    b1 = ROOT / "墨青山"
+    # ---------------- 小说 ----------------
+    novel = ROOT / "小说"
+    novel.mkdir()
+
+    write_text(novel / "风起长安.txt", [
+        "第一章 起风",
+        "长安城的春天来得迟，风里还带着沙。",
+        "他站在城门口，忽然想起很多年前的那句话。",
+        "第二章 入城",
+        "城门开了，马蹄声从远处滚过来。",
+        "第三章 夜雨",
+        "雨下了一整夜，檐角的水滴答不停。",
+    ])
+    write_text(novel / "无章节的短篇.txt", ["这篇没有章节标题。", "整本会被当成一章显示。"])
+
+    make_epub(novel / "样例epub.epub", "样例 EPUB", [
+        ("第一章 山门", "山门外站着一个少年。"),
+        ("第二章 试剑", "剑锋上还有昨夜的血。"),
+        ("第三章 下山", "他背着剑，走下石阶。"),
+    ])
+    make_pdf(novel / "样例pdf.pdf", ["Chapter 1 旧城", "Chapter 2 灯火"])
+
+    # ---------------- 漫画 ----------------
+    comic = ROOT / "漫画" / "星海旅人"
+    p1 = comic / "第1部" / "第1话"
+    p1.mkdir(parents=True)
+    for i in range(1, 4):
+        png(p1 / f"{i}.jpg", f"第1部 第1话 p{i}", (40 + i * 20, 90, 150), (600, 900))
+    p2 = comic / "第1部" / "第2话"
+    p2.mkdir(parents=True)
+    for i in range(1, 3):
+        png(p2 / f"{i}.jpg", f"第1部 第2话 p{i}", (140, 60 + i * 20, 90), (600, 900))
+    # 卷目录 + pdf 单话（用户提到的第二种放法）
+    make_pdf(comic / "第5话.pdf", ["第5话 p1", "第5话 p2", "第5话 p3"])
+
+    comic2 = ROOT / "漫画" / "短篇集"
+    s1 = comic2 / "单行本" / "第1话"
+    s1.mkdir(parents=True)
+    for i in range(1, 3):
+        png(s1 / f"{i}.png", f"单行本 第1话 p{i}", (90, 90, 160), (600, 900))
+
+    # ---------------- 整理 ----------------
+    b1 = ROOT / "整理" / "墨青山"
 
     ch1 = b1 / "01_序章"
     ch1.mkdir(parents=True)
@@ -101,8 +185,7 @@ def main():
     (ch5 / "notes.docx").write_text("unknown", encoding="utf-8")
     (ch5 / ".DS_Store").write_bytes(b"hidden")
 
-    # 书 2：林下客
-    b2 = ROOT / "林下客"
+    b2 = ROOT / "整理" / "林下客"
     ch6 = b2 / "第一章 夜行"
     ch6.mkdir(parents=True)
     write_text(ch6 / "正文.txt", ["第二本书，用来验证书库并列显示。", "夜色很深。"])

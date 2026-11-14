@@ -1,95 +1,68 @@
 import SwiftUI
 
-// MARK: - 第一栏：书库（一个作者文件夹 = 一本书）
-// iPhone 折叠模式下这一栏就是第一屏，状态与导入入口必须都在这里大字可见。
-// 分类：小说 / 漫画 / 整理（整理 = 原有的图文混排作者文件夹）。
-
-/// 顶部分类筛选
-private enum CatalogFilter: String, CaseIterable, Identifiable {
-    case all
-    case novel
-    case comic
-    case organized
-
-    var id: String { rawValue }
-
-    var label: String {
-        switch self {
-        case .all: return "全部"
-        case .novel: return "小说"
-        case .comic: return "漫画"
-        case .organized: return "整理"
-        }
-    }
-
-    var category: BookCategory? {
-        switch self {
-        case .all: return nil
-        case .novel: return .novel
-        case .comic: return .comic
-        case .organized: return .organized
-        }
-    }
-
-    var symbol: String {
-        switch self {
-        case .all: return "books.vertical"
-        case .novel: return BookCategory.novel.symbol
-        case .comic: return BookCategory.comic.symbol
-        case .organized: return BookCategory.organized.symbol
-        }
-    }
-}
+// MARK: - 第一栏：书库首页 = 三个文件夹（小说 / 漫画 / 整理）
+//
+// 分类由目录决定：书放在哪个分区就是哪一类，不再按内容猜测、也不再手动改分类。
+// 首页只显示三个文件夹卡片；点进去看该分区的书，左上角返回。
+// iPhone 折叠模式下这一栏就是第一屏，状态与导入入口必须大字可见。
 
 struct LibrarySidebar: View {
     @EnvironmentObject private var library: LibraryStore
     @Binding var selection: Book?
 
+    @State private var openedSection: BookCategory?
     @State private var pendingDelete: Book?
     @State private var resultMessage: String?
     @State private var showSettings = false
-    @State private var filter: CatalogFilter = .all
+
+    private var allBooks: [Book] { library.library?.books ?? [] }
 
     var body: some View {
         Group {
-            if let lib = library.library, !lib.books.isEmpty {
-                VStack(spacing: 0) {
-                    filterBar
-                    let shown = library.books(lib.books, in: filter.category)
-                    if shown.isEmpty {
-                        filteredEmptyState
-                    } else {
-                        List(shown, id: \.id, selection: $selection) { book in
-                            row(book)
-                        }
-                    }
+            if !allBooks.isEmpty {
+                if let section = openedSection {
+                    sectionBooks(section)
+                } else {
+                    sectionHome
                 }
             } else {
                 EmptyLibraryState()
             }
         }
-        .navigationTitle("书库")
+        .navigationTitle(openedSection?.label ?? "书库")
         // 书架（首页）直达独立设置页：字号、行距、外观等所有偏好都集中在那里
         .sheet(isPresented: $showSettings) { SettingsView() }
         .toolbar {
             ToolbarItem(placement: .navigationBarLeading) {
-                Button { showSettings = true } label: {
-                    Label("设置", systemImage: "gearshape")
+                if openedSection != nil {
+                    Button {
+                        openedSection = nil
+                    } label: {
+                        Label("书库", systemImage: "chevron.left")
+                    }
+                } else {
+                    Button { showSettings = true } label: {
+                        Label("设置", systemImage: "gearshape")
+                    }
                 }
             }
             ToolbarItem(placement: .primaryAction) {
                 Menu {
                     Button {
+                        library.importTargetSection = openedSection
                         library.noteImportStarted(ImportMode.file.label)
                         library.activeImport = .file
                     } label: {
-                        Label("导入书里的任意文件（推荐）", systemImage: "doc.badge.plus")
+                        Label(openedSection.map { "导入文件到「\($0.label)」" } ?? "导入书籍文件",
+                              systemImage: "doc.badge.plus")
                     }
                     Button {
+                        library.importTargetSection = openedSection
                         library.noteImportStarted(ImportMode.folder.label)
                         library.activeImport = .folder
                     } label: {
-                        Label("导入书库目录（文件夹）", systemImage: "folder.badge.plus")
+                        Label(openedSection.map { "导入文件夹到「\($0.label)」" } ?? "导入书籍文件夹",
+                              systemImage: "folder.badge.plus")
                     }
                     Button {
                         library.useAppDocuments()
@@ -107,37 +80,15 @@ struct LibrarySidebar: View {
                     Label("重新扫描", systemImage: "arrow.clockwise")
                 }
             }
-        }
-        .safeAreaInset(edge: .bottom) {
-            VStack(spacing: 0) {
-                if let progress = library.importProgress {
-                    HStack(spacing: 8) {
-                        ProgressView()
-                        Text(progress)
-                            .font(.footnote)
+            if openedSection != nil {
+                ToolbarItem(placement: .secondaryAction) {
+                    Button { showSettings = true } label: {
+                        Label("设置", systemImage: "gearshape")
                     }
-                    .padding(8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.orange.opacity(0.12))
-                }
-                if let info = library.diagnostics {
-                    Text(info)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .padding(8)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.blue.opacity(0.08))
-                }
-                if let message = library.errorMessage {
-                    Text(message)
-                        .font(.footnote)
-                        .foregroundStyle(.red)
-                        .padding(8)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.red.opacity(0.08))
                 }
             }
         }
+        .safeAreaInset(edge: .bottom) { statusBar }
         .confirmationDialog(
             "删除书籍",
             isPresented: Binding(
@@ -154,7 +105,7 @@ struct LibrarySidebar: View {
             }
             Button("取消", role: .cancel) { pendingDelete = nil }
         } message: { book in
-            Text("《\(book.title)》（\(book.chapters.count) 章）将从书库移除。若在 App 文档目录内，源文件会被一并删除且不可恢复；若在只读目录，则改为隐藏。")
+            Text("《\(book.title)》（\(book.chapters.count) \(unit(for: book))）将从书库移除。若在 App 文档目录内，源文件会被一并删除且不可恢复；若在只读目录，则改为隐藏。")
         }
         .alert(
             "删除结果",
@@ -169,67 +120,110 @@ struct LibrarySidebar: View {
         }
     }
 
-    // MARK: - 分类筛选
+    // MARK: - 首页：三个文件夹
 
-    private var filterBar: some View {
-        Picker("分类", selection: $filter) {
-            ForEach(CatalogFilter.allCases) { item in
-                Text(item.label).tag(item)
+    private var sectionHome: some View {
+        ScrollView {
+            VStack(spacing: 12) {
+                ForEach(BookCategory.allCases) { category in
+                    sectionCard(category)
+                }
+
+                Label("在「文件」App → 本地小说 里整理这三个文件夹，回到本 App 会自动同步。",
+                      systemImage: "arrow.triangle.2.circlepath")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 4)
+            }
+            .padding(16)
+        }
+    }
+
+    private func sectionCard(_ category: BookCategory) -> some View {
+        let count = library.count(in: category)
+        return Button {
+            openedSection = category
+        } label: {
+            HStack(spacing: 14) {
+                Image(systemName: category.symbol)
+                    .font(.title2)
+                    .foregroundStyle(.tint)
+                    .frame(width: 46, height: 46)
+                    .background(.tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(category.label)
+                        .font(.headline)
+                        .foregroundStyle(.primary)
+                    Text(category.hint)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                Text("\(count)")
+                    .font(.title3.monospacedDigit())
+                    .foregroundStyle(count == 0 ? Color.secondary : Color.primary)
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 14))
+            .contentShape(RoundedRectangle(cornerRadius: 14))
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: - 分区内书列表
+
+    private func sectionBooks(_ category: BookCategory) -> some View {
+        let books = library.books(in: category)
+        return Group {
+            if books.isEmpty {
+                ContentUnavailableView {
+                    Label("「\(category.label)」是空的", systemImage: category.symbol)
+                } description: {
+                    Text(category.emptyDescription)
+                }
+            } else {
+                List(books, id: \.id, selection: $selection) { book in
+                    row(book)
+                }
             }
         }
-        .pickerStyle(.segmented)
-        .padding(.horizontal, 16)
-        .padding(.top, 6)
-        .padding(.bottom, 8)
     }
-
-    private var filteredEmptyState: some View {
-        ContentUnavailableView {
-            Label("「\(filter.label)」下还没有书", systemImage: filter.symbol)
-        } description: {
-            let hint = filter.category?.hint ?? ""
-            let tip = "长按书名，或点书名右侧的标签，就能把书改成这个分类。"
-            Text(hint.isEmpty ? tip : hint + "\n" + tip)
-        } actions: {
-            Button("查看全部") { filter = .all }
-                .buttonStyle(.borderedProminent)
-        }
-    }
-
-    // MARK: - 单行
 
     private func row(_ book: Book) -> some View {
-        let category = library.category(for: book)
-        return HStack(spacing: 8) {
+        HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(book.title)
                     .font(.headline)
+                    .lineLimit(2)
                 HStack(spacing: 5) {
-                    Label(category.label, systemImage: category.symbol)
-                    Text("·")
-                    Text("\(book.chapters.count) 章")
+                    if library.isSplitting(book) {
+                        ProgressView()
+                            .controlSize(.mini)
+                        Text("正在分章…")
+                    } else {
+                        Text("\(book.chapters.count) \(unit(for: book))")
+                        if book.category == .comic, let first = book.chapters.first {
+                            Text("·")
+                            Text(first.displayTitle)
+                                .lineLimit(1)
+                        }
+                    }
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
             }
             Spacer(minLength: 0)
-            Menu {
-                categoryItems(book)
-            } label: {
-                Image(systemName: "tag")
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 34, height: 30)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("修改《\(book.title)》的分类")
         }
         .padding(.vertical, 4)
         .tag(book)
-        .contextMenu {
-            Section("分类") { categoryItems(book) }
-        }
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             Button(role: .destructive) {
                 pendingDelete = book
@@ -239,26 +233,66 @@ struct LibrarySidebar: View {
         }
     }
 
-    /// 分类菜单：三个分类 + （手动指定过时）恢复自动判定
-    @ViewBuilder
-    private func categoryItems(_ book: Book) -> some View {
-        let current = library.category(for: book)
-        ForEach(BookCategory.allCases) { category in
-            Button {
-                library.setCategory(category, for: book)
-            } label: {
-                Label(category == current ? "\(category.label)（当前）" : category.label,
-                      systemImage: category.symbol)
+    private func unit(for book: Book) -> String {
+        book.category == .comic ? "话" : "章"
+    }
+
+    // MARK: - 底部状态
+
+    private var statusBar: some View {
+        VStack(spacing: 0) {
+            if library.isScanning {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("正在扫描书库…")
+                        .font(.footnote)
+                }
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.blue.opacity(0.10))
+            }
+            if let progress = library.importProgress {
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text(progress)
+                        .font(.footnote)
+                }
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.orange.opacity(0.12))
+            }
+            if let info = library.diagnostics {
+                Text(info)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.blue.opacity(0.08))
+            }
+            if let message = library.errorMessage {
+                Text(message)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.red.opacity(0.08))
             }
         }
-        if library.hasManualCategory(for: book) {
-            Divider()
-            Button {
-                library.setCategory(nil, for: book)
-            } label: {
-                Label("恢复自动判定（\(library.autoCategory(for: book).label)）",
-                      systemImage: "arrow.uturn.backward")
-            }
+    }
+}
+
+// MARK: - 分区空态文案
+
+private extension BookCategory {
+    var emptyDescription: String {
+        switch self {
+        case .novel:
+            return "把 txt / md / epub / pdf 文件直接放进「小说」文件夹，一个文件就是一本，打开时自动按「第X章」分章。"
+        case .comic:
+            return "每部漫画一个文件夹：漫画名 → 第1部 → 第1话 → 图片；也可以 漫画名 → 第5话.pdf。"
+        case .organized:
+            return "结构：作者名文件夹 → 章节名文件夹 → 正文.txt + 按序号命名的图片 + 章末音视频。"
         }
     }
 }
@@ -285,18 +319,17 @@ private struct EmptyLibraryState: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
-                Label("最省事的做法（无需点按钮、无需授权）", systemImage: "star.fill")
+                Label("把书放进三个文件夹（无需点按钮、无需授权）", systemImage: "star.fill")
                     .font(.headline)
 
-                Text("打开「文件」App → 我的 iPhone → 本地小说，把【作者文件夹】整个复制进去（里面是章节文件夹），然后回到本 App —— 书会自动出现。")
+                Text("打开「文件」App → 我的 iPhone → 本地小说，你会看到：\n"
+                   + "小说/    每个 txt / md / epub / pdf 文件就是一本\n"
+                   + "漫画/    漫画名 → 第1部 → 第1话 → 图片，或直接用 pdf\n"
+                   + "整理/    作者名 → 章节名 → 正文.txt + 按序号图片 + 音视频")
                     .font(.body)
                     .fixedSize(horizontal: false, vertical: true)
 
-                Text("也可以在下面点「导入」：选中的书会被复制进「本地小说」，之后重启也能读。")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-
-                Text("在文件选择器里：进入文件夹后要点右上角「打开」才会确认选择；或直接点书里任意一个 txt / 图片文件，会立即开始导入。")
+                Text("放好后回到本 App，书会自动出现。看不到「本地小说」目录，可在「文件」App 顶部搜索框搜它。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -323,6 +356,7 @@ private struct EmptyLibraryState: View {
 
                 HStack(spacing: 12) {
                     Button {
+                        library.importTargetSection = nil
                         library.noteImportStarted(ImportMode.file.label)
                         library.activeImport = .file
                     } label: {
