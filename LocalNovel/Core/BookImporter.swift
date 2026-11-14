@@ -111,7 +111,7 @@ enum BookImporter {
         if !isDirectory { return [source] }
 
         // 选的就是分区目录本身：复制其子项
-        if let section = LibrarySection(folderName: source.lastPathComponent) {
+        if LibrarySection(folderName: source.lastPathComponent) != nil {
             return try visibleItems(at: source, fm: fm)
         }
 

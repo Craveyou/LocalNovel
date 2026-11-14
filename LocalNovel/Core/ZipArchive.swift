@@ -33,7 +33,7 @@ struct ZipArchive {
 
         for _ in 0..<max(total, 1) {
             guard offset + 46 <= data.count, Self.u32(data, offset) == 0x0201_4b50 else { break }
-            let method = Self.u16(data, offset + 10)
+            let method = UInt16(Self.u16(data, offset + 10))
             let compressed = Int(Self.u32(data, offset + 20))
             let uncompressed = Int(Self.u32(data, offset + 24))
             let nameLength = Self.u16(data, offset + 28)

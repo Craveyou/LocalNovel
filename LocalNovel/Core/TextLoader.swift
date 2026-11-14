@@ -39,7 +39,7 @@ enum TextLoader {
     }()
 
     /// GB18030 / Big5 在 Swift 里用 CFString 编码常量桥接
-    private static let cfEncodings: [CFStringEncoding] = [.GB_18030_2000, .big5]
+    private static let cfEncodings: [CFStringEncodings] = [.GB_18030_2000, .big5]
 
     /// 纯文本读取（txt / md）
     static func load(_ url: URL) throws -> String {
