@@ -207,7 +207,18 @@ def main():
           "saveRootFolder(url)" in store and "rebuild(root: root)" in store)
     check("书签未持久化时有可见提示",
           "hasSavedRoot()" in store and "权限未能持久化" in store)
-    check("UI 明确引导 iOS「点右上角打开/选择」", "打开 / 选择" in welcome)
+    check("新增「选文件」导入通道（UTType.item，绕开 .folder 兼容问题）",
+          "[.item]" in welcome and "isFileImporting" in store
+          and "handleFileImport" in store)
+    check("由选中文件反推书库根",
+          "static func bestRoot(from" in scanner and "BookScanner.bestRoot" in store)
+    check("点导入按钮瞬间即有可见反馈（不再「无任何提示」）",
+          "noteImportStarted" in store and "noteImportStarted" in welcome)
+    check("iPhone 第一屏可见三种导入方式",
+          all(t in (APP / "Views" / "LibrarySidebar.swift").read_text(encoding="utf-8")
+              for t in ["选择书库内任意文件", "选择书库目录", "App 文档目录（免授权）"]))
+    check("UI 明确引导 iOS 选目录须点选文件夹、并推荐选文件方式",
+          "点选一个文件夹" in welcome and "选择书库内任意文件" in welcome)
     check("提供 App 文档目录零权限兜底", "useAppDocuments" in store and "usingAppDocuments" in store)
     check("Info.plist 开启文件共享（文档目录可见）", "UIFileSharingEnabled" in plist)
     check("诊断信息在 iPhone 第一栏也可见", "library.diagnostics" in (APP / "Views" / "LibrarySidebar.swift").read_text(encoding="utf-8"))

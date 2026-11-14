@@ -38,6 +38,45 @@ enum BookScanner {
         scanWithDiagnostics(rootURL: rootURL, cleanTitles: cleanTitles, fileManager: fileManager).library
     }
 
+    /// 从用户选中的「书库内任意文件」反推最合适的书库根目录。
+    ///
+    /// iOS 的 .folder 目录选择器在部分文件提供者上不可用，且要求「选中一个
+    /// 文件夹项目」才会回调；选普通文件则是所有文件提供者都支持的能力。
+    /// 候选为「文件所在目录 / 父目录 / 祖父目录」，取能识别出最多书的层级；
+    /// 书数相同取章节数多的，再相同取更靠近书库根的一层。
+    static func bestRoot(from fileURL: URL,
+                         cleanTitles: Bool = false,
+                         fileManager: FileManager = .default) -> URL {
+        var candidates: [URL] = []
+        var current = fileURL.deletingLastPathComponent()
+        for _ in 0..<3 {
+            candidates.append(current)
+            let parent = current.deletingLastPathComponent()
+            if parent.path == current.path { break }
+            current = parent
+        }
+
+        var best = candidates[0]
+        var bestBooks = -1
+        var bestChapters = -1
+        var bestDepth = -1
+        for (depth, candidate) in candidates.enumerated() {
+            let books = scan(rootURL: candidate, cleanTitles: cleanTitles,
+                             fileManager: fileManager).books
+            let bookCount = books.count
+            let chapterCount = books.reduce(0) { $0 + $1.chapters.count }
+            if bookCount > bestBooks
+                || (bookCount == bestBooks && chapterCount > bestChapters)
+                || (bookCount == bestBooks && chapterCount == bestChapters && depth > bestDepth) {
+                best = candidate
+                bestBooks = bookCount
+                bestChapters = chapterCount
+                bestDepth = depth
+            }
+        }
+        return best
+    }
+
     /// 带诊断的扫描：自动识别用户选中的层级，并显式上报读取错误
     static func scanWithDiagnostics(
         rootURL: URL,

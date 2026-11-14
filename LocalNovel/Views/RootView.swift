@@ -39,6 +39,18 @@ struct RootView: View {
             selectedBook = nil
             selectedChapter = nil
         }
+        .fileImporter(
+            isPresented: Binding(
+                get: { library.isFileImporting },
+                set: { library.isFileImporting = $0 }
+            ),
+            allowedContentTypes: [.item],
+            allowsMultipleSelection: false
+        ) { result in
+            library.handleFileImport(result)
+            selectedBook = nil
+            selectedChapter = nil
+        }
     }
 }
 
@@ -63,14 +75,14 @@ struct WelcomeView: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: 520)
 
-                // iOS 上最容易踩的一步：点进文件夹只是浏览，必须点「打开 / 选择」
+                // iOS 上 .folder 目录选择器要求「选中一个文件夹项目」，
+                // 只浏览到某一层直接点「打开」不会返回目录（表现为点了没反应、也没提示）。
                 VStack(alignment: .leading, spacing: 8) {
-                    Label("如何选中文件夹（iOS 关键一步）", systemImage: "hand.tap.fill")
+                    Label("如何添加书籍", systemImage: "hand.tap.fill")
                         .font(.headline)
-                    Text("1. 点下方按钮打开文件选择器\n"
-                       + "2. 浏览并【进入】包含作者文件夹的那一层\n"
-                       + "3. 点右上角「打开 / 选择」选中当前这一层 —— 只点进去浏览是不会添加的\n"
-                       + "4. 也可以只选某个作者文件夹（会自动识别为一本书）")
+                    Text("推荐：点「选择书库内任意文件」→ 进入书库，选中任意章节里的 txt / 图片 / 视频 → 点「打开」，App 会自动向上找到整个书库。\n"
+                       + "备选：选文件夹时，在 iOS 上必须【点选一个文件夹】再点「打开」；只浏览到某一层直接点「打开」，系统不会返回目录。\n"
+                       + "免授权：把书放进「文件」App → 我的 iPhone → 本地小说，再点「改用 App 文档目录里的书」。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -80,12 +92,21 @@ struct WelcomeView: View {
                 .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 12))
 
                 Button {
-                    library.isImporting = true
+                    library.noteImportStarted("选择书库内任意文件")
+                    library.isFileImporting = true
                 } label: {
-                    Label(library.library?.books.isEmpty == false ? "重新选择书库目录" : "选择书库目录",
-                          systemImage: "folder.badge.plus")
+                    Label("选择书库内任意文件（推荐）", systemImage: "doc.badge.plus")
                 }
                 .buttonStyle(.borderedProminent)
+
+                Button {
+                    library.noteImportStarted("选择书库目录")
+                    library.isImporting = true
+                } label: {
+                    Label(library.library?.books.isEmpty == false ? "重新选择书库目录" : "选择书库目录（文件夹）",
+                          systemImage: "folder.badge.plus")
+                }
+                .font(.footnote)
 
                 // 零权限兜底：把书放进「文件」App → 我的 iPhone → 本地小说
                 Button {

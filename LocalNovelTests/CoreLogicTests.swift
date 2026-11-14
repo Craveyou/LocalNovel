@@ -131,6 +131,25 @@ final class CoreLogicTests: XCTestCase {
         XCTAssertNotNil(r4.failureHint)
     }
 
+    /// 从书库内选中的任意文件反推书库根（选文件通道）
+    func testBestRootFromPickedFile() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LocalNovelTests-" + UUID().uuidString)
+        let libRoot = root.appendingPathComponent("书库")
+        let author = libRoot.appendingPathComponent("作者甲")
+        let chapter = author.appendingPathComponent("01_序章")
+        try FileManager.default.createDirectory(at: chapter, withIntermediateDirectories: true)
+        let textFile = chapter.appendingPathComponent("正文.txt")
+        try Data("x".utf8).write(to: textFile)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let picked = BookScanner.bestRoot(from: textFile)
+        XCTAssertEqual(picked.lastPathComponent, "书库")
+        let lib = BookScanner.scan(rootURL: picked)
+        XCTAssertEqual(lib.books.count, 1)
+        XCTAssertEqual(lib.books.first?.chapters.count, 1)
+    }
+
     /// 空章节 / 缺正文不崩溃
     func testEmptyChapterIsSafe() throws {
         let root = FileManager.default.temporaryDirectory

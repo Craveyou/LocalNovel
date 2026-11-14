@@ -12,6 +12,8 @@ final class LibraryStore: ObservableObject {
     /// 当前载入方式：true = 读 App 自己的文档目录（零权限兜底），false = 用户选的外部目录
     @Published private(set) var usingAppDocuments = false
     @Published var isImporting = false
+    /// 「选择书库内任意文件」通道：绕开 .folder 目录选择器在部分文件提供者上不可用的问题
+    @Published var isFileImporting = false
 
     private var contentCache: [String: ChapterContent] = [:]
     private var textCache: [String: String] = [:]
@@ -49,6 +51,14 @@ final class LibraryStore: ObservableObject {
         }
     }
 
+    /// 点导入按钮的瞬间就给可见反馈。
+    /// 若选择器关闭后这行字一直没变，说明系统没有返回目录（.folder 在部分文件提供者上
+    /// 根本没实现），用户即可据此改走「选文件」或「App 文档目录」，而不是面对一片沉默。
+    func noteImportStarted(_ label: String) {
+        diagnostics = "已打开「\(label)」。若选择器关闭后书库仍为空、这行字也没变，说明系统未返回目录——请改点「选择书库内任意文件（推荐）」或「App 文档目录（免授权）」。"
+        errorMessage = nil
+    }
+
     /// 用户重新选择书库根目录
     func handleImport(_ result: Result<[URL], Error>) {
         switch result {
@@ -66,6 +76,31 @@ final class LibraryStore: ObservableObject {
             usingAppDocuments = false
             invalidateCaches()
             rebuild(root: root)
+        }
+    }
+
+    /// 备选导入：用户从书库里选任意一个文件（txt / 图片 / 视频 / 音频），
+    /// 由该文件向上反推书库根目录。选文件是所有文件提供者都支持的能力。
+    func handleFileImport(_ result: Result<[URL], Error>) {
+        switch result {
+        case .failure(let error):
+            errorMessage = "选择文件失败：\(error.localizedDescription)"
+            diagnostics = "可改用「App 文档目录里的书（免授权）」。"
+        case .success(let urls):
+            guard let file = urls.first else {
+                errorMessage = "没有拿到文件，请重新选择一次。"
+                return
+            }
+            let root = BookScanner.bestRoot(from: file,
+                                            cleanTitles: Preferences.shared.cleanTitles)
+            let saved = RootFolderAccess.shared.saveRootFolder(root)
+            usingAppDocuments = false
+            invalidateCaches()
+            rebuild(root: saved)
+            if library?.books.isEmpty == true {
+                diagnostics = (diagnostics ?? "")
+                    + " · 由「\(file.lastPathComponent)」定位到「\(root.lastPathComponent)」但未识别出书，请确认所选文件确实在书库目录内。"
+            }
         }
     }
 

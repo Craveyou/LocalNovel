@@ -1,6 +1,8 @@
 import SwiftUI
 
 // MARK: - 第一栏：书库（一个作者文件夹 = 一本书）
+// iPhone 折叠模式下这一栏就是第一屏，所以三种导入方式必须都在这里可达，
+// 不能只放在 detail 页的 WelcomeView 里。
 
 struct LibrarySidebar: View {
     @EnvironmentObject private var library: LibraryStore
@@ -22,7 +24,7 @@ struct LibrarySidebar: View {
                 }
             } else {
                 List {
-                    Text("尚未选择书库目录")
+                    Text("尚未添加书籍")
                         .foregroundStyle(.secondary)
                 }
             }
@@ -30,10 +32,26 @@ struct LibrarySidebar: View {
         .navigationTitle("书库")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                Button {
-                    library.isImporting = true
+                Menu {
+                    Button {
+                        library.noteImportStarted("选择书库内任意文件")
+                        library.isFileImporting = true
+                    } label: {
+                        Label("选择书库内任意文件（推荐）", systemImage: "doc.badge.plus")
+                    }
+                    Button {
+                        library.noteImportStarted("选择书库目录")
+                        library.isImporting = true
+                    } label: {
+                        Label("选择书库目录（文件夹）", systemImage: "folder.badge.plus")
+                    }
+                    Button {
+                        library.useAppDocuments()
+                    } label: {
+                        Label("App 文档目录（免授权）", systemImage: "doc.text.magnifyingglass")
+                    }
                 } label: {
-                    Label("选择目录", systemImage: "folder.badge.plus")
+                    Label("添加书籍", systemImage: "plus")
                 }
             }
             ToolbarItem(placement: .secondaryAction) {

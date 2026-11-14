@@ -358,6 +358,39 @@ def main():
         top = len([p for p in r1.iterdir() if not is_hidden(p.name)])
         check("F5 顶层条目可统计", top == 1, str(top))
 
+        # F6 由「选中的任意文件」反推书库根（选文件通道的核心逻辑）
+        def best_root(file: Path) -> Path:
+            candidates = []
+            cur = file.parent
+            for _ in range(3):
+                candidates.append(cur)
+                if cur.parent == cur:
+                    break
+                cur = cur.parent
+            best, bb, bc, bd = candidates[0], -1, -1, -1
+            for depth, cand in enumerate(candidates):
+                _, bs, cs = scan_with_diagnostics(cand)
+                nb, nc = len(bs), len(cs)
+                if nb > bb or (nb == bb and nc > bc) or (nb == bb and nc == bc and depth > bd):
+                    best, bb, bc, bd = cand, nb, nc, depth
+            return best
+
+        picked = a1 / "01_序章" / "正文.txt"
+        check("F6 从章节内 txt 反推到书库根", best_root(picked) == r1, str(best_root(picked)))
+
+        # 多作者时「书数优先」仍应落到书库根，而不是停在某本书上
+        a2 = r1 / "作者乙"
+        (a2 / "第一章").mkdir(parents=True)
+        (a2 / "第一章" / "正文.txt").write_text("x")
+        check("F6 多作者仍反推到书库根", best_root(picked) == r1, str(best_root(picked)))
+        check("F6 反推结果能识别出 2 本书", len(scan_with_diagnostics(best_root(picked))[1]) == 2)
+
+        # 选中的文件不在书库内（孤立 txt）：不崩溃，且回退到最近的可读层级
+        lone = base / "散文件"
+        lone.mkdir()
+        (lone / "随手.txt").write_text("x")
+        check("F6 孤立文件不崩溃", best_root(lone / "随手.txt").is_dir())
+
     print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")
     if FAIL:
         print("失败项：" + ", ".join(FAIL))
