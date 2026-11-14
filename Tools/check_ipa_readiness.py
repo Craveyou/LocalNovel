@@ -83,7 +83,7 @@ def main():
           and plist.get("LSSupportsOpeningDocumentsInPlace") is True)
     check("Documents 说明文件引导（Apple 要求目录里至少一个文件）",
           (APP / "Core" / "DocumentsBootstrap.swift").is_file())
-    check("版本号提升以刷新系统元数据", plist.get("CFBundleVersion") == "6")
+    check("版本号提升以刷新系统元数据", plist.get("CFBundleVersion") == "7")
     check("CFBundleIcons 声明图标文件",
           "CFBundleIconFiles" in plist.get("CFBundleIcons", {})
           .get("CFBundlePrimaryIcon", {}))

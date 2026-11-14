@@ -112,7 +112,9 @@ enum BookScanner {
                 let chapter = makeChapter(rootURL, cleanTitles: cleanTitles)
                 let book = Book(folderURL: rootURL,
                                 title: rootURL.lastPathComponent,
-                                chapters: [chapter])
+                                chapters: [chapter],
+                                profile: makeProfile(chapterFolders: [rootURL],
+                                                     fileManager: fileManager))
                 let lib = Library(rootURL: rootURL, books: [book])
                 return ScanDiagnostics(library: lib, layout: .chapterFolder,
                                        topLevelItemCount: total, readError: nil,
@@ -141,7 +143,9 @@ enum BookScanner {
                 }
                 return Book(folderURL: bookFolder,
                             title: bookFolder.lastPathComponent,
-                            chapters: NaturalSort.sorted(chapters) { $0.rawName })
+                            chapters: NaturalSort.sorted(chapters) { $0.rawName },
+                            profile: makeProfile(chapterFolders: chapterFolders,
+                                                 fileManager: fileManager))
             }
             let lib = Library(rootURL: rootURL, books: NaturalSort.sorted(books) { $0.title })
             let chapterCount = lib.books.reduce(0) { $0 + $1.chapters.count }
@@ -159,7 +163,9 @@ enum BookScanner {
         let chapters: [Chapter] = folders.map { makeChapter($0, cleanTitles: cleanTitles) }
         let book = Book(folderURL: rootURL,
                         title: rootURL.lastPathComponent,
-                        chapters: NaturalSort.sorted(chapters) { $0.rawName })
+                        chapters: NaturalSort.sorted(chapters) { $0.rawName },
+                        profile: makeProfile(chapterFolders: folders,
+                                             fileManager: fileManager))
         let lib = Library(rootURL: rootURL, books: [book])
         return ScanDiagnostics(library: lib, layout: .singleBook,
                                topLevelItemCount: total, readError: nil,
@@ -205,5 +211,43 @@ enum BookScanner {
         return Chapter(folderURL: folder,
                        rawName: raw,
                        title: cleanTitles ? ChapterTitleCleaner.clean(raw) : raw)
+    }
+
+    /// 采样前几章统计「有正文的章节数 / 图片数 / 音视频数」，用于自动分类。
+    ///
+    /// 只列目录、不读文件内容，且最多看 3 章：一本书的形态在开头几章就已经稳定，
+    /// 全量遍历会让大书库的扫描变慢（几百本书 × 上百章）。
+    private static let profileSampleLimit = 3
+
+    private static func makeProfile(chapterFolders: [URL],
+                                    fileManager: FileManager) -> BookProfile {
+        let sample = Array(chapterFolders.prefix(profileSampleLimit))
+        guard !sample.isEmpty else { return .empty }
+
+        var textChapters = 0
+        var images = 0
+        var videos = 0
+
+        for folder in sample {
+            guard let listing = try? listDirectory(at: folder, fileManager: fileManager) else { continue }
+            var hasText = false
+            for item in listing.all where !isDirectory(item, fileManager: fileManager) {
+                guard let kind = MediaResolver.classify(item.lastPathComponent) else { continue }
+                switch kind {
+                case .text:
+                    hasText = true
+                case .image, .animatedImage:
+                    images += 1
+                case .video, .audio:
+                    videos += 1
+                }
+            }
+            if hasText { textChapters += 1 }
+        }
+
+        return BookProfile(sampledChapters: sample.count,
+                           textChapters: textChapters,
+                           images: images,
+                           videos: videos)
     }
 }

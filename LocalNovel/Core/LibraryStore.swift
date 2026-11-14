@@ -40,6 +40,7 @@ final class LibraryStore: ObservableObject {
 
     init(animatedDetector: @escaping (URL) -> Bool = FrameDetector.isAnimated) {
         self.animatedDetector = animatedDetector
+        loadCategoryOverrides()
     }
 
     var hiddenChapterCount: Int { ProgressStore.shared.hiddenChapterCount }
@@ -303,7 +304,8 @@ final class LibraryStore: ObservableObject {
         let books: [Book] = report.library.books.compactMap { book in
             let chapters = book.chapters.filter { !hidden.contains($0.id) }
             guard !chapters.isEmpty else { return nil }
-            return Book(folderURL: book.folderURL, title: book.title, chapters: chapters)
+            return Book(folderURL: book.folderURL, title: book.title,
+                        chapters: chapters, profile: book.profile)
         }
         self.library = Library(rootURL: report.library.rootURL, books: books)
         var line = buildDiagnosticsLine(root: root, report: report)
@@ -369,6 +371,62 @@ final class LibraryStore: ObservableObject {
         let value = TextLoader.paragraphs(text(for: chapter))
         paragraphCache[chapter.id] = value
         return value
+    }
+
+    // MARK: - 书库分类（小说 / 漫画 / 整理）
+
+    /// 手动分类覆盖：bookId（书文件夹路径）→ 分类。没有覆盖项时按内容自动判定。
+    @Published private(set) var categoryOverrides: [String: BookCategory] = [:]
+
+    private static let categoryKey = "library.bookCategories.v1"
+
+    private func loadCategoryOverrides() {
+        let raw = UserDefaults.standard.dictionary(forKey: Self.categoryKey) as? [String: String] ?? [:]
+        var map: [String: BookCategory] = [:]
+        for (bookId, value) in raw {
+            if let category = BookCategory(rawValue: value) { map[bookId] = category }
+        }
+        categoryOverrides = map
+    }
+
+    private func persistCategoryOverrides() {
+        let raw = categoryOverrides.reduce(into: [String: String]()) { $0[$1.key] = $1.value.rawValue }
+        UserDefaults.standard.set(raw, forKey: Self.categoryKey)
+    }
+
+    /// 实际生效的分类：手动指定优先，否则自动判定
+    func category(for book: Book) -> BookCategory {
+        categoryOverrides[book.id] ?? BookCategoryRule.auto(book.profile)
+    }
+
+    /// 纯自动判定结果（用于菜单里显示「恢复自动判定」会变成哪一类）
+    func autoCategory(for book: Book) -> BookCategory {
+        BookCategoryRule.auto(book.profile)
+    }
+
+    func hasManualCategory(for book: Book) -> Bool {
+        categoryOverrides[book.id] != nil
+    }
+
+    /// 传 nil 表示清除手动指定、恢复自动判定
+    func setCategory(_ category: BookCategory?, for book: Book) {
+        if let category {
+            categoryOverrides[book.id] = category
+        } else {
+            categoryOverrides.removeValue(forKey: book.id)
+        }
+        persistCategoryOverrides()
+    }
+
+    func books(_ books: [Book], in category: BookCategory?) -> [Book] {
+        guard let category else { return books }
+        return books.filter { self.category(for: $0) == category }
+    }
+
+    func categoryCounts(_ books: [Book]) -> [BookCategory: Int] {
+        var counts: [BookCategory: Int] = [:]
+        for book in books { counts[category(for: book), default: 0] += 1 }
+        return counts
     }
 
     func ignoredHint(for chapter: Chapter) -> String? {

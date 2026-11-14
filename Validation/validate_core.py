@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import sys
+import tempfile
 import unicodedata
 from dataclasses import dataclass, field
 from functools import cmp_to_key
@@ -227,6 +228,43 @@ def scan_with_diagnostics(root: Path):
     return ("singleBook", [root.name], [c.raw_name for c in chapters])
 
 
+def book_profile(book_folder: Path, sample_limit=3):
+    """对齐 Swift BookScanner.makeProfile：采样前几章，统计正文/图片/音视频。"""
+    chapters = subdirectories(book_folder)[:sample_limit]
+    text_chapters = images = videos = 0
+    for ch in chapters:
+        has_text = False
+        for f in ch.iterdir():
+            if f.is_dir() or is_hidden(f.name):
+                continue
+            kind = classify(f.name)
+            if kind == "text":
+                has_text = True
+            elif kind == "image":
+                images += 1
+            elif kind in ("video", "audio"):
+                videos += 1
+        if has_text:
+            text_chapters += 1
+    return {"sampled_chapters": len(chapters), "text_chapters": text_chapters,
+            "images": images, "videos": videos}
+
+
+def auto_category(p):
+    """对齐 Swift BookCategoryRule.auto。"""
+    if p["sampled_chapters"] == 0:
+        return "organized"
+    ipc = p["images"] / p["sampled_chapters"]
+    tr = p["text_chapters"] / p["sampled_chapters"]
+    if p["text_chapters"] == 0:
+        return "comic" if p["images"] > 0 else "organized"
+    if ipc < 1.5:
+        return "novel"
+    if ipc >= 4 and tr < 0.5:
+        return "comic"
+    return "organized"
+
+
 # ---------------------------------------------------------------- 测试用例
 
 PASS, FAIL = [], []
@@ -390,6 +428,41 @@ def main():
         lone.mkdir()
         (lone / "随手.txt").write_text("x")
         check("F6 孤立文件不崩溃", best_root(lone / "随手.txt").is_dir())
+
+    print("\n== G. 书库分类：小说 / 漫画 / 整理 ==")
+    rule_cases = [
+        ("纯文字 → 小说", dict(sampled_chapters=3, text_chapters=3, images=0, videos=0), "novel"),
+        ("文字 + 少量配图 → 小说", dict(sampled_chapters=3, text_chapters=3, images=2, videos=0), "novel"),
+        ("无正文 + 有图 → 漫画", dict(sampled_chapters=3, text_chapters=0, images=45, videos=0), "comic"),
+        ("图多正文少 → 漫画", dict(sampled_chapters=4, text_chapters=1, images=24, videos=0), "comic"),
+        ("正文 + 每章插图 → 整理", dict(sampled_chapters=3, text_chapters=3, images=9, videos=1), "organized"),
+        ("正文 + 每章大量插图 → 整理", dict(sampled_chapters=3, text_chapters=3, images=30, videos=0), "organized"),
+        ("都没采到 → 整理", dict(sampled_chapters=0, text_chapters=0, images=0, videos=0), "organized"),
+        ("空章节 → 整理", dict(sampled_chapters=2, text_chapters=0, images=0, videos=0), "organized"),
+    ]
+    for label, prof, expect in rule_cases:
+        got = auto_category(prof)
+        check(label, got == expect, f"{got} != {expect}" if got != expect else "")
+
+    # 示例书：每章都有正文 + 序号插图 → 应判为「整理」（即原有类型）
+    sample_book = SAMPLE / "墨青山"
+    prof = book_profile(sample_book)
+    check("示例书采样到 3 章", prof["sampled_chapters"] == 3, str(prof))
+    check("示例书每章都有正文", prof["text_chapters"] == prof["sampled_chapters"], str(prof))
+    check("示例书有插图", prof["images"] > 0, str(prof))
+    check("示例书判为整理（原有图文混排类型）",
+          auto_category(prof) == "organized", auto_category(prof))
+
+    # 只有图片、没有正文的目录 → 漫画（建在临时目录里，不污染示例书）
+    with tempfile.TemporaryDirectory() as tmp:
+        comic_dir = Path(tmp) / "某漫画"
+        for ch in ("第1话", "第2话"):
+            (comic_dir / ch).mkdir(parents=True, exist_ok=True)
+            for i in range(1, 9):
+                (comic_dir / ch / f"{i}.png").write_bytes(b"x")
+        cprof = book_profile(comic_dir)
+        check("纯图片目录采样正确", cprof["text_chapters"] == 0 and cprof["images"] == 16, str(cprof))
+        check("纯图片目录判为漫画", auto_category(cprof) == "comic", auto_category(cprof))
 
     print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")
     if FAIL:

@@ -341,7 +341,7 @@ def main():
           and "DocumentsBootstrap.guideFileName" in resolver)
     check("切回前台补写说明文件", "DocumentsBootstrap.ensureVisibleInFilesApp()" in store)
     check("版本号提升以刷新系统元数据",
-          "<string>6</string>" in plist and "CURRENT_PROJECT_VERSION = 6" in pbx)
+          "<string>7</string>" in plist and "CURRENT_PROJECT_VERSION = 7" in pbx)
     check("UI 给出「文件 App 搜索本地小说」兜底路径",
           "搜索框搜「本地小说」" in welcome and "搜索「本地小说」" in store)
     check("AppIcon asset catalog（1024 + Contents.json）",
@@ -447,6 +447,35 @@ def main():
     check("章节列表渲染取最新扫描结果（删除后不再显示旧快照）",
           "private var currentBook: Book?" in chapters
           and "library.library?.books.first" in chapters)
+
+    print("\n== J. 书库分类：小说 / 漫画 / 整理 ==")
+    models = (APP / "Core" / "LibraryModels.swift").read_text(encoding="utf-8")
+    scanner = (APP / "Core" / "BookScanner.swift").read_text(encoding="utf-8")
+    sidebar = (APP / "Views" / "LibrarySidebar.swift").read_text(encoding="utf-8")
+    check("分类枚举三档：小说 / 漫画 / 整理",
+          "enum BookCategory" in models
+          and all(f'return "{v}"' in models for v in ("小说", "漫画", "整理")))
+    check("「整理」定义为原有图文混排类型", "图文混排" in models)
+    check("自动判定规则：无正文有图→漫画，图少→小说，其余→整理",
+          "enum BookCategoryRule" in models
+          and "textChapters == 0" in models and "imagesPerChapter < 1.5" in models
+          and "return .organized" in models)
+    check("书带内容画像，扫描器采样前几章统计",
+          "let profile: BookProfile" in models
+          and "makeProfile(chapterFolders:" in scanner
+          and "profileSampleLimit = 3" in scanner)
+    check("手动分类覆盖可持久化，可恢复自动判定",
+          "categoryOverrides" in store and "library.bookCategories.v1" in store
+          and "func setCategory" in store and "hasManualCategory" in store)
+    check("书库顶部有四档筛选，按分类过滤列表",
+          "enum CatalogFilter" in sidebar and "pickerStyle(.segmented)" in sidebar
+          and "library.books(lib.books, in: filter.category)" in sidebar)
+    check("每本书显示分类标签，可一键改分类",
+          "library.category(for: book)" in sidebar
+          and "Label(category.label, systemImage: category.symbol)" in sidebar
+          and "恢复自动判定" in sidebar)
+    check("分类下没有书时给出可操作空态",
+          "ContentUnavailableView" in sidebar and "查看全部" in sidebar)
 
     print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")
     if FAIL:

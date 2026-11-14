@@ -2,6 +2,44 @@ import SwiftUI
 
 // MARK: - 第一栏：书库（一个作者文件夹 = 一本书）
 // iPhone 折叠模式下这一栏就是第一屏，状态与导入入口必须都在这里大字可见。
+// 分类：小说 / 漫画 / 整理（整理 = 原有的图文混排作者文件夹）。
+
+/// 顶部分类筛选
+private enum CatalogFilter: String, CaseIterable, Identifiable {
+    case all
+    case novel
+    case comic
+    case organized
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .all: return "全部"
+        case .novel: return "小说"
+        case .comic: return "漫画"
+        case .organized: return "整理"
+        }
+    }
+
+    var category: BookCategory? {
+        switch self {
+        case .all: return nil
+        case .novel: return .novel
+        case .comic: return .comic
+        case .organized: return .organized
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .all: return "books.vertical"
+        case .novel: return BookCategory.novel.symbol
+        case .comic: return BookCategory.comic.symbol
+        case .organized: return BookCategory.organized.symbol
+        }
+    }
+}
 
 struct LibrarySidebar: View {
     @EnvironmentObject private var library: LibraryStore
@@ -10,25 +48,19 @@ struct LibrarySidebar: View {
     @State private var pendingDelete: Book?
     @State private var resultMessage: String?
     @State private var showSettings = false
+    @State private var filter: CatalogFilter = .all
 
     var body: some View {
         Group {
             if let lib = library.library, !lib.books.isEmpty {
-                List(lib.books, id: \.id, selection: $selection) { book in
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(book.title)
-                            .font(.headline)
-                        Text("\(book.chapters.count) 章")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.vertical, 4)
-                    .tag(book)
-                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                        Button(role: .destructive) {
-                            pendingDelete = book
-                        } label: {
-                            Label("删除", systemImage: "trash")
+                VStack(spacing: 0) {
+                    filterBar
+                    let shown = library.books(lib.books, in: filter.category)
+                    if shown.isEmpty {
+                        filteredEmptyState
+                    } else {
+                        List(shown, id: \.id, selection: $selection) { book in
+                            row(book)
                         }
                     }
                 }
@@ -134,6 +166,99 @@ struct LibrarySidebar: View {
             Button("好", role: .cancel) { resultMessage = nil }
         } message: {
             Text(resultMessage ?? "")
+        }
+    }
+
+    // MARK: - 分类筛选
+
+    private var filterBar: some View {
+        Picker("分类", selection: $filter) {
+            ForEach(CatalogFilter.allCases) { item in
+                Text(item.label).tag(item)
+            }
+        }
+        .pickerStyle(.segmented)
+        .padding(.horizontal, 16)
+        .padding(.top, 6)
+        .padding(.bottom, 8)
+    }
+
+    private var filteredEmptyState: some View {
+        ContentUnavailableView {
+            Label("「\(filter.label)」下还没有书", systemImage: filter.symbol)
+        } description: {
+            let hint = filter.category?.hint ?? ""
+            let tip = "长按书名，或点书名右侧的标签，就能把书改成这个分类。"
+            Text(hint.isEmpty ? tip : hint + "\n" + tip)
+        } actions: {
+            Button("查看全部") { filter = .all }
+                .buttonStyle(.borderedProminent)
+        }
+    }
+
+    // MARK: - 单行
+
+    private func row(_ book: Book) -> some View {
+        let category = library.category(for: book)
+        return HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(book.title)
+                    .font(.headline)
+                HStack(spacing: 5) {
+                    Label(category.label, systemImage: category.symbol)
+                    Text("·")
+                    Text("\(book.chapters.count) 章")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+            Menu {
+                categoryItems(book)
+            } label: {
+                Image(systemName: "tag")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 34, height: 30)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("修改《\(book.title)》的分类")
+        }
+        .padding(.vertical, 4)
+        .tag(book)
+        .contextMenu {
+            Section("分类") { categoryItems(book) }
+        }
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button(role: .destructive) {
+                pendingDelete = book
+            } label: {
+                Label("删除", systemImage: "trash")
+            }
+        }
+    }
+
+    /// 分类菜单：三个分类 + （手动指定过时）恢复自动判定
+    @ViewBuilder
+    private func categoryItems(_ book: Book) -> some View {
+        let current = library.category(for: book)
+        ForEach(BookCategory.allCases) { category in
+            Button {
+                library.setCategory(category, for: book)
+            } label: {
+                Label(category == current ? "\(category.label)（当前）" : category.label,
+                      systemImage: category.symbol)
+            }
+        }
+        if library.hasManualCategory(for: book) {
+            Divider()
+            Button {
+                library.setCategory(nil, for: book)
+            } label: {
+                Label("恢复自动判定（\(library.autoCategory(for: book).label)）",
+                      systemImage: "arrow.uturn.backward")
+            }
         }
     }
 }
