@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 struct RootView: View {
     @EnvironmentObject private var library: LibraryStore
     @EnvironmentObject private var prefs: Preferences
+    @Environment(\.scenePhase) private var scenePhase
 
     @State private var selectedBook: Book?
     @State private var selectedChapter: Chapter?
@@ -27,34 +28,33 @@ struct RootView: View {
         .navigationSplitViewStyle(.balanced)
         .preferredColorScheme(prefs.isDarkMode ? .dark : .light)
         .onAppear { library.restore() }
-        .fileImporter(
-            isPresented: Binding(
-                get: { library.isImporting },
-                set: { library.isImporting = $0 }
-            ),
-            allowedContentTypes: [.folder],
-            allowsMultipleSelection: false
-        ) { result in
-            library.handleImport(result)
-            selectedBook = nil
-            selectedChapter = nil
+        // 每次切回前台自动补扫 App 文档目录：书放进去后回到 App 即出现，零点击
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { library.refreshOnForeground() }
         }
+        // 全工程【唯一】一个 fileImporter：多个同类弹层叠加会互相冲突、两个都弹不出来
         .fileImporter(
             isPresented: Binding(
-                get: { library.isFileImporting },
-                set: { library.isFileImporting = $0 }
+                get: { library.activeImport != nil },
+                set: { if !$0 { library.activeImport = nil } }
             ),
-            allowedContentTypes: [.item],
+            allowedContentTypes: library.activeImport == .folder ? [.folder] : [.item],
             allowsMultipleSelection: false
         ) { result in
-            library.handleFileImport(result)
+            let mode = library.activeImport
+            library.activeImport = nil
+            if mode == .folder {
+                library.handleImport(result)
+            } else {
+                library.handleFileImport(result)
+            }
             selectedBook = nil
             selectedChapter = nil
         }
     }
 }
 
-// MARK: - 首次使用引导 / 导入诊断
+// MARK: - 首次使用引导 / 导入诊断（大字、放在主体可视区）
 
 struct WelcomeView: View {
     @EnvironmentObject private var library: LibraryStore
@@ -75,15 +75,15 @@ struct WelcomeView: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: 520)
 
-                // iOS 上 .folder 目录选择器要求「选中一个文件夹项目」，
-                // 只浏览到某一层直接点「打开」不会返回目录（表现为点了没反应、也没提示）。
-                VStack(alignment: .leading, spacing: 8) {
-                    Label("如何添加书籍", systemImage: "hand.tap.fill")
+                // 零交互主路径：不依赖任何系统选择器
+                VStack(alignment: .leading, spacing: 10) {
+                    Label("最省事：把书放进 App 文档目录", systemImage: "star.fill")
                         .font(.headline)
-                    Text("推荐：点「选择书库内任意文件」→ 进入书库，选中任意章节里的 txt / 图片 / 视频 → 点「打开」，App 会自动向上找到整个书库。\n"
-                       + "备选：选文件夹时，在 iOS 上必须【点选一个文件夹】再点「打开」；只浏览到某一层直接点「打开」，系统不会返回目录。\n"
-                       + "免授权：把书放进「文件」App → 我的 iPhone → 本地小说，再点「改用 App 文档目录里的书」。")
-                        .font(.footnote)
+                    Text("1. 打开「文件」App → 我的 iPhone → 本地小说\n"
+                       + "2. 把【作者文件夹】整个复制进去（里面是章节文件夹）\n"
+                       + "3. 回到本 App —— 书会自动出现，无需点任何按钮、无需授权\n\n"
+                       + "提示：放的是作者文件夹本身，不要再多包一层「书」文件夹。")
+                        .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -91,37 +91,13 @@ struct WelcomeView: View {
                 .frame(maxWidth: 520, alignment: .leading)
                 .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 12))
 
-                Button {
-                    library.noteImportStarted("选择书库内任意文件")
-                    library.isFileImporting = true
-                } label: {
-                    Label("选择书库内任意文件（推荐）", systemImage: "doc.badge.plus")
+                // 当前状态：大字号显示，不再藏在底部小灰字
+                if let headline = library.headline {
+                    Text(headline)
+                        .font(.title3.bold())
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 520)
                 }
-                .buttonStyle(.borderedProminent)
-
-                Button {
-                    library.noteImportStarted("选择书库目录")
-                    library.isImporting = true
-                } label: {
-                    Label(library.library?.books.isEmpty == false ? "重新选择书库目录" : "选择书库目录（文件夹）",
-                          systemImage: "folder.badge.plus")
-                }
-                .font(.footnote)
-
-                // 零权限兜底：把书放进「文件」App → 我的 iPhone → 本地小说
-                Button {
-                    library.useAppDocuments()
-                } label: {
-                    Label("改用 App 文档目录里的书（免授权）", systemImage: "doc.text.magnifyingglass")
-                }
-                .font(.footnote)
-
-                Text("若外部目录始终读不到，可在「文件」App → 我的 iPhone → 本地小说 中放入作者文件夹，再点上方的按钮，无需任何目录授权。")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 500)
-
                 if let info = library.diagnostics {
                     Label(info, systemImage: "info.circle")
                         .font(.footnote)
@@ -131,10 +107,9 @@ struct WelcomeView: View {
                         .padding(10)
                         .background(.blue.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
                 }
-
                 if let message = library.errorMessage {
                     Label(message, systemImage: "exclamationmark.triangle")
-                        .font(.footnote)
+                        .font(.callout)
                         .foregroundStyle(.red)
                         .multilineTextAlignment(.center)
                         .frame(maxWidth: 520)
@@ -142,9 +117,34 @@ struct WelcomeView: View {
                         .background(.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
                 }
 
+                HStack(spacing: 12) {
+                    Button {
+                        library.noteImportStarted(ImportMode.file.label)
+                        library.activeImport = .file
+                    } label: {
+                        Label("选择书库内任意文件", systemImage: "doc.badge.plus")
+                    }
+                    .buttonStyle(.borderedProminent)
+
+                    Button {
+                        library.noteImportStarted(ImportMode.folder.label)
+                        library.activeImport = .folder
+                    } label: {
+                        Label("选择书库目录（文件夹）", systemImage: "folder.badge.plus")
+                    }
+                    .buttonStyle(.bordered)
+                }
+
+                Button {
+                    library.useAppDocuments()
+                } label: {
+                    Label("重新读取 App 文档目录（免授权）", systemImage: "arrow.clockwise")
+                }
+                .font(.footnote)
+
                 if library.library?.books.isEmpty == false {
                     Label("已载入书库，从左侧选择一本书开始阅读。", systemImage: "checkmark.circle")
-                        .font(.footnote)
+                        .font(.callout)
                         .foregroundStyle(.green)
                 }
             }

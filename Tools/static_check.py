@@ -185,11 +185,12 @@ def main():
     check("部署目标 iOS 27", "IPHONEOS_DEPLOYMENT_TARGET = 27.0" in pbx)
     check("目标设备含 iPad", 'TARGETED_DEVICE_FAMILY = "1,2"' in pbx)
 
-    print("\n== F0. 书库导入健壮性（修复「能打开文件夹但加不进书」） ==")
+    print("\n== F0. 书库导入（零交互主路径 / 唯一选择器 / 醒目反馈） ==")
     scanner = (APP / "Core" / "BookScanner.swift").read_text(encoding="utf-8")
     access = (APP / "Core" / "RootFolderAccess.swift").read_text(encoding="utf-8")
     store = (APP / "Core" / "LibraryStore.swift").read_text(encoding="utf-8")
     welcome = (APP / "Views" / "RootView.swift").read_text(encoding="utf-8")
+    sidebar = (APP / "Views" / "LibrarySidebar.swift").read_text(encoding="utf-8")
     check("保留原 scan(rootURL:) 接口（单元测试兼容）",
           "static func scan(rootURL:" in scanner)
     check("新增带诊断的层级自动识别", "scanWithDiagnostics" in scanner)
@@ -204,24 +205,43 @@ def main():
           "try? url.bookmarkData" in access
           and "try RootFolderAccess.shared.saveRootFolder" not in store)
     check("handleImport 直接用仍持有访问权的原 URL 扫描",
-          "saveRootFolder(url)" in store and "rebuild(root: root)" in store)
+          "saveRootFolder(url)" in store and "apply(" in store)
     check("书签未持久化时有可见提示",
           "hasSavedRoot()" in store and "权限未能持久化" in store)
-    check("新增「选文件」导入通道（UTType.item，绕开 .folder 兼容问题）",
-          "[.item]" in welcome and "isFileImporting" in store
+    check("选文件通道由 bestRoot 反推书库根",
+          "static func bestRoot(from" in scanner and "BookScanner.bestRoot" in store
           and "handleFileImport" in store)
-    check("由选中文件反推书库根",
-          "static func bestRoot(from" in scanner and "BookScanner.bestRoot" in store)
-    check("点导入按钮瞬间即有可见反馈（不再「无任何提示」）",
-          "noteImportStarted" in store and "noteImportStarted" in welcome)
+    check("点导入按钮瞬间即有醒目反馈（不再「无任何提示」）",
+          "noteImportStarted" in store and "noteImportStarted" in welcome
+          and "headline =" in store and "library.headline" in welcome)
     check("iPhone 第一屏可见三种导入方式",
-          all(t in (APP / "Views" / "LibrarySidebar.swift").read_text(encoding="utf-8")
-              for t in ["选择书库内任意文件", "选择书库目录", "App 文档目录（免授权）"]))
-    check("UI 明确引导 iOS 选目录须点选文件夹、并推荐选文件方式",
-          "点选一个文件夹" in welcome and "选择书库内任意文件" in welcome)
+          all(t in sidebar for t in ["选择书库内任意文件", "选择书库目录", "App 文档目录（免授权）"]))
+    check("UI 明确引导零交互路径（文件 App → 本地小说）",
+          "我的 iPhone → 本地小说" in welcome and "选择书库内任意文件" in welcome)
     check("提供 App 文档目录零权限兜底", "useAppDocuments" in store and "usingAppDocuments" in store)
     check("Info.plist 开启文件共享（文档目录可见）", "UIFileSharingEnabled" in plist)
-    check("诊断信息在 iPhone 第一栏也可见", "library.diagnostics" in (APP / "Views" / "LibrarySidebar.swift").read_text(encoding="utf-8"))
+    check("诊断信息在 iPhone 第一栏也可见", "library.diagnostics" in sidebar)
+
+    # ---- 本轮根因：多个 fileImporter 叠加 / 反馈不可见 ----
+    check("全工程【唯一】一个 .fileImporter（多个叠加会都不弹出）",
+          code_only.count(".fileImporter(") == 1,
+          f"实到 {code_only.count('.fileImporter(')} 个")
+    check("单选择器由 activeImport 驱动，按模式切换 .folder / .item",
+          "enum ImportMode" in store and "activeImport" in store
+          and "activeImport" in welcome
+          and "[.item]" in welcome and "[.folder]" in welcome)
+    check("不再残留 isImporting / isFileImporting 双开关",
+          "isImporting" not in code_only and "isFileImporting" not in code_only)
+    check("切回前台自动补扫 App 文档目录（零点击出书）",
+          "refreshOnForeground" in store and "scenePhase" in welcome
+          and ".onChange(of: scenePhase)" in welcome)
+    check("restore 优先扫 App 文档目录、外部书签不 return 死锁",
+          "appDocumentsURL()" in store and "docsReport" in store
+          and "restoreRootFolder()" in store)
+    check("空态大字状态取代底部极小灰字",
+          "headline" in store and "library.headline" in sidebar
+          and "EmptyLibraryState" in sidebar
+          and "caption2" not in strip_non_code(sidebar))
 
     print("\n== F. 全屏图片 / 视频全屏 / 长按倍速 ==")
     gallery = (APP / "Views" / "MediaGalleryView.swift").read_text(encoding="utf-8")

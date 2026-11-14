@@ -63,7 +63,8 @@ struct SettingsView: View {
 
                 Section("书库") {
                     Button("重新选择书库目录") {
-                        library.isImporting = true
+                        library.noteImportStarted(ImportMode.file.label)
+                        library.activeImport = .file
                         dismiss()
                     }
                 }
