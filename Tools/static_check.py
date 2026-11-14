@@ -1,0 +1,222 @@
+#!/usr/bin/env python3
+"""S6 静态自检（沙箱无 Xcode，无法编译 Swift，故做力所能及的静态检查）。
+检查项：括号配对、框架 import 完整性、自定义类型定义、网络/后台能力、
+       Info.plist 权限、pbxproj 结构、工程文件齐全。
+"""
+from pathlib import Path
+import re
+import sys
+
+ROOT = Path(__file__).resolve().parent.parent
+APP = ROOT / "LocalNovel"
+TESTS = ROOT / "LocalNovelTests"
+
+PASS, FAIL = [], []
+
+
+def check(name, cond, detail=""):
+    (PASS if cond else FAIL).append(name)
+    print(f"  [{'PASS' if cond else 'FAIL'}] {name}" + (f"  -> {detail}" if detail else ""))
+
+
+def strip_non_code(src: str) -> str:
+    """去掉字符串字面量与注释，保留换行，避免括号统计被内容干扰"""
+    out, i, state = [], 0, "code"
+    while i < len(src):
+        c = src[i]
+        nxt = src[i + 1] if i + 1 < len(src) else ""
+        if state == "code":
+            if c == "/" and nxt == "/":
+                state, i = "line", i + 2
+                out.append("  ")
+            elif c == "/" and nxt == "*":
+                state, i = "block", i + 2
+                out.append("  ")
+            elif c == '"':
+                state, i = "string", i + 1
+                out.append(" ")
+            else:
+                out.append(c)
+                i += 1
+        elif state == "line":
+            if c == "\n":
+                state = "code"
+                out.append("\n")
+            else:
+                out.append(" ")
+            i += 1
+        elif state == "block":
+            if c == "*" and nxt == "/":
+                state, i = "code", i + 2
+                out.append("  ")
+            else:
+                out.append("\n" if c == "\n" else " ")
+                i += 1
+        else:  # string
+            if c == "\\":
+                out.append("  ")
+                i += 2
+            elif c == '"':
+                state, i = "code", i + 1
+                out.append(" ")
+            else:
+                out.append("\n" if c == "\n" else " ")
+                i += 1
+    return "".join(out)
+
+
+def balanced(src: str) -> bool:
+    pairs = {")": "(", "]": "[", "}": "{"}
+    stack = []
+    for c in src:
+        if c in "([{":
+            stack.append(c)
+        elif c in ")]}":
+            if not stack or stack.pop() != pairs[c]:
+                return False
+    return not stack
+
+
+NEEDS_IMPORT = {
+    "UIImage": "UIKit", "UIView": "UIKit", "UIImageView": "UIKit",
+    "UIScrollView": "UIKit", "UIScrollViewDelegate": "UIKit",
+    "UITapGestureRecognizer": "UIKit", "UIColor": "UIKit",
+    "UILongPressGestureRecognizer": "UIKit", "UIGestureRecognizer": "UIKit",
+    "UIGestureRecognizerDelegate": "UIKit",
+    "AVPlayerViewController": "AVKit",
+    "NSObject": "Foundation",
+    "CADisplayLink": "QuartzCore",
+    "CGImageSource": "ImageIO", "kCGImageSource": "ImageIO", "kCGImageProperty": "ImageIO",
+    "AVPlayer": "AVFoundation", "AVPlayerItem": "AVFoundation",
+    "AVPlayerLayer": "AVFoundation", "AVAudioSession": "AVFoundation", "CMTime": "AVFoundation",
+    "CFStringEncodings": "CoreFoundation", "CFStringConvertEncoding": "CoreFoundation",
+    "NSRegularExpression": "Foundation", "FileManager": "Foundation",
+    "UserDefaults": "Foundation", "NSString": "Foundation", "NSCache": "Foundation",
+    "XCTAssert": "XCTest", "XCTestCase": "XCTest",
+    "@main": "SwiftUI", "WindowGroup": "SwiftUI", "@StateObject": "SwiftUI",
+    "@EnvironmentObject": "SwiftUI", "@Published": "SwiftUI", "UIViewRepresentable": "SwiftUI",
+    "NavigationSplitView": "SwiftUI", "ContentUnavailableView": "SwiftUI",
+    "LazyVStack": "SwiftUI", "ScrollViewReader": "SwiftUI", "TabView": "SwiftUI",
+}
+
+EXPECTED_TYPES = [
+    "MediaKind", "MediaItem", "Chapter", "ChapterContent", "Book", "Library",
+    "NaturalSort", "MediaResolver", "ChapterTitleCleaner", "BookScanner", "TextLoader",
+    "RootFolderAccess", "LibraryStore", "Preferences", "ProgressStore",
+    "FrameDetector", "ImageLoader", "AnimatedFrame", "AnimatedFrameCache",
+    "AnimatedFrameView", "AnimatedImageView", "LocalMediaPlayer",
+    "PlayerContainerView", "PlayerLayerView", "MediaAttachmentView",
+    "InlineMediaView", "MediaGalleryView", "ReaderView", "RootView", "WelcomeView",
+    "LibrarySidebar", "ChapterListView", "SettingsView", "LocalNovelApp",
+    "RateBoostGesture", "RateBoostCoordinator", "AudioSurfaceView",
+    "ZoomableImageView", "FullscreenVideoView", "FullscreenPlayerHost",
+]
+
+NETWORK_PATTERNS = [
+    "URLSession", "http://", "https://", "NSAppTransportSecurity",
+    "Alamofire", "URLRequest", "WebSocket", "Network.framework",
+]
+
+
+def main():
+    swift_files = sorted(list(APP.rglob("*.swift")) + list(TESTS.rglob("*.swift")))
+    all_text = {p: p.read_text(encoding="utf-8") for p in swift_files}
+
+    print("\n== A. Swift 源码结构 ==")
+    check("Swift 文件数 >= 24", len(swift_files) >= 24, f"{len(swift_files)} 个")
+    bad_balance = [p.name for p, s in all_text.items() if not balanced(strip_non_code(s))]
+    check("括号配对（已剔除字符串/注释）", not bad_balance, str(bad_balance))
+    main_count = sum(1 for s in all_text.values() if "@main" in s)
+    check("恰好一个 @main 入口", main_count == 1, str(main_count))
+
+    print("\n== B. 框架 import 完整性 ==")
+    missing_imports = []
+    for p, src in all_text.items():
+        imports = re.findall(r"^import\s+(\w+)", src, re.M)
+        code = strip_non_code(src)
+        for token, framework in NEEDS_IMPORT.items():
+            if token in code and framework not in imports:
+                missing_imports.append(f"{p.name}: {token} 需要 {framework}")
+    check("所有框架符号都有 import", not missing_imports, "; ".join(missing_imports[:5]))
+
+    print("\n== C. 自定义类型定义 ==")
+    defined = set()
+    for s in all_text.values():
+        defined |= set(re.findall(r"^\s*(?:public\s+|private\s+|fileprivate\s+)?(?:final\s+)?(?:struct|enum|class|protocol)\s+(\w+)", s, re.M))
+        defined |= set(re.findall(r"^\s*(?:struct|enum|class)\s+(\w+)", s, re.M))
+    missing_types = [t for t in EXPECTED_TYPES if t not in defined]
+    check("关键类型均已定义", not missing_types, str(missing_types))
+
+    print("\n== D. 离线 / 无后台能力 ==")
+    combined = "\n".join(all_text.values())
+    hits = [p for p in NETWORK_PATTERNS if p in combined]
+    check("Swift 源码无网络调用", not hits, str(hits))
+    plist = (APP / "Info.plist").read_text(encoding="utf-8")
+    check("Info.plist 无 ATS 例外", "NSAppTransportSecurity" not in plist)
+    check("Info.plist 无后台模式", "UIBackgroundModes" not in plist)
+    check("Info.plist 声明 iPad 多窗口", "UIApplicationSupportsMultipleScenes" in plist)
+    check("Info.plist 含 UISceneConfigurations（避免黑屏）", "UISceneConfigurations" in plist)
+    code_only = "\n".join(strip_non_code(s) for s in all_text.values())
+    check("iOS 端未误用 macOS 专属的 withSecurityScope（仅检查代码）",
+          "withSecurityScope" not in code_only)
+    check("未使用第三方依赖", all("import " + m not in combined for m in ["SDWebImage", "Alamofire", "Kingfisher", "SwiftUIX"]))
+
+    print("\n== E. 工程文件 ==")
+    proj = ROOT / "LocalNovel.xcodeproj"
+    need = [
+        proj / "project.pbxproj",
+        proj / "project.xcworkspace" / "contents.xcworkspacedata",
+        proj / "xcshareddata" / "xcschemes" / "LocalNovel.xcscheme",
+        APP / "Info.plist",
+        TESTS / "CoreLogicTests.swift",
+        ROOT / "SampleBook",
+        ROOT / "Validation" / "validate_core.py",
+        ROOT / "Tools" / "build_unsigned_ipa.sh",
+        ROOT / "Tools" / "check_ipa_readiness.py",
+        ROOT / "Tools" / "upload_and_build.sh",
+        ROOT / ".github" / "workflows" / "build-unsigned-ipa.yml",
+    ]
+    check("工程关键文件齐全", all(p.exists() for p in need),
+          str([str(p.relative_to(ROOT)) for p in need if not p.exists()]))
+    pbx = (proj / "project.pbxproj").read_text(encoding="utf-8")
+    check("pbxproj 花括号配对", pbx.count("{") == pbx.count("}"))
+    check("pbxproj 使用同步组（免逐文件登记）", "PBXFileSystemSynchronizedRootGroup" in pbx)
+    check("部署目标 iOS 27", "IPHONEOS_DEPLOYMENT_TARGET = 27.0" in pbx)
+    check("目标设备含 iPad", 'TARGETED_DEVICE_FAMILY = "1,2"' in pbx)
+
+    print("\n== F. 全屏图片 / 视频全屏 / 长按倍速 ==")
+    gallery = (APP / "Views" / "MediaGalleryView.swift").read_text(encoding="utf-8")
+    check("图片以 fullScreenCover 沉浸式全屏呈现", "fullScreenCover(item:" in code_only)
+    check("全屏画廊纯黑底、无常驻白色导航栏",
+          "Color.black" in gallery and "NavigationStack" not in gallery)
+    check("静态图支持捏合 / 双击缩放",
+          "ZoomableImageView" in code_only and "viewForZooming" in code_only)
+    check("动图在全屏下逐帧播放且可双击放大",
+          "AnimatedImageView" in gallery and "scaleEffect" in gallery)
+    check("内联插图有「可全屏」角标提示",
+          "arrow.up.left.and.arrow.down.right" in combined)
+    check("视频全屏使用系统 AVPlayerViewController", "AVPlayerViewController" in code_only)
+    check("全屏与内联共享同一个 AVPlayer（无缝续播）", "controller.player" in code_only)
+    check("全屏期间卸载内联播放层，避免抢渲染", "isFullscreen" in code_only)
+    check("关闭全屏时收掉倍速状态", "onDismiss:" in code_only)
+    check("画中画保持关闭（不后台播放）", "allowsPictureInPicturePlayback = false" in code_only)
+    check("长按倍速基于 UIKit began/ended 精确控制",
+          "UILongPressGestureRecognizer" in code_only
+          and "case .began" in code_only and ".ended" in code_only)
+    check("长按倍速写入 player.rate 并在松手还原", "player.rate" in code_only)
+    check("长按倍速档位可在设置中调整",
+          "longPressRate" in code_only and 'Picker("长按倍速"' in combined)
+    check("音频面板也支持长按倍速", "AudioSurfaceView" in code_only)
+    check("未申请任何新系统能力（仍零权限）",
+          "UIBackgroundModes" not in plist and "NSAppTransportSecurity" not in plist)
+
+    print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")
+    if FAIL:
+        print("失败项：" + ", ".join(FAIL))
+        return 1
+    print("S6 静态自检通过（注意：Swift 编译仍需你在 Xcode 27 上执行）。")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

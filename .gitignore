@@ -1,0 +1,13 @@
+# 构建产物（CI 会通过 upload-artifact 单独提供 ipa）
+build/
+DerivedData/
+*.xcarchive
+*.ipa
+*.xcresult
+.DS_Store
+__pycache__/
+*.pyc
+
+# 隐私提醒：真实书库文件（作者文件夹 / TXT / 图片 / 视频 / 音频）
+# 永远不要放进这个仓库。CI 只需要工程源码，不接触你的阅读内容。
+# SampleBook/ 是脚本生成的示例素材，可保留。

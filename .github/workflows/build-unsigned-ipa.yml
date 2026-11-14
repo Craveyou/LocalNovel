@@ -1,0 +1,92 @@
+# 云端编译【未签名】ipa：无需本地 Mac，CI 从不接触 Apple 账号或你的书库文件。
+# 触发：push 到 main，或在 Actions 页手动 Run workflow。
+# 产物：Actions 运行页的 Artifacts → LocalNovel-unsigned-ipa，下载后自己重签。
+#
+# 工程部署目标是 iOS 27，因此必须选带 Xcode 27 的镜像：
+#   - 默认 macos-26（GitHub 托管镜像，公开仓库免费额度更宽松）
+#   - 若该镜像里没有 Xcode 27，手动运行时把 runner 填成 xcode-27 或 xcode-27-xlarge
+# 参考 GitHub 官方镜像清单：https://github.com/actions/virtual-environments
+
+name: 构建未签名 IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: 'macOS runner 标签（找不到 Xcode 27 时改填 xcode-27）'
+        required: false
+        default: 'macos-26'
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ${{ github.event.inputs.runner || 'macos-26' }}
+    timeout-minutes: 30
+
+    steps:
+      - name: 检出工程
+        uses: actions/checkout@v4
+
+      - name: 选择 Xcode 27 并断言 SDK 版本
+        run: |
+          set -euo pipefail
+          echo "镜像内可用 Xcode："
+          ls -1 /Applications | grep '^Xcode' || true
+          CANDIDATE="$(ls -d /Applications/Xcode_27*.app 2>/dev/null | sort -V | tail -1 || true)"
+          if [ -z "$CANDIDATE" ]; then
+            CANDIDATE="$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1 || true)"
+          fi
+          [ -n "$CANDIDATE" ] || { echo "::error::镜像里没有 Xcode"; exit 1; }
+          sudo xcode-select -s "$CANDIDATE/Contents/Developer"
+          xcodebuild -version
+          MAJOR="$(xcodebuild -version | awk 'NR==1{print $2}' | cut -d. -f1)"
+          [ "$MAJOR" -ge 27 ] || {
+            echo "::error::需要 Xcode 27+（IPHONEOS_DEPLOYMENT_TARGET = 27.0），当前 $(xcodebuild -version | head -1)。请把 runner 改为 xcode-27。"
+            exit 1
+          }
+          xcodebuild -showsdks | grep -i iphoneos
+
+      - name: 检查工程打包就绪
+        run: python3 Tools/check_ipa_readiness.py
+
+      - name: 编译未签名 archive
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project LocalNovel.xcodeproj \
+            -scheme LocalNovel \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -sdk iphoneos \
+            -archivePath "$RUNNER_TEMP/LocalNovel.xcarchive" \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            DEVELOPMENT_TEAM="" \
+            PROVISIONING_PROFILE="" \
+            PROVISIONING_PROFILE_SPECIFIER="" \
+            clean archive
+
+      - name: 打包未签名 ipa
+        run: |
+          set -euo pipefail
+          APP="$RUNNER_TEMP/LocalNovel.xcarchive/Products/Applications/LocalNovel.app"
+          test -d "$APP"
+          test -f "$APP/LocalNovel"
+          file "$APP/LocalNovel" | grep -q arm64
+          rm -rf "$RUNNER_TEMP/ipa"
+          mkdir -p "$RUNNER_TEMP/ipa/Payload"
+          ditto "$APP" "$RUNNER_TEMP/ipa/Payload/LocalNovel.app"
+          (cd "$RUNNER_TEMP/ipa" && zip -q -r "$GITHUB_WORKSPACE/LocalNovel-unsigned.ipa" Payload)
+          echo "== ipa 内容 =="
+          unzip -l "$GITHUB_WORKSPACE/LocalNovel-unsigned.ipa" | head -14
+          ls -lh "$GITHUB_WORKSPACE/LocalNovel-unsigned.ipa"
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: LocalNovel-unsigned-ipa
+          path: LocalNovel-unsigned.ipa
+          retention-days: 14
+          if-no-files-found: error
