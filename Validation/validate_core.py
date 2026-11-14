@@ -382,7 +382,7 @@ def split_text(text: str):
         pos += len(line)
         bare = line.strip()
         if bare and len(bare) <= 48 and HEADING_RE.match(bare):
-            headings.append((re.sub(r"  +", " ", bare), line_start))
+            headings.append((re.sub(r"  +", " ", bare), line_start, pos))
 
     if len(headings) < 2:
         return [("", 0, len(text))]
@@ -392,9 +392,13 @@ def split_text(text: str):
         head = text[:headings[0][1]]
         if head.strip():
             slices.append(("开篇", 0, headings[0][1]))
-    for i, (title, start) in enumerate(headings):
+    for i, (title, start, body_start) in enumerate(headings):
         end = headings[i + 1][1] if i + 1 < len(headings) else len(text)
-        slices.append((title or f"第 {i + 1} 章", start, end - start))
+        body_start = min(body_start, end)
+        if body_start < end:
+            slices.append((title or f"第 {i + 1} 章", body_start, end - body_start))
+        else:
+            slices.append((title or f"第 {i + 1} 章", start, end - start))
     return slices
 
 
@@ -600,6 +604,7 @@ def main():
           str([s[0] for s in slices]))
     first = full[slices[0][1]:slices[0][1] + slices[0][2]]
     check("第一章不含第二章正文", "长安城的春天" in first and "城门开了" not in first)
+    check("切片正文不再重复标题行", not first.lstrip().startswith("第一章"), first[:12])
 
     short_slices = split_text((SAMPLE / "小说" / "无章节的短篇.txt").read_text(encoding="utf-8"))
     check("无章节标题 → 整本一章", len(short_slices) == 1, str(short_slices))

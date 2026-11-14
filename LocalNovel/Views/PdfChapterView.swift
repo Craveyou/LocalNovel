@@ -114,7 +114,7 @@ private struct PdfPageView: View {
         }
         .task {
             guard image == nil else { return }
-            image = await PdfPageRenderer.shared.image(url: url, page: index, maxPixel: 1400)
+            image = await PdfPageRenderer.shared.image(url: url, page: index, maxPixel: 1200)
         }
     }
 }

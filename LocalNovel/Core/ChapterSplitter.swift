@@ -32,7 +32,7 @@ enum ChapterSplitter {
         let full = NSRange(location: 0, length: ns.length)
         guard ns.length > 0 else { return [Slice(title: "", range: full)] }
 
-        var headings: [(title: String, start: Int)] = []
+        var headings: [(title: String, start: Int, bodyStart: Int)] = []
         var index = 0
         while index < ns.length {
             let lineRange = ns.lineRange(for: NSRange(location: index, length: 0))
@@ -43,7 +43,9 @@ enum ChapterSplitter {
                headingPattern?.firstMatch(in: line,
                                           options: [],
                                           range: NSRange(location: 0, length: (line as NSString).length)) != nil {
-                headings.append((compact(line), lineRange.location))
+                headings.append((compact(line),
+                                 lineRange.location,
+                                 lineRange.location + lineRange.length))
             }
             let next = lineRange.location + lineRange.length
             if next <= index { break }
@@ -66,7 +68,14 @@ enum ChapterSplitter {
 
         for (i, heading) in headings.enumerated() {
             let end = i + 1 < headings.count ? headings[i + 1].start : ns.length
-            let range = NSRange(location: heading.start, length: max(0, end - heading.start))
+            // 正文从标题行的下一行开始：标题已经在阅读器顶部显示，不重复出现
+            let bodyStart = min(heading.bodyStart, end)
+            let range: NSRange
+            if bodyStart < end {
+                range = NSRange(location: bodyStart, length: end - bodyStart)
+            } else {
+                range = NSRange(location: heading.start, length: max(0, end - heading.start))
+            }
             let title = heading.title.isEmpty ? "第 \(i + 1) 章" : heading.title
             slices.append(Slice(title: title, range: range))
         }

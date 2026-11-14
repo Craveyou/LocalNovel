@@ -39,7 +39,7 @@ struct ComicPageView: View {
         .onAppear {
             onScreen = true
             if item.kind != .animatedImage, image == nil {
-                image = ImageLoader.load(url: item.url, maxPixel: 2400)
+                image = ImageLoader.load(url: item.url, maxPixel: 1800)
             }
         }
         .onDisappear { onScreen = false }
