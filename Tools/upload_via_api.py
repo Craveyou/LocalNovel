@@ -10,13 +10,14 @@ github.com:443（沙箱对该地址不稳定），因此只要有【写权限凭
 PAT 需要勾选 repo + workflow（更新 .github/workflows 必须有 workflow scope）。
 
 用法： LN_GH_PAT_FILE=/path/to/token.txt python3 Tools/upload_via_api.py
-输出： build/LocalNovel-unsigned.ipa
+输出： build/LocalNovel-<版本>-b<build>-unsigned.ipa（另存一份 LocalNovel-unsigned.ipa 作为最新副本）
 """
 import base64
 import concurrent.futures
 import io
 import json
 import os
+import plistlib
 import re
 import sys
 import time
@@ -433,11 +434,41 @@ if not ipa_bytes:
     print("❌ artifact 里没有 ipa")
     sys.exit(1)
 
+# 命名规范：LocalNovel-<版本>-b<build>-unsigned.ipa，避免多版本混在一个名字里
+def ipa_version_label(data):
+    """从 ipa 内的 Info.plist 读真实版本；读不到就退回工程里的 Info.plist。"""
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            for n in z.namelist():
+                if n.endswith("Info.plist") and n.startswith("Payload/"):
+                    p = plistlib.loads(z.read(n))
+                    v = str(p.get("CFBundleShortVersionString") or "").strip()
+                    b = str(p.get("CFBundleVersion") or "").strip()
+                    if v:
+                        return f"{v}-b{b}" if b else v
+    except Exception:
+        pass
+    try:
+        with open(os.path.join(ROOT, "LocalNovel", "Info.plist"), "rb") as f:
+            p = plistlib.load(f)
+        v = str(p.get("CFBundleShortVersionString") or "0").strip()
+        b = str(p.get("CFBundleVersion") or "").strip()
+        return f"{v}-b{b}" if b else v
+    except Exception:
+        return "unknown"
+
+
 os.makedirs(os.path.join(ROOT, "build"), exist_ok=True)
-out_path = os.path.join(ROOT, "build", "LocalNovel-unsigned.ipa")
+label = ipa_version_label(ipa_bytes)
+out_path = os.path.join(ROOT, "build", f"LocalNovel-{label}-unsigned.ipa")
 with open(out_path, "wb") as f:
     f.write(ipa_bytes)
+# 同时留一份不带版本号的固定名，方便老的安装习惯与脚本引用
+alias_path = os.path.join(ROOT, "build", "LocalNovel-unsigned.ipa")
+with open(alias_path, "wb") as f:
+    f.write(ipa_bytes)
 print(f"\n✅ 完成：{out_path}（{len(ipa_bytes) / 1024:.0f} KB）")
+print(f"   最新副本：{alias_path}")
 with zipfile.ZipFile(io.BytesIO(ipa_bytes)) as z:
     for n in z.namelist()[:8]:
         print("   " + n)

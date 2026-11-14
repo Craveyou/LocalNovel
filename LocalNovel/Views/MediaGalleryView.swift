@@ -4,8 +4,9 @@ import UIKit
 // MARK: - 沉浸式全屏插图浏览
 // 交互（本版）：
 //   * 单击：切换顶部遮罩（关闭按钮 / 页码 / 文件名）显隐，底部不再常驻操作提示
+//     遮罩隐藏时连系统状态栏、Home 指示条一起隐藏，真正全屏看图
 //   * 上滑：关闭大图（跟手位移，松手判定）
-//   * 最后一张继续右滑：关闭大图
+//   * 最后一张继续左滑：关闭大图（左滑本就是「下一张」，到底了就顺势退出）
 //   * 关闭时把当前图片回传给阅读器，由阅读器滚动定位回这张图
 //   * 左右整页吸附翻页、双击放大保持不变
 //
@@ -26,7 +27,7 @@ struct MediaGalleryView: View {
     @State private var chromeVisible = true
     /// 上滑跟手位移（负值 = 向上）
     @State private var verticalDrag: CGFloat = 0
-    /// 最后一页右滑跟手位移
+    /// 最后一页左滑跟手位移（负值 = 向左）
     @State private var edgePull: CGFloat = 0
     /// 当前被放大的图片 id；非 nil 时禁用关闭手势
     @State private var zoomedId: String?
@@ -94,7 +95,9 @@ struct MediaGalleryView: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: chromeVisible)
-        .persistentSystemOverlays(.hidden)
+        // 遮罩隐藏时状态栏、Home 指示条一起让位；单击唤回遮罩时同步恢复
+        .statusBarHidden(!chromeVisible)
+        .persistentSystemOverlays(chromeVisible ? .visible : .hidden)
     }
 
     // MARK: 顶部遮罩（单击显隐）
@@ -148,8 +151,8 @@ struct MediaGalleryView: View {
                     edgePull = 0
                 } else {
                     verticalDrag = 0
-                    // 只有最后一页的右滑才跟手，作为「关闭」的预备动作
-                    edgePull = (isLastPage && dx > 0) ? min(dx * 0.3, 130) : 0
+                    // 只有最后一页的「继续左滑」才跟手，作为关闭的预备动作
+                    edgePull = (isLastPage && dx < 0) ? max(dx * 0.3, -130) : 0
                 }
             }
             .onEnded { value in
@@ -160,9 +163,9 @@ struct MediaGalleryView: View {
                 let dx = value.translation.width
                 let dy = value.translation.height
                 let swipedUp = dy < -90 && abs(dy) > abs(dx)
-                let pulledAtLastPage = isLastPage && dx > 90 && abs(dx) > abs(dy)
+                let swipedPastEnd = isLastPage && dx < -90 && abs(dx) > abs(dy)
 
-                if swipedUp || pulledAtLastPage {
+                if swipedUp || swipedPastEnd {
                     close()
                 } else {
                     settleBack()

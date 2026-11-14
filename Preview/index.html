@@ -88,7 +88,7 @@ audio{width:100%}
 </style>
 </head>
 <body>
-<div class="banner">交互原型（非 iOS 应用）· 点图片进全屏灯箱（单击切遮罩 / 上滑或末页右滑关闭）· 视频可全屏旋转 · 长按临时倍速 · 外观默认跟随系统 · 动图在正式 App 中由 ImageIO 逐帧解码</div>
+<div class="banner">交互原型（非 iOS 应用）· 点图片进全屏灯箱（单击切遮罩（连系统状态栏一起隐藏）/ 上滑或末页左滑关闭）· 视频可全屏旋转 · 长按临时倍速 · 外观默认跟随系统 · 动图在正式 App 中由 ImageIO 逐帧解码</div>
 <div class="toolbar">
   <button class="back" id="back">← 返回</button>
   <span style="color:var(--sub)">⚙ 设置（正式 App 中集中于独立设置页，书架首页可直达）</span>
@@ -219,7 +219,7 @@ function closeLB(){
   if(fig) fig.scrollIntoView({block:'center', behavior:'smooth'});
 }
 function stepLB(d){ openLB(zi+d); }
-// 单击切顶部遮罩；上滑关闭；最后一张继续右滑关闭；左右滑动翻页
+// 单击切顶部遮罩（同时隐藏系统状态栏观感）；上滑关闭；最后一张继续左滑关闭；左右滑动翻页
 $('lbClose').onclick=e=>{e.stopPropagation();closeLB();};
 $('lbPrev').onclick=e=>{e.stopPropagation();stepLB(-1);};
 $('lbNext').onclick=e=>{e.stopPropagation();stepLB(1);};
@@ -241,7 +241,7 @@ $('overlay').addEventListener('pointerup',e=>{
   if(lbScale>1) return;                       // 放大后交给图片自身平移
   if(Math.abs(dy)>Math.abs(dx) && dy<-90){ closeLB(); return; }
   if(Math.abs(dx)>Math.abs(dy)){
-    if(dx>90 && zi===curImgs().length-1){ closeLB(); return; }
+    if(dx<-90 && zi===curImgs().length-1){ closeLB(); return; }
     if(Math.abs(dx)>60) stepLB(dx<0?1:-1);
     return;
   }

@@ -7,7 +7,7 @@
 #       （403 Resource not accessible by integration），但可自由推送到已有仓库。
 # 用法： bash Tools/upload_and_build.sh
 # 可覆盖： REPO_NAME / RUNNER_LABEL
-# 输出： build/LocalNovel-unsigned.ipa
+# 输出： build/LocalNovel-<版本>-b<build>-unsigned.ipa（另存一份最新副本 LocalNovel-unsigned.ipa）
 #
 # 安全：token 只通过环境变量引用，绝不打印（含 push 错误输出统一过滤）；
 #       push 后立即从 git remote 清除；artifact 走重定向地址、不带 token。
@@ -184,12 +184,19 @@ unzip -q -o /tmp/ln_art.zip -d /tmp/ln_art
 IPA="$(find /tmp/ln_art -name '*.ipa' -type f -print -quit)"
 [[ -n "$IPA" ]] || { echo "❌ artifact 里没有 ipa"; exit 1; }
 mkdir -p "$ROOT/build"
+# 命名规范：产物名带版本号（取自下载到的 ipa 内 Info.plist）
+LABEL="$(unzip -p "$IPA" 'Payload/*/Info.plist' 2>/dev/null \
+  | python3 -c 'import sys,plistlib; p=plistlib.loads(sys.stdin.buffer.read()); print("%s-b%s" % (p.get("CFBundleShortVersionString","0"), p.get("CFBundleVersion","0")))' \
+  2>/dev/null || echo unknown)"
+OUT_IPA="$ROOT/build/LocalNovel-${LABEL}-unsigned.ipa"
+cp "$IPA" "$OUT_IPA"
 cp "$IPA" "$ROOT/build/LocalNovel-unsigned.ipa"
 
 echo ""
-echo "✅ 完成：$ROOT/build/LocalNovel-unsigned.ipa"
-echo "   体积：$(du -h "$ROOT/build/LocalNovel-unsigned.ipa" | cut -f1)"
-unzip -l "$ROOT/build/LocalNovel-unsigned.ipa" | head -8
+echo "✅ 完成：$OUT_IPA"
+echo "   最新副本：$ROOT/build/LocalNovel-unsigned.ipa"
+echo "   体积：$(du -h "$OUT_IPA" | cut -f1)"
+unzip -l "$OUT_IPA" | head -8
 echo ""
 echo "下一步：把该 ipa 拖进 Sideloadly / AltStore，用你的 Apple ID 重签安装。"
 echo "免费账号签名 7 天有效；iPhone 需开启开发者模式并信任证书。"

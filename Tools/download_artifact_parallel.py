@@ -12,7 +12,9 @@
 下载请求【不带任何凭据】：token 只用于向 GitHub API 换取签名地址。
 """
 import concurrent.futures
+import io
 import os
+import plistlib
 import sys
 import time
 import urllib.error
@@ -135,9 +137,25 @@ def main():
     return ipa_bytes
 
 
+def ipa_label(data: bytes) -> str:
+    """产物命名规范：LocalNovel-<版本>-b<build>-unsigned.ipa，版本读自包内 Info.plist。"""
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            for n in z.namelist():
+                if n.startswith("Payload/") and n.endswith("Info.plist"):
+                    p = plistlib.loads(z.read(n))
+                    return "%s-b%s" % (p.get("CFBundleShortVersionString", "0"),
+                                       p.get("CFBundleVersion", "0"))
+    except Exception:
+        pass
+    return "unknown"
+
+
 if __name__ == "__main__":
     ipa_bytes = main()
-    dest = Path(os.environ.get("LN_IPA_OUT", "build/LocalNovel-unsigned.ipa"))
+    label = ipa_label(ipa_bytes)
+    dest = Path(os.environ.get("LN_IPA_OUT",
+                               f"build/LocalNovel-{label}-unsigned.ipa"))
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_bytes(ipa_bytes)
     print(f"✅ ipa 已写出：{dest}（{len(ipa_bytes) / 1024:.0f} KB）")

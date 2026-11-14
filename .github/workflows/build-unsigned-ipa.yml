@@ -1,6 +1,7 @@
 # 云端编译【未签名】ipa：无需本地 Mac，CI 从不接触 Apple 账号或你的书库文件。
 # 触发：push 到 main，或在 Actions 页手动 Run workflow。
-# 产物：Actions 运行页的 Artifacts → LocalNovel-unsigned-ipa，下载后自己重签。
+# 产物：Actions 运行页的 Artifacts → 名字形如 LocalNovel-1.5-b6-unsigned-ipa，
+#       里面是 LocalNovel-1.5-b6-unsigned.ipa（版本号取自 Info.plist，每次编译自动带上）。
 #
 # 工程部署目标是 iOS 27，必须用带 Xcode 27 的镜像：
 #   - 默认 xcode-27（GitHub 官方 2026-10-15 GA 的 arm64 镜像，含 Xcode 27 + iOS 27 SDK）
@@ -85,15 +86,21 @@ jobs:
           rm -rf "$RUNNER_TEMP/ipa"
           mkdir -p "$RUNNER_TEMP/ipa/Payload"
           ditto "$APP" "$RUNNER_TEMP/ipa/Payload/LocalNovel.app"
-          (cd "$RUNNER_TEMP/ipa" && zip -q -r "$GITHUB_WORKSPACE/LocalNovel-unsigned.ipa" Payload)
+          # 命名规范：LocalNovel-<版本>-b<build>-unsigned.ipa，避免多版本互相覆盖
+          VER="$(plutil -extract CFBundleShortVersionString raw "$APP/Info.plist")"
+          BUILD="$(plutil -extract CFBundleVersion raw "$APP/Info.plist")"
+          IPA="$GITHUB_WORKSPACE/LocalNovel-${VER}-b${BUILD}-unsigned.ipa"
+          (cd "$RUNNER_TEMP/ipa" && zip -q -r "$IPA" Payload)
+          echo "IPA_NAME=LocalNovel-${VER}-b${BUILD}-unsigned.ipa" >> "$GITHUB_ENV"
+          echo "IPA_LABEL=LocalNovel-${VER}-b${BUILD}" >> "$GITHUB_ENV"
           echo "== ipa 内容 =="
-          unzip -l "$GITHUB_WORKSPACE/LocalNovel-unsigned.ipa" | head -14
-          ls -lh "$GITHUB_WORKSPACE/LocalNovel-unsigned.ipa"
+          unzip -l "$IPA" | head -14
+          ls -lh "$IPA"
 
       - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: LocalNovel-unsigned-ipa
-          path: LocalNovel-unsigned.ipa
+          name: ${{ env.IPA_LABEL }}-unsigned-ipa
+          path: ${{ env.IPA_NAME }}
           retention-days: 14
           if-no-files-found: error

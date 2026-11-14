@@ -341,7 +341,7 @@ def main():
           and "DocumentsBootstrap.guideFileName" in resolver)
     check("切回前台补写说明文件", "DocumentsBootstrap.ensureVisibleInFilesApp()" in store)
     check("版本号提升以刷新系统元数据",
-          "<string>5</string>" in plist and "CURRENT_PROJECT_VERSION = 5" in pbx)
+          "<string>6</string>" in plist and "CURRENT_PROJECT_VERSION = 6" in pbx)
     check("UI 给出「文件 App 搜索本地小说」兜底路径",
           "搜索框搜「本地小说」" in welcome and "搜索「本地小说」" in store)
     check("AppIcon asset catalog（1024 + Contents.json）",
@@ -354,6 +354,21 @@ def main():
           "ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon" in pbx)
     check("CI 断言 Assets.car 与图标声明",
           "Assets.car" in wf_text and "CFBundleIconName|CFBundleIconFiles" in wf_text)
+
+    print("\n== H. 产物命名带版本号 ==")
+    # 约定：编译产物一律叫 LocalNovel-<版本>-b<build>-unsigned.ipa，避免多版本互相覆盖
+    build_sh = (ROOT / "Tools" / "build_unsigned_ipa.sh").read_text(encoding="utf-8")
+    upload_py = (ROOT / "Tools" / "upload_via_api.py").read_text(encoding="utf-8")
+    check("CI 从 Info.plist 取版本并写进 ipa 文件名",
+          "CFBundleShortVersionString" in wf_text and "CFBundleVersion" in wf_text
+          and "LocalNovel-${VER}-b${BUILD}-unsigned.ipa" in wf_text)
+    check("CI artifact 名同样带版本号",
+          "IPA_LABEL" in wf_text and "unsigned-ipa" in wf_text)
+    check("本地打包脚本默认产物带版本号",
+          "LocalNovel-${VER}-b${BUILD}-unsigned.ipa" in build_sh)
+    check("API 上传脚本按包内版本命名并保留最新副本",
+          "LocalNovel-{label}-unsigned.ipa" in upload_py
+          and "LocalNovel-unsigned.ipa" in upload_py and "ipa_version_label" in upload_py)
 
     print("\n== H. 本轮：外观跟随系统 / 单击看图 / 整页吸附 / 视频旋转 / 独立设置页 ==")
     prefs_src = (APP / "Core" / "Preferences.swift").read_text(encoding="utf-8")
@@ -393,7 +408,7 @@ def main():
           and ".rotationEffect(.degrees(Double(rotation)))" in fullscreen
           and "sideways ? h : w" in fullscreen)
 
-    print("\n== I. 本轮：单击切遮罩 / 上滑关闭 / 末页右滑关闭 / 下一章 / 多选删除 ==")
+    print("\n== I. 本轮：单击切遮罩 / 上滑关闭 / 末页左滑关闭 / 下一章 / 多选删除 ==")
     check("全屏大图不再常驻底部操作提示",
           "bottomHint" not in gallery and "单击关闭 · 左右滑动翻页" not in gallery)
     check("单击切换顶部遮罩显隐（不再单击即关）",
@@ -401,9 +416,12 @@ def main():
           and "if chromeVisible" in gallery)
     check("上滑关闭大图（跟手位移 + 松手阈值）",
           "verticalDrag" in gallery and "swipedUp" in gallery and "dy < -90" in gallery)
-    check("最后一张继续右滑关闭",
-          "isLastPage" in gallery and "pulledAtLastPage" in gallery
-          and "dx > 90" in gallery)
+    check("最后一张继续左滑关闭",
+          "isLastPage" in gallery and "swipedPastEnd" in gallery
+          and "dx < -90" in gallery)
+    check("遮罩隐藏时系统状态栏与 Home 指示条一并隐藏",
+          ".statusBarHidden(!chromeVisible)" in gallery
+          and "persistentSystemOverlays(chromeVisible ? .visible : .hidden)" in gallery)
     check("图片放大后让出关闭手势，避免缩放时误关",
           "zoomedId == nil" in gallery and "onZoomChanged" in gallery
           and "scrollViewDidZoom" in zoom and "onZoomChanged" in zoom)

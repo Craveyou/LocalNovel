@@ -2,7 +2,9 @@
 # 在 macOS + Xcode 27 上生成【未签名】ipa，供 Sideloadly / AltStore / iOS App Signer 自己重签。
 #
 # 用法：  bash Tools/build_unsigned_ipa.sh [输出路径]
-# 默认：  build/LocalNovel-unsigned.ipa
+# 默认：  build/LocalNovel-<版本>-b<build>-unsigned.ipa（版本号读自 LocalNovel/Info.plist）
+#
+# 命名规范：产物名必须带版本号，避免多个版本互相覆盖、也便于确认装的是哪一版。
 #
 # 为什么必须 macOS：ipa 里是编译好的 arm64 Mach-O，UIKit/SwiftUI/AVKit
 # 只有 macOS 上的 iOS SDK 提供，Linux 无法编译/链接，也无法 codesign。
@@ -13,7 +15,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-OUT="${1:-$ROOT/build/LocalNovel-unsigned.ipa}"
+VER="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' LocalNovel/Info.plist 2>/dev/null || echo 0)"
+BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' LocalNovel/Info.plist 2>/dev/null || echo 0)"
+OUT="${1:-$ROOT/build/LocalNovel-${VER}-b${BUILD}-unsigned.ipa}"
 ARCHIVE="$ROOT/build/LocalNovel.xcarchive"
 STAGE="$ROOT/build/ipa_stage"
 APP_NAME="LocalNovel.app"
