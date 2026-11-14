@@ -12,6 +12,13 @@ struct InlineMediaView: View {
     @State private var staticImage: UIImage?
     @State private var onScreen = false
 
+    // 显式 init：避免编译器合成的 memberwise init 把带默认值的 @State
+    // 参数排到 onTap 后面，导致尾随闭包匹配错参数。
+    init(item: MediaItem, onTap: @escaping () -> Void) {
+        self.item = item
+        self.onTap = onTap
+    }
+
     var body: some View {
         Group {
             if item.kind == .animatedImage {

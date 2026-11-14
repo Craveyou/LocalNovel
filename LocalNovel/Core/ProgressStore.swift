@@ -81,7 +81,9 @@ final class ProgressStore {
         lock.lock()
         pendingAnchors[chapterId] = anchor
         pendingWork?.cancel()
-        let work = DispatchWorkItem { [weak self] in self?.flushAnchors() }
+        let work = DispatchWorkItem { [weak self] in
+            self?.flushAnchors()
+        }
         pendingWork = work
         lock.unlock()
         anchorQueue.asyncAfter(deadline: .now() + 0.6, execute: work)
@@ -136,7 +138,9 @@ final class ProgressStore {
         defaults.set(times, forKey: Keys.mediaTimes)
 
         var last = defaults.dictionary(forKey: Keys.lastChapters) as? [String: String] ?? [:]
-        for (book, id) in last where id == chapterId { last.removeValue(forKey: book) }
+        // 先收集再删除，避免遍历字典时修改触发独占访问冲突
+        let staleBooks = last.compactMap { $0.value == chapterId ? $0.key : nil }
+        for book in staleBooks { last.removeValue(forKey: book) }
         defaults.set(last, forKey: Keys.lastChapters)
     }
 
