@@ -97,6 +97,7 @@ NEEDS_IMPORT = {
     "@EnvironmentObject": "SwiftUI", "@Published": "SwiftUI", "UIViewRepresentable": "SwiftUI",
     "NavigationSplitView": "SwiftUI", "ContentUnavailableView": "SwiftUI",
     "LazyVStack": "SwiftUI", "ScrollViewReader": "SwiftUI", "TabView": "SwiftUI",
+    "ColorScheme": "SwiftUI", "LazyHStack": "SwiftUI", "TapGesture": "SwiftUI",
 }
 
 EXPECTED_TYPES = [
@@ -112,6 +113,7 @@ EXPECTED_TYPES = [
     "RateBoostGesture", "RateBoostCoordinator", "AudioSurfaceView",
     "ZoomableImageView", "FullscreenVideoView", "FullscreenPlayerHost",
     "DocumentsBootstrap", "ImportMode", "BookImporter", "BookImportError",
+    "AppearanceMode",
 ]
 
 NETWORK_PATTERNS = [
@@ -339,7 +341,7 @@ def main():
           and "DocumentsBootstrap.guideFileName" in resolver)
     check("切回前台补写说明文件", "DocumentsBootstrap.ensureVisibleInFilesApp()" in store)
     check("版本号提升以刷新系统元数据",
-          "<string>3</string>" in plist and "CURRENT_PROJECT_VERSION = 3" in pbx)
+          "<string>4</string>" in plist and "CURRENT_PROJECT_VERSION = 4" in pbx)
     check("UI 给出「文件 App 搜索本地小说」兜底路径",
           "搜索框搜「本地小说」" in welcome and "搜索「本地小说」" in store)
     check("AppIcon asset catalog（1024 + Contents.json）",
@@ -352,6 +354,44 @@ def main():
           "ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon" in pbx)
     check("CI 断言 Assets.car 与图标声明",
           "Assets.car" in wf_text and "CFBundleIconName|CFBundleIconFiles" in wf_text)
+
+    print("\n== H. 本轮：外观跟随系统 / 单击看图 / 整页吸附 / 视频旋转 / 独立设置页 ==")
+    prefs_src = (APP / "Core" / "Preferences.swift").read_text(encoding="utf-8")
+    zoom = (APP / "Media" / "ZoomableImageView.swift").read_text(encoding="utf-8")
+    fullscreen = (APP / "Media" / "FullscreenVideoView.swift").read_text(encoding="utf-8")
+
+    check("外观三档（跟随系统 / 浅色 / 深色），nil 表示跟随系统",
+          "enum AppearanceMode" in prefs_src
+          and all(t in prefs_src for t in ["case system", "case light", "case dark"])
+          and "preferredScheme" in prefs_src and "return nil" in prefs_src)
+    check("旧「夜间模式」开关迁移到三档并保留旧值兼容",
+          "isDarkMode" not in strip_non_code(prefs_src)
+          and "defaults.bool(forKey: Keys.dark)" in prefs_src)
+    check("根视图按偏好覆盖外观（nil 即跟随系统）",
+          ".preferredColorScheme(prefs.preferredScheme)" in welcome)
+    check("设置页外观为三档 Picker，字号 / 行距 / 倍速 / 章节 / 书库全部集中",
+          'Picker("外观"' in settings and "AppearanceMode.allCases" in settings
+          and all(t in settings for t in ["字号", "行距", "长按倍速", "章节目录", "书库"]))
+    check("书架（首页）与阅读器均可直达同一个独立设置页",
+          "showSettings" in sidebar and "SettingsView()" in sidebar
+          and "gearshape" in sidebar and "SettingsView()" in reader
+          and 'navigationTitle("设置")' in settings)
+    check("大图单击关闭：静态图 require(toFail:) 区分双击、动图 exclusively 互斥",
+          "onSingleTap" in gallery and "require(toFail: doubleTap)" in zoom
+          and "TapGesture(count: 1)" in gallery and "exclusively(before:" in gallery)
+    check("分页改为整页吸附（不再停在两张图中间）",
+          "scrollTargetBehavior(.paging)" in gallery
+          and "scrollTargetLayout()" in gallery
+          and "containerRelativeFrame" in gallery
+          and "scrollPosition(id: $selection)" in gallery
+          and "TabView" not in strip_non_code(gallery))
+    check("缩放视图未放大时不抢横向翻页手势，放大后才允许平移",
+          "isScrollEnabled = false" in zoom and "scrollViewDidZoom" in zoom
+          and "scrollView.isScrollEnabled = scrollView.zoomScale > 1.01" in zoom)
+    check("视频全屏 90° 循环旋转 + 宽高互换铺满",
+          "rotate.right" in fullscreen and "rotation = (rotation + 90) % 360" in fullscreen
+          and ".rotationEffect(.degrees(Double(rotation)))" in fullscreen
+          and "sideways ? h : w" in fullscreen)
 
     print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")
     if FAIL:

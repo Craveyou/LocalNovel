@@ -8,26 +8,41 @@ import UIKit
 // 关键点：与内联播放器共享同一个 AVPlayer 实例，进入/退出全屏不中断播放、不丢进度。
 // 系统 AVPlayerViewController 自带播放/暂停、进度拖动、字幕与音量控件，无需自己重写一套。
 // 明确关闭画中画：用户要求不后台播放，且画中画会在 App 退出后继续出画。
+// 右上角新增「旋转」：0° → 90° → 180° → 270° 循环，按需把横屏视频转正。
 
 struct FullscreenVideoView: View {
     @ObservedObject var controller: LocalMediaPlayer
     let boostRate: Double
 
     @Environment(\.dismiss) private var dismiss
+    @State private var rotation: Int = 0
 
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
-
-            FullscreenPlayerHost(player: controller.player) { active in
-                controller.setBoost(active, rate: boostRate)
-            }
-            .ignoresSafeArea()
+            rotatedPlayer
         }
         .overlay(alignment: .top) { topBar }
         .overlay(alignment: .center) { boostBadge }
         .overlay(alignment: .bottom) { hint }
         .persistentSystemOverlays(.hidden)
+    }
+
+    /// 旋转 90° / 270° 时把宿主视图宽高互换，旋转后正好铺满全屏。
+    /// 只加 .rotationEffect 而不换 frame 会让画面被裁掉或只占中间一块。
+    private var rotatedPlayer: some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            let h = geo.size.height
+            let sideways = rotation == 90 || rotation == 270
+            FullscreenPlayerHost(player: controller.player) { active in
+                controller.setBoost(active, rate: boostRate)
+            }
+            .frame(width: sideways ? h : w, height: sideways ? w : h)
+            .rotationEffect(.degrees(Double(rotation)))
+            .position(x: w / 2.0, y: h / 2.0)
+        }
+        .ignoresSafeArea()
     }
 
     private var topBar: some View {
@@ -47,7 +62,20 @@ struct FullscreenVideoView: View {
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.white)
             Spacer()
-            Color.clear.frame(width: 34, height: 34)
+
+            Button {
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    rotation = (rotation + 90) % 360
+                }
+            } label: {
+                Image(systemName: "rotate.right")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 34, height: 34)
+                    .background(Color.white.opacity(0.18), in: Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("旋转画面")
         }
         .padding(.horizontal, 16)
         .padding(.top, 12)
@@ -70,7 +98,7 @@ struct FullscreenVideoView: View {
     }
 
     private var hint: some View {
-        Text("长按画面临时倍速，松手恢复原速")
+        Text("点右上角旋转画面 · 长按画面临时倍速，松手恢复原速")
             .font(.caption)
             .foregroundStyle(.white.opacity(0.8))
             .padding(.horizontal, 12)

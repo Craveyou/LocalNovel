@@ -29,7 +29,8 @@ struct RootView: View {
             }
         }
         .navigationSplitViewStyle(.balanced)
-        .preferredColorScheme(prefs.isDarkMode ? .dark : .light)
+        // nil = 跟随系统外观；浅色 / 深色则手动固定
+        .preferredColorScheme(prefs.preferredScheme)
         .onAppear {
             guard !didRestore else { return }
             didRestore = true

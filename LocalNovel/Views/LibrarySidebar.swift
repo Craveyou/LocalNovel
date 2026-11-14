@@ -9,6 +9,7 @@ struct LibrarySidebar: View {
 
     @State private var pendingDelete: Book?
     @State private var resultMessage: String?
+    @State private var showSettings = false
 
     var body: some View {
         Group {
@@ -36,7 +37,14 @@ struct LibrarySidebar: View {
             }
         }
         .navigationTitle("书库")
+        // 书架（首页）直达独立设置页：字号、行距、外观等所有偏好都集中在那里
+        .sheet(isPresented: $showSettings) { SettingsView() }
         .toolbar {
+            ToolbarItem(placement: .navigationBarLeading) {
+                Button { showSettings = true } label: {
+                    Label("设置", systemImage: "gearshape")
+                }
+            }
             ToolbarItem(placement: .primaryAction) {
                 Menu {
                     Button {

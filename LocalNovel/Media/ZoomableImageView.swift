@@ -2,14 +2,17 @@ import Foundation
 import SwiftUI
 import UIKit
 
-// MARK: - 全屏静态插图缩放容器（UIScrollView 原生捏合 + 双击放大）
-// 用 UIScrollView 而不是 SwiftUI MagnificationGesture：缩放、惯性、边界回弹
-// 都由系统处理，且在 TabView 分页容器里更不容易和横向翻页手势打架。
+// MARK: - 全屏静态插图缩放容器（UIScrollView 原生捏合 + 双击放大 + 单击关闭）
+// 未放大时禁用自身滚动，让横向滑动完整交给外层分页容器——这是「滑到两张图中间」
+// 的直接原因（内层 UIScrollView 抢走了分页手势）。放大后才允许平移看局部。
 
 struct ZoomableImageView: UIViewRepresentable {
     let image: UIImage
+    let onSingleTap: () -> Void
 
-    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onSingleTap: onSingleTap)
+    }
 
     func makeUIView(context: Context) -> UIScrollView {
         let scroll = UIScrollView()
@@ -20,6 +23,7 @@ struct ZoomableImageView: UIViewRepresentable {
         scroll.showsHorizontalScrollIndicator = false
         scroll.showsVerticalScrollIndicator = false
         scroll.contentInsetAdjustmentBehavior = .never
+        scroll.isScrollEnabled = false // 未放大：不抢外层横向翻页手势
         scroll.delegate = context.coordinator
 
         let imageView = UIImageView(image: image)
@@ -36,10 +40,19 @@ struct ZoomableImageView: UIViewRepresentable {
         )
         doubleTap.numberOfTapsRequired = 2
         scroll.addGestureRecognizer(doubleTap)
+
+        let singleTap = UITapGestureRecognizer(
+            target: context.coordinator,
+            action: #selector(Coordinator.handleSingleTap(_:))
+        )
+        singleTap.numberOfTapsRequired = 1
+        singleTap.require(toFail: doubleTap) // 双击不会误触发单击关闭
+        scroll.addGestureRecognizer(singleTap)
         return scroll
     }
 
     func updateUIView(_ uiView: UIScrollView, context: Context) {
+        context.coordinator.onSingleTap = onSingleTap
         if context.coordinator.imageView?.image !== image {
             context.coordinator.imageView?.image = image
         }
@@ -47,15 +60,32 @@ struct ZoomableImageView: UIViewRepresentable {
 
     final class Coordinator: NSObject, UIScrollViewDelegate {
         weak var imageView: UIImageView?
+        var onSingleTap: () -> Void
+
+        init(onSingleTap: @escaping () -> Void) {
+            self.onSingleTap = onSingleTap
+        }
 
         func viewForZooming(in scrollView: UIScrollView) -> UIView? { imageView }
+
+        func scrollViewDidZoom(_ scrollView: UIScrollView) {
+            // 放大后才允许内部平移看局部；还原到 1× 立刻把横向手势还给分页
+            scrollView.isScrollEnabled = scrollView.zoomScale > 1.01
+        }
+
+        @objc func handleSingleTap(_ gesture: UITapGestureRecognizer) {
+            onSingleTap()
+        }
 
         @objc func handleDoubleTap(_ gesture: UITapGestureRecognizer) {
             guard let scroll = gesture.view as? UIScrollView else { return }
             if scroll.zoomScale > 1.01 {
                 scroll.setZoomScale(1.0, animated: true)
+                scroll.isScrollEnabled = false
                 return
             }
+            // 放大后允许内部平移看局部；scrollViewDidZoom 也会同步这一状态
+            scroll.isScrollEnabled = true
             // 显式标注为 UIView，避免 ?? 两侧（UIImageView? / UIScrollView）泛型推断不一致
             let target: UIView = imageView ?? scroll
             let center = gesture.location(in: target)

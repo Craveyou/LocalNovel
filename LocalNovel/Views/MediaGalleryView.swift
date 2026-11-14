@@ -2,41 +2,53 @@ import SwiftUI
 import UIKit
 
 // MARK: - 沉浸式全屏插图浏览
-// 从阅读器点击任意插图进入：纯黑铺满、左右翻页、静态图捏合/双击缩放、
-// 动图全屏逐帧播放并支持双击放大。顶部工具条为悬浮层，不占阅读区域。
+// 从阅读器点击任意插图进入：纯黑铺满、整页吸附翻页、单击关闭、双击放大。
+//
+// 本版修复「左右滑动停在两张图中间」：
+// 旧实现用 TabView(.page) 且页内嵌 UIScrollView，横向手势被内层吃掉、
+// 分页吸附按错误宽度计算，就会停在半页。现改用 iOS 17+ 原生分页：
+//   * 每页 .containerRelativeFrame([.horizontal, .vertical]) 精确等于视口
+//   * .scrollTargetLayout() + .scrollTargetBehavior(.paging) 按整页吸附
+//   * .scrollPosition(id:) 记录当前页，首次布局即定位到点击的那张
+//   * ZoomableImageView 未放大时禁用自身滚动，把横向滑动完整交给外层
 
 struct MediaGalleryView: View {
     let items: [MediaItem]
-    let initial: MediaItem
 
     @Environment(\.dismiss) private var dismiss
-    @State private var selection: String
+    @State private var selection: String?
 
     init(items: [MediaItem], initial: MediaItem) {
         self.items = items
-        self.initial = initial
         _selection = State(initialValue: initial.id)
     }
 
     private var currentIndex: Int {
-        (items.firstIndex(where: { $0.id == selection }) ?? 0) + 1
+        guard let selection else { return 1 }
+        return (items.firstIndex(where: { $0.id == selection }) ?? 0) + 1
     }
 
     private var currentItem: MediaItem? {
-        items.first(where: { $0.id == selection })
+        guard let selection else { return nil }
+        return items.first(where: { $0.id == selection })
     }
 
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
 
-            TabView(selection: $selection) {
-                ForEach(items) { item in
-                    GalleryPage(item: item)
-                        .tag(item.id)
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(spacing: 0) {
+                    ForEach(items) { item in
+                        GalleryPage(item: item, onSingleTap: { dismiss() })
+                            .containerRelativeFrame([.horizontal, .vertical])
+                            .id(item.id)
+                    }
                 }
+                .scrollTargetLayout()
             }
-            .tabViewStyle(.page(indexDisplayMode: .never))
+            .scrollTargetBehavior(.paging)
+            .scrollPosition(id: $selection)
             .ignoresSafeArea()
         }
         .overlay(alignment: .top) { topBar }
@@ -80,7 +92,7 @@ struct MediaGalleryView: View {
 
     private var bottomHint: some View {
         Text((currentItem?.kind == MediaKind.animatedImage ? "动图自动播放 · " : "")
-             + "左右滑动翻页 · 双击或捏合放大")
+             + "单击关闭 · 左右滑动翻页 · 双击放大")
             .font(.caption)
             .foregroundStyle(.white.opacity(0.85))
             .padding(.horizontal, 12)
@@ -95,6 +107,8 @@ struct MediaGalleryView: View {
 
 private struct GalleryPage: View {
     let item: MediaItem
+    let onSingleTap: () -> Void
+
     @State private var staticImage: UIImage?
     @State private var zoomed = false
 
@@ -104,11 +118,14 @@ private struct GalleryPage: View {
                 AnimatedImageView(url: item.url, isVisible: true)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .scaleEffect(zoomed ? 2.0 : 1.0)
-                    .onTapGesture(count: 2) {
-                        withAnimation(.easeInOut(duration: 0.2)) { zoomed.toggle() }
-                    }
+                    // 双击优先：exclusively 保证双击放大时不会误触发单击关闭
+                    .gesture(
+                        TapGesture(count: 2)
+                            .onEnded { withAnimation(.easeInOut(duration: 0.2)) { zoomed.toggle() } }
+                            .exclusively(before: TapGesture(count: 1).onEnded { onSingleTap() })
+                    )
             } else if let image = staticImage {
-                ZoomableImageView(image: image)
+                ZoomableImageView(image: image, onSingleTap: onSingleTap)
             } else {
                 ProgressView()
                     .tint(.white)

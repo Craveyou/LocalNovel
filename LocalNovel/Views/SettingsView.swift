@@ -1,6 +1,6 @@
 import SwiftUI
 
-// MARK: - 阅读设置
+// MARK: - 设置（书架首页 / 阅读器均可进入，所有偏好集中在这里）
 
 struct SettingsView: View {
     @EnvironmentObject private var prefs: Preferences
@@ -36,7 +36,14 @@ struct SettingsView: View {
                 }
 
                 Section("外观") {
-                    Toggle("夜间模式", isOn: binding(for: \.isDarkMode))
+                    Picker("外观", selection: binding(for: \.appearance)) {
+                        ForEach(AppearanceMode.allCases) { mode in
+                            Text(mode.label).tag(mode)
+                        }
+                    }
+                    Text("默认「跟随系统」，会随设备的浅色 / 深色外观自动切换；也可手动固定为浅色或深色。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
 
                 Section("播放") {
@@ -83,7 +90,7 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            .navigationTitle("阅读设置")
+            .navigationTitle("设置")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {

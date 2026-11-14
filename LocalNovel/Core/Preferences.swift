@@ -3,6 +3,23 @@ import SwiftUI
 
 // MARK: - 阅读偏好（全本地，UserDefaults）
 
+/// 外观模式：跟随系统 / 浅色 / 深色。rawValue 直接存盘，Int 比字符串稳定。
+enum AppearanceMode: Int, CaseIterable, Identifiable {
+    case system = 0
+    case light = 1
+    case dark = 2
+
+    var id: Int { rawValue }
+
+    var label: String {
+        switch self {
+        case .system: return "跟随系统"
+        case .light:  return "浅色"
+        case .dark:   return "深色"
+        }
+    }
+}
+
 final class Preferences: ObservableObject {
     static let shared = Preferences()
 
@@ -15,9 +32,19 @@ final class Preferences: ObservableObject {
     @Published var lineSpacing: CGFloat = 10 {
         didSet { if loaded { save() } }
     }
-    @Published var isDarkMode: Bool = false {
+    @Published var appearance: AppearanceMode = .system {
         didSet { if loaded { save() } }
     }
+
+    /// 交给 .preferredColorScheme：nil 表示不覆盖，即跟随系统外观。
+    var preferredScheme: ColorScheme? {
+        switch appearance {
+        case .system: return nil
+        case .light:  return .light
+        case .dark:   return .dark
+        }
+    }
+
     /// 可选：去掉章节文件夹名的「01_」类前缀（默认关闭，原样展示）
     @Published var cleanTitles: Bool = false {
         didSet { if loaded { save() } }
@@ -33,7 +60,14 @@ final class Preferences: ObservableObject {
         let r = defaults.double(forKey: Keys.longPressRate)
         fontSize = f > 0 ? CGFloat(f) : 18
         lineSpacing = l > 0 ? CGFloat(l) : 10
-        isDarkMode = defaults.bool(forKey: Keys.dark)
+        // 新版三档；旧版只有「夜间模式」开关，做一次平滑迁移。
+        if defaults.object(forKey: Keys.appearance) != nil {
+            appearance = AppearanceMode(rawValue: defaults.integer(forKey: Keys.appearance)) ?? .system
+        } else if defaults.bool(forKey: Keys.dark) {
+            appearance = .dark
+        } else {
+            appearance = .system
+        }
         cleanTitles = defaults.bool(forKey: Keys.cleanTitles)
         longPressRate = r > 0 ? r : 2.0
         loaded = true
@@ -42,7 +76,8 @@ final class Preferences: ObservableObject {
     private enum Keys {
         static let fontSize = "LocalNovel.fontSize"
         static let lineSpacing = "LocalNovel.lineSpacing"
-        static let dark = "LocalNovel.darkMode"
+        static let appearance = "LocalNovel.appearance"
+        static let dark = "LocalNovel.darkMode" // 旧键，仅用于迁移读取
         static let cleanTitles = "LocalNovel.cleanTitles"
         static let longPressRate = "LocalNovel.longPressRate"
     }
@@ -50,7 +85,7 @@ final class Preferences: ObservableObject {
     private func save() {
         defaults.set(Double(fontSize), forKey: Keys.fontSize)
         defaults.set(Double(lineSpacing), forKey: Keys.lineSpacing)
-        defaults.set(isDarkMode, forKey: Keys.dark)
+        defaults.set(appearance.rawValue, forKey: Keys.appearance)
         defaults.set(cleanTitles, forKey: Keys.cleanTitles)
         defaults.set(longPressRate, forKey: Keys.longPressRate)
     }

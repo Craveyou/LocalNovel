@@ -272,12 +272,13 @@ def make_blob(item):
     with open(full, "rb") as f:
         content = base64.b64encode(f.read()).decode("ascii")
     payload = {"content": content, "encoding": "base64"}
-    # 403/429 多为 secondary rate limit，退避重试
-    for attempt in range(4):
-        c, body, _ = call("POST", REPO + "/git/blobs", payload)
+    # 403/429 多为 secondary rate limit；-1 为网络瞬断（连接重置 / 读超时）。
+    # 单例抖动不该让整轮上传失败，统一退避重试并放宽单次超时。
+    for attempt in range(5):
+        c, body, _ = call("POST", REPO + "/git/blobs", payload, timeout=60)
         if c in (200, 201) and "sha" in body:
             return rel, c, body
-        if c in (403, 429, 502, 503):
+        if c in (403, 429, 502, 503, 504, -1):
             time.sleep(2 * (attempt + 1))
             continue
         break

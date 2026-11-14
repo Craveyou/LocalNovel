@@ -31,7 +31,7 @@ struct ReaderView: View {
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button { showSettings = true } label: {
-                        Label("阅读设置", systemImage: "textformat.size")
+                        Label("设置", systemImage: "gearshape")
                     }
                 }
             }
