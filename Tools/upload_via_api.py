@@ -235,19 +235,26 @@ if code not in (200, 201):
     if "workflow" in safe(out.get("message", "")).lower():
         print("   诊断：更新 .github/workflows 需要 PAT 勾选 workflow scope。")
     sys.exit(1)
-print(f"   ✅ 已推送 main（commit {commit['sha'][:8]}），push 事件将自动触发 CI")
+PUSHED_SHA = commit["sha"]
+print(f"   ✅ 已推送 main（commit {PUSHED_SHA[:8]}），push 事件将自动触发 CI")
 
 # ---------- 5. 等待构建 ----------
+# 只认【本次 commit sha】触发的 run：仓库里可能残留历史失败 run，
+# 若按「第一个 IPA run」取，会误判成旧的 failure 而提前退出。
 print("== 等待构建（最长约 20 分钟）==")
 run_id, final, dispatched = "", "", False
 for i in range(60):
-    code, runs, _ = call("GET", REPO + f"/actions/runs?per_page=10")
-    candidates = [r for r in runs.get("workflow_runs", []) if "IPA" in (r.get("name") or "")]
-    r = (candidates or runs.get("workflow_runs") or [{}])[0]
+    code, runs, _ = call("GET", REPO + f"/actions/runs?per_page=20")
+    all_runs = runs.get("workflow_runs", [])
+    candidates = [r for r in all_runs
+                  if r.get("head_sha") == PUSHED_SHA and "IPA" in (r.get("name") or "")]
+    r = candidates[0] if candidates else {}
     rid, status = r.get("id", ""), r.get("status", "")
     conclusion = r.get("conclusion") or "pending"
     if rid:
         print(f"   run {rid}: {status} / {conclusion}")
+    elif i == 0:
+        print("   等待本次 commit 的 run 出现…")
     if rid and status == "completed":
         run_id, final = rid, conclusion
         break
