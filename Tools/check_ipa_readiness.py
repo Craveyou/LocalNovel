@@ -96,7 +96,9 @@ def main():
     check("打包脚本 bash 语法通过", bash.returncode == 0, bash.stderr.strip())
 
     wf = files["CI workflow"].read_text(encoding="utf-8")
-    check("workflow 含 macOS runner", "runs-on:" in wf and "macos-26" in wf)
+    check("workflow 默认使用 xcode-27 镜像（含 iOS 27 SDK）",
+          "runs-on:" in wf and "xcode-27" in wf
+          and "github.event.inputs.runner || 'xcode-27'" in wf)
     check("workflow 断言 Xcode 27", "MAJOR" in wf and "-ge 27" in wf)
     check("workflow 关闭签名、不接触 Apple 账号",
           "CODE_SIGNING_ALLOWED=NO" in wf and "DEVELOPMENT_TEAM=\"\"" in wf)

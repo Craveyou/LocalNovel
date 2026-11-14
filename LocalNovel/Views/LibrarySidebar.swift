@@ -46,13 +46,24 @@ struct LibrarySidebar: View {
             }
         }
         .safeAreaInset(edge: .bottom) {
-            if let message = library.errorMessage {
-                Text(message)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .padding(8)
-                    .frame(maxWidth: .infinity)
-                    .background(Color.red.opacity(0.08))
+            // iPhone 上第一栏可见、WelcomeView 未必可见，诊断必须在这里也能看到
+            VStack(spacing: 0) {
+                if let info = library.diagnostics {
+                    Text(info)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .padding(8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.blue.opacity(0.08))
+                }
+                if let message = library.errorMessage {
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .padding(8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.red.opacity(0.08))
+                }
             }
         }
     }

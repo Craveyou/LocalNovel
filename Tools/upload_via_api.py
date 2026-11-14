@@ -27,7 +27,7 @@ import zipfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 API = "https://api.github.com"
 REPO_NAME = os.environ.get("REPO_NAME", "LocalNovel")
-RUNNER = os.environ.get("RUNNER_LABEL", "macos-26")
+RUNNER = os.environ.get("RUNNER_LABEL", "xcode-27")
 
 # 不上传的目录/文件
 EXCLUDE_DIRS = {".git", "build", "__pycache__", ".DS_Store"}

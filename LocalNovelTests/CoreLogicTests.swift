@@ -92,6 +92,45 @@ final class CoreLogicTests: XCTestCase {
         XCTAssertEqual(library.books.first?.chapters.map { $0.rawName }, ["01_第一章", "02_第二章"])
     }
 
+    /// 导入层级自动识别：选中不同层级都能得到书，且诊断可读
+    func testLayoutAutoDetection() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LocalNovelLayout-" + UUID().uuidString)
+        let author = root.appendingPathComponent("作者甲")
+        let chapter1 = author.appendingPathComponent("01_序章")
+        try FileManager.default.createDirectory(at: chapter1, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: author.appendingPathComponent("02_第二章"),
+                                                withIntermediateDirectories: true)
+        try Data("x".utf8).write(to: chapter1.appendingPathComponent("正文.txt"))
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        // 选书库根
+        let r1 = BookScanner.scanWithDiagnostics(rootURL: root)
+        XCTAssertEqual(r1.layout, .libraryRoot)
+        XCTAssertEqual(r1.library.books.count, 1)
+        XCTAssertEqual(r1.library.books.first?.chapters.count, 2)
+        XCTAssertNil(r1.failureHint)
+
+        // 只选作者文件夹
+        let r2 = BookScanner.scanWithDiagnostics(rootURL: author)
+        XCTAssertEqual(r2.layout, .singleBook)
+        XCTAssertEqual(r2.library.books.count, 1)
+        XCTAssertEqual(r2.library.books.first?.chapters.count, 2)
+
+        // 只选章节文件夹
+        let r3 = BookScanner.scanWithDiagnostics(rootURL: chapter1)
+        XCTAssertEqual(r3.layout, .chapterFolder)
+        XCTAssertEqual(r3.library.books.count, 1)
+        XCTAssertEqual(r3.library.books.first?.chapters.count, 1)
+
+        // 空目录：明确给出失败提示，而不是笼统一句「没找到结构」
+        let empty = root.appendingPathComponent("空目录")
+        try FileManager.default.createDirectory(at: empty, withIntermediateDirectories: true)
+        let r4 = BookScanner.scanWithDiagnostics(rootURL: empty)
+        XCTAssertEqual(r4.layout, .empty)
+        XCTAssertNotNil(r4.failureHint)
+    }
+
     /// 空章节 / 缺正文不崩溃
     func testEmptyChapterIsSafe() throws {
         let root = FileManager.default.temporaryDirectory

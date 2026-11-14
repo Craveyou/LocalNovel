@@ -193,6 +193,40 @@ def scan_library(root: Path):
     return natural_sorted(books, key=lambda b: b[0])
 
 
+def scan_with_diagnostics(root: Path):
+    """对齐 Swift BookScanner.scanWithDiagnostics：自动识别用户选中的层级。
+    返回 (layout, book_titles, chapter_names) 三元组。
+    """
+    if not root.is_dir():
+        return ("unreadable", [], [])
+    all_items = [p for p in root.iterdir() if not is_hidden(p.name)]
+    folders = natural_sorted([p for p in all_items if p.is_dir()], key=lambda p: p.name)
+    media = [p for p in all_items
+             if p.is_file() and classify(p.name) is not None]
+
+    # A. 无子文件夹但有媒体文件 → 选中的是章节文件夹，包装成单章书
+    if not folders:
+        if media:
+            return ("chapterFolder", [root.name], [root.name])
+        return ("empty", [], [])
+
+    # B. 有子文件夹：探测第一个，判断是否还有更深层
+    nested = subdirectories(folders[0])
+    if nested:
+        # B1 标准书库根：子文件夹 = 作者，其下 = 章节
+        books = []
+        for bf in folders:
+            chapters = [Chapter(cf, cf.name, cf.name) for cf in subdirectories(bf)]
+            books.append((bf.name, natural_sorted(chapters, key=lambda c: c.raw_name)))
+        books = natural_sorted(books, key=lambda b: b[0])
+        return ("libraryRoot", [b[0] for b in books],
+                [c.raw_name for b in books for c in b[1]])
+    # B2 子文件夹无更深层 → 选中的是单个作者文件夹
+    chapters = natural_sorted([Chapter(cf, cf.name, cf.name) for cf in folders],
+                              key=lambda c: c.raw_name)
+    return ("singleBook", [root.name], [c.raw_name for c in chapters])
+
+
 # ---------------------------------------------------------------- 测试用例
 
 PASS, FAIL = [], []
@@ -284,6 +318,45 @@ def main():
     for raw, expect in [("01_序章", "序章"), ("第01章 起风了", "起风了"), ("纯标题", "纯标题")]:
         cleaned = clean_title(raw)
         check(f"clean({raw})", cleaned == expect, cleaned)
+
+    print("\n== F. 导入层级自动识别（新增：修复「添加不到软件里」） ==")
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix="ln-layout-") as td:
+        base = Path(td)
+
+        # F1 标准书库根：作者 / 章节 / 文件
+        r1 = base / "书库"
+        a1 = r1 / "作者甲"
+        (a1 / "01_序章").mkdir(parents=True)
+        (a1 / "02_第二章").mkdir(parents=True)
+        (a1 / "01_序章" / "正文.txt").write_text("x")
+        layout, books, chapters = scan_with_diagnostics(r1)
+        check("F1 选书库根 → libraryRoot", layout == "libraryRoot", layout)
+        check("F1 识别为 1 本书 / 2 章", books == ["作者甲"] and len(chapters) == 2,
+              f"{books} / {chapters}")
+
+        # F2 直接选作者文件夹：里面就是章节文件夹
+        layout, books, chapters = scan_with_diagnostics(a1)
+        check("F2 只选作者文件夹 → singleBook", layout == "singleBook", layout)
+        check("F2 仍得到 1 本书 / 2 章", len(books) == 1 and len(chapters) == 2,
+              f"{books} / {chapters}")
+
+        # F3 直接选章节文件夹：里面直接是媒体文件
+        layout, books, chapters = scan_with_diagnostics(a1 / "01_序章")
+        check("F3 选章节文件夹 → chapterFolder", layout == "chapterFolder", layout)
+        check("F3 包装成单章书", len(books) == 1 and len(chapters) == 1,
+              f"{books} / {chapters}")
+
+        # F4 空目录 / 只有无关文件 → empty 且明确可区分
+        r4 = base / "空目录"
+        r4.mkdir()
+        check("F4 空目录 → empty", scan_with_diagnostics(r4)[0] == "empty")
+        (r4 / "notes.docx").write_text("x")
+        check("F4 只有未识别文件仍 → empty", scan_with_diagnostics(r4)[0] == "empty")
+
+        # F5 顶层条目数可被诊断（用于 UI 展示「读到了几个条目」）
+        top = len([p for p in r1.iterdir() if not is_hidden(p.name)])
+        check("F5 顶层条目可统计", top == 1, str(top))
 
     print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")
     if FAIL:

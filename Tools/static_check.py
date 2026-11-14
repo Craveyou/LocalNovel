@@ -101,6 +101,7 @@ NEEDS_IMPORT = {
 
 EXPECTED_TYPES = [
     "MediaKind", "MediaItem", "Chapter", "ChapterContent", "Book", "Library",
+    "LibraryLayout", "ScanDiagnostics",
     "NaturalSort", "MediaResolver", "ChapterTitleCleaner", "BookScanner", "TextLoader",
     "RootFolderAccess", "LibraryStore", "Preferences", "ProgressStore",
     "FrameDetector", "ImageLoader", "AnimatedFrame", "AnimatedFrameCache",
@@ -183,6 +184,33 @@ def main():
     check("pbxproj 使用同步组（免逐文件登记）", "PBXFileSystemSynchronizedRootGroup" in pbx)
     check("部署目标 iOS 27", "IPHONEOS_DEPLOYMENT_TARGET = 27.0" in pbx)
     check("目标设备含 iPad", 'TARGETED_DEVICE_FAMILY = "1,2"' in pbx)
+
+    print("\n== F0. 书库导入健壮性（修复「能打开文件夹但加不进书」） ==")
+    scanner = (APP / "Core" / "BookScanner.swift").read_text(encoding="utf-8")
+    access = (APP / "Core" / "RootFolderAccess.swift").read_text(encoding="utf-8")
+    store = (APP / "Core" / "LibraryStore.swift").read_text(encoding="utf-8")
+    welcome = (APP / "Views" / "RootView.swift").read_text(encoding="utf-8")
+    check("保留原 scan(rootURL:) 接口（单元测试兼容）",
+          "static func scan(rootURL:" in scanner)
+    check("新增带诊断的层级自动识别", "scanWithDiagnostics" in scanner)
+    check("覆盖 三层选法（书库根 / 作者 / 章节）",
+          all(t in scanner for t in [".libraryRoot", ".singleBook", ".chapterFolder"]))
+    check("目录读取失败不再被静默吞掉", "throw" in scanner and "readError" in scanner)
+    check("保存书签后不再 stop→resolve→start 两段式",
+          "func saveRootFolder(_ url: URL) -> URL" in access
+          and "return url" in access
+          and "resolvingBookmarkData" not in access.split("func saveRootFolder")[1].split("func restoreRootFolder")[0])
+    check("书签持久化失败不阻断本次扫描",
+          "try? url.bookmarkData" in access
+          and "try RootFolderAccess.shared.saveRootFolder" not in store)
+    check("handleImport 直接用仍持有访问权的原 URL 扫描",
+          "saveRootFolder(url)" in store and "rebuild(root: root)" in store)
+    check("书签未持久化时有可见提示",
+          "hasSavedRoot()" in store and "权限未能持久化" in store)
+    check("UI 明确引导 iOS「点右上角打开/选择」", "打开 / 选择" in welcome)
+    check("提供 App 文档目录零权限兜底", "useAppDocuments" in store and "usingAppDocuments" in store)
+    check("Info.plist 开启文件共享（文档目录可见）", "UIFileSharingEnabled" in plist)
+    check("诊断信息在 iPhone 第一栏也可见", "library.diagnostics" in (APP / "Views" / "LibrarySidebar.swift").read_text(encoding="utf-8"))
 
     print("\n== F. 全屏图片 / 视频全屏 / 长按倍速 ==")
     gallery = (APP / "Views" / "MediaGalleryView.swift").read_text(encoding="utf-8")
