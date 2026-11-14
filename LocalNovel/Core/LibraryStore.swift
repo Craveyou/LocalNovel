@@ -82,6 +82,8 @@ final class LibraryStore: ObservableObject {
     /// 每次回到前台：当前没有书时自动补扫 App 文档目录。
     /// 用户在「文件」App 把作者文件夹放进去后，切回 App 书就自动出现，零点击。
     func refreshOnForeground() {
+        // 用户可能删掉了说明文件；每次回前台补写，保证「文件」App 里目录始终可见
+        DocumentsBootstrap.ensureVisibleInFilesApp()
         guard library?.books.isEmpty != false else { return }
         guard let docs = appDocumentsURL() else { return }
         let report = BookScanner.scanWithDiagnostics(
@@ -101,7 +103,7 @@ final class LibraryStore: ObservableObject {
     func noteImportStarted(_ label: String) {
         headline = "正在打开「\(label)」…"
         errorMessage = nil
-        diagnostics = "若没有弹出文件选择器，说明系统选择器在当前环境不可用：请改用「文件」App → 我的 iPhone → 本地小说，把作者文件夹放进去，回到本 App 会自动出现。"
+        diagnostics = "若没有弹出文件选择器：请在「文件」App 顶部搜索框搜「本地小说」找到文档目录，把作者文件夹放进去，回到本 App 会自动出现。"
     }
 
     // MARK: - 备用：唯一的文件选择器
@@ -155,7 +157,7 @@ final class LibraryStore: ObservableObject {
     private func applyImportFailure(_ error: Error) {
         headline = "导入失败"
         errorMessage = "导入失败：\(error.localizedDescription)"
-        diagnostics = "可改用零交互方式：把作者文件夹放进「文件」App → 我的 iPhone → 本地小说，回到本 App 会自动出现。"
+        diagnostics = "可改用零交互方式：在「文件」App 顶部搜索「本地小说」找到文档目录，把作者文件夹放进去，回到本 App 会自动出现。"
     }
 
     private func applyNoSelection() {
@@ -231,7 +233,7 @@ final class LibraryStore: ObservableObject {
                                books: [])
         self.diagnostics = line
         self.headline = "书库为空"
-        self.errorMessage = "把【作者文件夹】放进「文件」App → 我的 iPhone → 本地小说，然后回到本 App（会自动出现，无需点按钮）。也可点右上角「＋」用文件选择器导入。"
+        self.errorMessage = "把【作者文件夹】放进「文件」App → 我的 iPhone → 本地小说，回到本 App 会自动出现。若在「文件」App 看不到该目录：在顶部搜索框搜「本地小说」，或直接点右上角「＋」选择书库目录 / 书库内任意文件。"
         self.usingAppDocuments = false
         _ = docsReport
     }

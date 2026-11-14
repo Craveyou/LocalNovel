@@ -76,6 +76,12 @@ jobs:
           test -d "$APP"
           test -f "$APP/LocalNovel"
           file "$APP/LocalNovel" | grep -q arm64
+          # 图标：asset catalog 必须编进 Assets.car，且 Info.plist 里有图标声明
+          test -f "$APP/Assets.car" || { echo "::error::Assets.car 缺失，AppIcon 资源未被编译"; exit 1; }
+          plutil -p "$APP/Info.plist" | grep -qE "CFBundleIconName|CFBundleIconFiles" || {
+            echo "::error::Info.plist 缺少图标声明"; exit 1; }
+          echo "== 图标配置 =="
+          plutil -p "$APP/Info.plist" | grep -A6 -E "CFBundleIcons|CFBundleIconName" | head -20
           rm -rf "$RUNNER_TEMP/ipa"
           mkdir -p "$RUNNER_TEMP/ipa/Payload"
           ditto "$APP" "$RUNNER_TEMP/ipa/Payload/LocalNovel.app"

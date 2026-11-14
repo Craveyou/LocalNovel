@@ -77,6 +77,26 @@ def main():
     check("含 UISceneConfigurations（避免启动黑屏）",
           "UISceneConfigurations" in plist.get("UIApplicationSceneManifest", {}))
 
+    print("\n-- C2. 文件 App 目录可见 / App 图标 --")
+    check("文件共享与就地打开均开启",
+          plist.get("UIFileSharingEnabled") is True
+          and plist.get("LSSupportsOpeningDocumentsInPlace") is True)
+    check("Documents 说明文件引导（Apple 要求目录里至少一个文件）",
+          (APP / "Core" / "DocumentsBootstrap.swift").is_file())
+    check("版本号提升以刷新系统元数据", plist.get("CFBundleVersion") == "2")
+    check("CFBundleIcons 声明图标文件",
+          "CFBundleIconFiles" in plist.get("CFBundleIcons", {})
+          .get("CFBundlePrimaryIcon", {}))
+    icon_set = APP / "Assets.xcassets" / "AppIcon.appiconset"
+    check("AppIcon asset catalog 存在",
+          (icon_set / "Contents.json").is_file() and (icon_set / "AppIcon.png").is_file())
+    check("散装图标 PNG 覆盖 iPhone / iPad / 1024",
+          all((APP / f"AppIcon-{s}.png").is_file() for s in (120, 152, 167, 180, 1024)))
+    check("构建设置指向 AppIcon asset",
+          "ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon" in pbx)
+    check("CI 断言 Assets.car 编译结果",
+          "Assets.car" in files["CI workflow"].read_text(encoding="utf-8"))
+
     print("\n-- D. XML / 脚本 / CI 配置 --")
     for label, key in [("scheme", "scheme"), ("workspace", "workspace")]:
         try:

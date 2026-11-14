@@ -111,6 +111,7 @@ EXPECTED_TYPES = [
     "LibrarySidebar", "ChapterListView", "SettingsView", "LocalNovelApp",
     "RateBoostGesture", "RateBoostCoordinator", "AudioSurfaceView",
     "ZoomableImageView", "FullscreenVideoView", "FullscreenPlayerHost",
+    "DocumentsBootstrap", "ImportMode",
 ]
 
 NETWORK_PATTERNS = [
@@ -268,6 +269,34 @@ def main():
     check("音频面板也支持长按倍速", "AudioSurfaceView" in code_only)
     check("未申请任何新系统能力（仍零权限）",
           "UIBackgroundModes" not in plist and "NSAppTransportSecurity" not in plist)
+
+    print("\n== G. 文件 App 目录可见 / App 图标 ==")
+    bootstrap = (APP / "Core" / "DocumentsBootstrap.swift").read_text(encoding="utf-8")
+    resolver = (APP / "Core" / "MediaResolver.swift").read_text(encoding="utf-8")
+    app_entry = (APP / "App" / "LocalNovelApp.swift").read_text(encoding="utf-8")
+    wf_text = (ROOT / ".github" / "workflows" / "build-unsigned-ipa.yml").read_text(encoding="utf-8")
+    icon_set = APP / "Assets.xcassets" / "AppIcon.appiconset"
+    check("Documents 目录启动即写说明文件（Apple 第 3 个条件）",
+          "ensureVisibleInFilesApp" in bootstrap and "guideText.write" in bootstrap
+          and "DocumentsBootstrap.ensureVisibleInFilesApp()" in app_entry)
+    check("说明文件不被扫描器误当成一章正文",
+          "guideFileName" in bootstrap
+          and "DocumentsBootstrap.guideFileName" in resolver)
+    check("切回前台补写说明文件", "DocumentsBootstrap.ensureVisibleInFilesApp()" in store)
+    check("版本号提升以刷新系统元数据",
+          "<string>2</string>" in plist and "CURRENT_PROJECT_VERSION = 2" in pbx)
+    check("UI 给出「文件 App 搜索本地小说」兜底路径",
+          "搜索框搜「本地小说」" in welcome and "搜索「本地小说」" in store)
+    check("AppIcon asset catalog（1024 + Contents.json）",
+          (icon_set / "Contents.json").is_file() and (icon_set / "AppIcon.png").is_file())
+    check("散装图标 PNG 覆盖 iPhone / iPad 尺寸",
+          all((APP / f"AppIcon-{s}.png").is_file() for s in (120, 152, 167, 180, 1024)))
+    check("Info.plist 声明图标文件（无 asset catalog 时的退路）",
+          "CFBundleIconFiles" in plist and "CFBundleIcons~ipad" in plist)
+    check("构建设置指向 AppIcon asset",
+          "ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon" in pbx)
+    check("CI 断言 Assets.car 与图标声明",
+          "Assets.car" in wf_text and "CFBundleIconName|CFBundleIconFiles" in wf_text)
 
     print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")
     if FAIL:

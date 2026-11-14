@@ -21,7 +21,9 @@ enum MediaResolver {
     }
 
     static func isHidden(_ name: String) -> Bool {
-        name.hasPrefix(".") || name == "Thumbs.db" || name == "desktop.ini"
+        if name.hasPrefix(".") || name == "Thumbs.db" || name == "desktop.ini" { return true }
+        // App 启动写入的说明文件：只用于让「文件」App 显示文档目录，不属于书库内容
+        return name == DocumentsBootstrap.guideFileName
     }
 
     /// 按扩展名分类；返回 nil 表示不认识的文件

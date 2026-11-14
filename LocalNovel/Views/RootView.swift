@@ -82,7 +82,9 @@ struct WelcomeView: View {
                     Text("1. 打开「文件」App → 我的 iPhone → 本地小说\n"
                        + "2. 把【作者文件夹】整个复制进去（里面是章节文件夹）\n"
                        + "3. 回到本 App —— 书会自动出现，无需点任何按钮、无需授权\n\n"
-                       + "提示：放的是作者文件夹本身，不要再多包一层「书」文件夹。")
+                       + "提示：放的是作者文件夹本身，不要再多包一层「书」文件夹。\n"
+                       + "看不到「本地小说」目录？在「文件」App 顶部搜索框搜「本地小说」即可找到；"
+                       + "目录里有一份「放书说明.txt」，App 启动时会自动生成。")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
