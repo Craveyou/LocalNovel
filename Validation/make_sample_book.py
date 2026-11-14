@@ -124,6 +124,27 @@ def main():
     ])
     make_pdf(novel / "样例pdf.pdf", ["Chapter 1 旧城", "Chapter 2 灯火"])
 
+    # 小说区的子文件夹 = 一个系列（用户自己整理的方式）
+    series1 = novel / "银河旧事"
+    series1.mkdir()
+    write_text(series1 / "第一部 启程.txt", [
+        "第一章 出发",
+        "船坞的灯一盏盏亮起来，他把最后一箱行李搬上舷梯。",
+        "第二章 星尘",
+        "舷窗外，星尘像雪一样落下来。",
+    ])
+    write_text(series1 / "第二部 归途.txt", [
+        "第一章 回望",
+        "返航的第七天，通讯器里终于传来熟悉的杂音。",
+    ])
+    # 再嵌一层：系列 · 子系列
+    series2 = novel / "长篇三部曲" / "前传"
+    series2.mkdir(parents=True)
+    write_text(series2 / "前传.txt", ["第一章 旧年", "故事开始得比所有人记得的都早。"])
+
+    # 小说区根目录里也放一个非电子书文件，验证会被忽略
+    (novel / "读书笔记.md").write_text("# 笔记\n\n这里是一份可以直接打开的书。\n", encoding="utf-8")
+
     # ---------------- 漫画 ----------------
     comic = ROOT / "漫画" / "星海旅人"
     p1 = comic / "第1部" / "第1话"

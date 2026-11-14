@@ -67,16 +67,19 @@ enum NovelScanner {
     static func scan(rootURL: URL, cleanTitles: Bool,
                      fileManager: FileManager = .default) -> [Book] {
         var books: [Book] = []
-        collect(in: rootURL, depth: 0, into: &books,
+        collect(in: rootURL, depth: 0, series: [], into: &books,
                 cleanTitles: cleanTitles, fileManager: fileManager)
         return NaturalSort.sorted(books) { $0.title }
     }
 
-    /// 递归最多 3 层：兼容「小说/作者/书名.txt」这种多分一层的放法
-    private static func collect(in dir: URL, depth: Int, into books: inout [Book],
+    /// 递归最多 3 层。
+    /// · 根目录里的电子书文件 = 独立的一本书（不属于任何系列）
+    /// · 根目录下的子文件夹 = 一个系列，往里多一层就是「系列 · 子系列」
+    private static func collect(in dir: URL, depth: Int, series: [String], into books: inout [Book],
                                 cleanTitles: Bool, fileManager: FileManager) {
         let files = BookScanner.files(in: dir, fileManager: fileManager)
             .filter { isNovelFile($0) }
+        let seriesName = series.isEmpty ? nil : series.joined(separator: " · ")
         for file in files {
             let raw = file.deletingPathExtension().lastPathComponent
             let title = cleanTitles ? ChapterTitleCleaner.clean(raw) : raw
@@ -84,12 +87,14 @@ enum NovelScanner {
                             title: title,
                             category: .novel,
                             chapters: placeholderChapter(for: file, title: title),
-                            chaptersDeferred: true)
+                            chaptersDeferred: true,
+                            series: seriesName)
             books.append(book)
         }
         guard depth < 3 else { return }
         for sub in BookScanner.subdirectories(at: dir, fileManager: fileManager) {
-            collect(in: sub, depth: depth + 1, into: &books,
+            collect(in: sub, depth: depth + 1,
+                    series: series + [sub.lastPathComponent], into: &books,
                     cleanTitles: cleanTitles, fileManager: fileManager)
         }
     }

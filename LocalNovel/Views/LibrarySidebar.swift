@@ -3,42 +3,51 @@ import SwiftUI
 // MARK: - 第一栏：书库首页 = 三个文件夹（小说 / 漫画 / 整理）
 //
 // 分类由目录决定：书放在哪个分区就是哪一类，不再按内容猜测、也不再手动改分类。
-// 首页只显示三个文件夹卡片；点进去看该分区的书，左上角返回。
-// iPhone 折叠模式下这一栏就是第一屏，状态与导入入口必须大字可见。
+// 层级：书库 → 分区 → 系列（小说区的中间文件夹）→ 书 → 章节。
+// 每一层都支持两种返回：左上角「‹ 上级」按钮，以及从左边缘向右滑。
 
 struct LibrarySidebar: View {
     @EnvironmentObject private var library: LibraryStore
     @Binding var selection: Book?
 
     @State private var openedSection: BookCategory?
+    /// 小说分区里的系列文件夹；nil 表示还在分区这一层
+    @State private var openedSeries: String?
     @State private var pendingDelete: Book?
     @State private var resultMessage: String?
     @State private var showSettings = false
 
     private var allBooks: [Book] { library.library?.books ?? [] }
 
+    private var currentTitle: String {
+        openedSeries ?? openedSection?.label ?? "书库"
+    }
+
     var body: some View {
         Group {
-            if !allBooks.isEmpty {
-                if let section = openedSection {
-                    sectionBooks(section)
-                } else {
-                    sectionHome
-                }
-            } else {
+            if allBooks.isEmpty {
                 EmptyLibraryState()
+            } else if let section = openedSection, let series = openedSeries {
+                seriesBooks(section, series: series)
+            } else if let section = openedSection {
+                sectionBooks(section)
+            } else {
+                sectionHome
             }
         }
-        .navigationTitle(openedSection?.label ?? "书库")
+        .navigationTitle(currentTitle)
+        // 分区 / 系列页：从左边缘向右滑返回上一级（与系统返回手势一致）
+        .simultaneousGesture(backSwipe)
         // 书架（首页）直达独立设置页：字号、行距、外观等所有偏好都集中在那里
         .sheet(isPresented: $showSettings) { SettingsView() }
         .toolbar {
             ToolbarItem(placement: .navigationBarLeading) {
-                if openedSection != nil {
+                if let section = openedSection {
                     Button {
-                        openedSection = nil
+                        backToParent()
                     } label: {
-                        Label("书库", systemImage: "chevron.left")
+                        Label(openedSeries == nil ? "书库" : section.label,
+                              systemImage: "chevron.left")
                     }
                 } else {
                     Button { showSettings = true } label: {
@@ -50,19 +59,19 @@ struct LibrarySidebar: View {
                 Menu {
                     Button {
                         library.importTargetSection = openedSection
+                        library.importTargetSeries = openedSeries
                         library.noteImportStarted(ImportMode.file.label)
                         library.activeImport = .file
                     } label: {
-                        Label(openedSection.map { "导入文件到「\($0.label)」" } ?? "导入书籍文件",
-                              systemImage: "doc.badge.plus")
+                        Label(importLabel(isFolder: false), systemImage: "doc.badge.plus")
                     }
                     Button {
                         library.importTargetSection = openedSection
+                        library.importTargetSeries = openedSeries
                         library.noteImportStarted(ImportMode.folder.label)
                         library.activeImport = .folder
                     } label: {
-                        Label(openedSection.map { "导入文件夹到「\($0.label)」" } ?? "导入书籍文件夹",
-                              systemImage: "folder.badge.plus")
+                        Label(importLabel(isFolder: true), systemImage: "folder.badge.plus")
                     }
                     Button {
                         library.useAppDocuments()
@@ -120,6 +129,37 @@ struct LibrarySidebar: View {
         }
     }
 
+    // MARK: - 层级返回（按钮 + 右滑手势共用）
+
+    private func backToParent() {
+        withAnimation(.easeOut(duration: 0.2)) {
+            if openedSeries != nil {
+                openedSeries = nil
+            } else {
+                openedSection = nil
+            }
+        }
+    }
+
+    /// 左边缘起手、明显向右、纵向几乎不动 —— 才当作返回，避免和列表滚动 / 行内左滑冲突
+    private var backSwipe: some Gesture {
+        DragGesture(minimumDistance: 20, coordinateSpace: .local)
+            .onEnded { value in
+                guard openedSection != nil else { return }
+                guard value.startLocation.x <= 44,
+                      value.translation.width >= 80,
+                      abs(value.translation.height) <= 70 else { return }
+                backToParent()
+            }
+    }
+
+    private func importLabel(isFolder: Bool) -> String {
+        let action = isFolder ? "导入文件夹" : "导入文件"
+        if let series = openedSeries { return "\(action)到「\(series)」" }
+        if let section = openedSection { return "\(action)到「\(section.label)」" }
+        return isFolder ? "导入书籍文件夹" : "导入书籍文件"
+    }
+
     // MARK: - 首页：三个文件夹
 
     private var sectionHome: some View {
@@ -128,13 +168,6 @@ struct LibrarySidebar: View {
                 ForEach(BookCategory.allCases) { category in
                     sectionCard(category)
                 }
-
-                Label("在「文件」App → 本地小说 里整理这三个文件夹，回到本 App 会自动同步。",
-                      systemImage: "arrow.triangle.2.circlepath")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.top, 4)
             }
             .padding(16)
         }
@@ -143,7 +176,10 @@ struct LibrarySidebar: View {
     private func sectionCard(_ category: BookCategory) -> some View {
         let count = library.count(in: category)
         return Button {
-            openedSection = category
+            withAnimation(.easeOut(duration: 0.18)) {
+                openedSection = category
+                openedSeries = nil
+            }
         } label: {
             HStack(spacing: 14) {
                 Image(systemName: category.symbol)
@@ -178,16 +214,85 @@ struct LibrarySidebar: View {
         .buttonStyle(.plain)
     }
 
-    // MARK: - 分区内书列表
+    // MARK: - 分区内：系列文件夹 + 未分组的书
 
     private func sectionBooks(_ category: BookCategory) -> some View {
-        let books = library.books(in: category)
+        let seriesNames = library.seriesNames(in: category)
+        let loose = library.books(in: category, series: nil)
         return Group {
-            if books.isEmpty {
+            if seriesNames.isEmpty && loose.isEmpty {
                 ContentUnavailableView {
                     Label("「\(category.label)」是空的", systemImage: category.symbol)
                 } description: {
                     Text(category.emptyDescription)
+                }
+            } else if seriesNames.isEmpty {
+                List(loose, id: \.id, selection: $selection) { book in
+                    row(book)
+                }
+            } else {
+                List(selection: $selection) {
+                    Section {
+                        ForEach(seriesNames, id: \.self) { name in
+                            seriesRow(name, category: category)
+                        }
+                    } header: {
+                        Text("系列")
+                    }
+                    if !loose.isEmpty {
+                        Section {
+                            ForEach(loose, id: \.id) { book in
+                                row(book)
+                            }
+                        } header: {
+                            Text("未分组")
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func seriesRow(_ name: String, category: BookCategory) -> some View {
+        let count = library.count(in: category, series: name)
+        return Button {
+            withAnimation(.easeOut(duration: 0.18)) {
+                openedSeries = name
+            }
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "folder.fill")
+                    .font(.body)
+                    .foregroundStyle(.tint)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(name)
+                        .font(.body)
+                        .foregroundStyle(.primary)
+                        .lineLimit(2)
+                    Text("\(count) 本")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: - 系列内：书列表
+
+    private func seriesBooks(_ category: BookCategory, series: String) -> some View {
+        let books = library.books(in: category, series: series)
+        return Group {
+            if books.isEmpty {
+                ContentUnavailableView {
+                    Label("「\(series)」里还没有书", systemImage: "folder")
+                } description: {
+                    Text("把 txt / md / epub / pdf 放进这个文件夹，回到本 App 会自动出现。")
                 }
             } else {
                 List(books, id: \.id, selection: $selection) { book in
@@ -237,7 +342,7 @@ struct LibrarySidebar: View {
         book.category == .comic ? "话" : "章"
     }
 
-    // MARK: - 底部状态
+    // MARK: - 底部状态（只显示进行中的任务与错误，不放常驻说明）
 
     private var statusBar: some View {
         VStack(spacing: 0) {
@@ -262,14 +367,6 @@ struct LibrarySidebar: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(Color.orange.opacity(0.12))
             }
-            if let info = library.diagnostics {
-                Text(info)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .padding(8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.blue.opacity(0.08))
-            }
             if let message = library.errorMessage {
                 Text(message)
                     .font(.footnote)
@@ -288,7 +385,8 @@ private extension BookCategory {
     var emptyDescription: String {
         switch self {
         case .novel:
-            return "把 txt / md / epub / pdf 文件直接放进「小说」文件夹，一个文件就是一本，打开时自动按「第X章」分章。"
+            return "把 txt / md / epub / pdf 直接放进「小说」就是一个文件一本书；"
+                + "也可以先建一个文件夹当系列，把同一系列的书放进去。打开时自动按「第X章」分章。"
         case .comic:
             return "每部漫画一个文件夹：漫画名 → 第1部 → 第1话 → 图片；也可以 漫画名 → 第5话.pdf。"
         case .organized:
@@ -323,7 +421,7 @@ private struct EmptyLibraryState: View {
                     .font(.headline)
 
                 Text("打开「文件」App → 我的 iPhone → 本地小说，你会看到：\n"
-                   + "小说/    每个 txt / md / epub / pdf 文件就是一本\n"
+                   + "小说/    每个 txt / md / epub / pdf 就是一本；文件夹 = 一个系列\n"
                    + "漫画/    漫画名 → 第1部 → 第1话 → 图片，或直接用 pdf\n"
                    + "整理/    作者名 → 章节名 → 正文.txt + 按序号图片 + 音视频")
                     .font(.body)
@@ -357,6 +455,7 @@ private struct EmptyLibraryState: View {
                 HStack(spacing: 12) {
                     Button {
                         library.importTargetSection = nil
+                        library.importTargetSeries = nil
                         library.noteImportStarted(ImportMode.file.label)
                         library.activeImport = .file
                     } label: {

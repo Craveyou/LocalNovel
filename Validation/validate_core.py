@@ -165,6 +165,7 @@ class Book:
     title: str
     category: str
     chapters: list[Chapter]
+    series: str | None = None
 
 
 def resolve_chapter(ch: Chapter, animated_detector=animated_by_ext) -> ChapterContent:
@@ -233,22 +234,24 @@ def files_in(folder: Path):
 # ---------------- 小说 ----------------
 
 def scan_novel(root: Path):
-    found: list[Path] = []
+    """每个电子书文件一本书；根目录下的子文件夹 = 一个系列（"系列 · 子系列"）"""
+    found: list[tuple[Path, str | None]] = []
 
-    def collect(d: Path, depth: int):
+    def collect(d: Path, depth: int, series: list[str]):
         for p in sorted(d.iterdir()):
             if is_hidden(p.name):
                 continue
             if p.is_dir():
                 if depth < 3:
-                    collect(p, depth + 1)
+                    collect(p, depth + 1, series + [p.name])
             elif ext(p.name) in NOVEL_EXT:
-                found.append(p)
+                found.append((p, " · ".join(series) if series else None))
 
     if root.is_dir():
-        collect(root, 0)
+        collect(root, 0, [])
     books = [Book(p, stem(p.name), "novel",
-                  [Chapter(p, p.name, stem(p.name), "slice")]) for p in found]
+                  [Chapter(p, p.name, stem(p.name), "slice")], series)
+             for p, series in found]
     return natural_sorted(books, key=lambda b: b.title)
 
 
@@ -508,8 +511,8 @@ def main():
     print("\n== C. 三分区书库根 ==")
     layout, books = scan_sections(SAMPLE)
     check("识别为三分区根", layout == "sections", layout)
-    check("小说 3 本（txt / 无章节 txt / epub / pdf 共 4 本）",
-          len([b for b in books if b.category == "novel"]) == 4,
+    check("小说 8 本（根目录 5 本 + 系列里 3 本）",
+          len([b for b in books if b.category == "novel"]) == 8,
           str([b.title for b in books if b.category == "novel"]))
     check("漫画 2 部",
           len([b for b in books if b.category == "comic"]) == 2,
@@ -608,6 +611,28 @@ def main():
 
     short_slices = split_text((SAMPLE / "小说" / "无章节的短篇.txt").read_text(encoding="utf-8"))
     check("无章节标题 → 整本一章", len(short_slices) == 1, str(short_slices))
+
+    print("\n== G2. 小说：文件夹 = 一个系列 ==")
+    novels = [b for b in books if b.category == "novel"]
+    loose = [b for b in novels if b.series is None]
+    grouped = [b for b in novels if b.series]
+    check("分区根目录的书不属于任何系列", len(loose) == 5, str([b.title for b in loose]))
+    check("系列文件夹里的书带系列名",
+          sorted(b.title for b in grouped) == ["前传", "第一部 启程", "第二部 归途"],
+          str(sorted(b.title for b in grouped)))
+    check("一层文件夹 → 系列名", all(b.series == "银河旧事"
+                                 for b in grouped if b.title != "前传"),
+          str([(b.title, b.series) for b in grouped]))
+    check("嵌套一层 → 「系列 · 子系列」",
+          any(b.series == "长篇三部曲 · 前传" for b in grouped),
+          str([b.series for b in grouped]))
+    names = natural_sorted({b.series for b in grouped})
+    check("系列名去重并自然排序（列表顺序稳定）",
+          names == ["银河旧事", "长篇三部曲 · 前传"], str(names))
+    check("按系列过滤只返回该系列的书",
+          len([b for b in novels if b.series == "银河旧事"]) == 2)
+    check("系列内书籍标题取文件名（不带路径）",
+          all("/" not in b.title for b in grouped))
 
     print("\n== H. epub 解析 ==")
     epub_titles = epub_slices(SAMPLE / "小说" / "样例epub.epub")

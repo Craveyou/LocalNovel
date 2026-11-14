@@ -178,7 +178,9 @@ def main():
         if not chapters_data:
             continue
 
-        sections[book.category].append({"title": book.title, "chapters": chapters_data})
+        sections[book.category].append({"title": book.title,
+                                        "series": book.series or "",
+                                        "chapters": chapters_data})
         idx += 1
 
     data = {
@@ -316,10 +318,27 @@ audio{width:100%}
 </div>
 <script>
 const DATA = __DATA__;
-let sec = null, b = 0, c = 0, lbList = [];
+let sec = null, openSeries = null, b = 0, c = 0, lbList = [];
 const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 const section = key => DATA.sections.find(s => s.key === key);
+
+function currentBooks(){
+  const s = section(sec);
+  if(!s) return [];
+  if(openSeries) return s.books.filter(bk => bk.series === openSeries);
+  return s.books;
+}
+
+function seriesNames(s){
+  const out = [];
+  s.books.forEach(bk => { if(bk.series && out.indexOf(bk.series) < 0) out.push(bk.series); });
+  return out;
+}
+
+function bookItem(bk, index){
+  return `<button class="item ${index === b ? 'active' : ''}" data-b="${index}">${esc(bk.title)}<small>${bk.chapters.length} ${sec === 'comic' ? '话' : '章'}</small></button>`;
+}
 
 function renderBooks(){
   if(!sec){
@@ -329,28 +348,69 @@ function renderBooks(){
          <span><span class="t">${esc(s.label)}</span><small>${esc(s.hint)}</small></span>
          <span class="n">${s.books.length}</span>
        </button>`).join('');
-    $('paneBooks').innerHTML = `<h2>书库</h2>${cards}
-      <div class="hint" style="padding:0 16px">在「文件」App → 本地小说 里整理这三个文件夹，回到 App 会自动同步。</div>`;
+    $('paneBooks').innerHTML = `<h2>书库</h2>${cards}`;
     $('paneBooks').querySelectorAll('[data-sec]').forEach(el => el.onclick = () => {
-      sec = el.dataset.sec; b = 0; c = 0; renderBooks(); renderChapters(); show('paneBooks');
+      sec = el.dataset.sec; openSeries = null; b = 0; c = 0;
+      renderBooks(); renderChapters(); show('paneBooks');
     });
-    $('tip').textContent = '书库 → 分区 → 章节';
+    $('tip').textContent = '书库 → 分区 → 系列 → 章节';
     return;
   }
   const s = section(sec);
-  const list = s.books.map((bk, i) =>
-    `<button class="item ${i === b ? 'active' : ''}" data-b="${i}">${esc(bk.title)}<small>${bk.chapters.length} ${sec === 'comic' ? '话' : '章'}</small></button>`).join('');
-  $('paneBooks').innerHTML = `<div class="backbar"><button id="toHome">‹ 书库</button><span>${esc(s.label)}</span></div>${list || '<div class="empty">这个分区还没有书</div>'}`;
-  $('toHome').onclick = () => { sec = null; b = 0; c = 0; renderBooks(); renderChapters(); show('paneBooks'); };
+  const back = `<div class="backbar"><button id="toHome">‹ ${openSeries ? esc(s.label) : '书库'}</button>`
+    + `<span>${esc(openSeries || s.label)}</span></div>`;
+
+  if(openSeries){
+    const list = currentBooks().map((bk, i) => bookItem(bk, i)).join('');
+    $('paneBooks').innerHTML = back + (list || '<div class="empty">这个系列还没有书</div>');
+  } else if(!seriesNames(s).length){
+    const list = s.books.map((bk, i) => bookItem(bk, i)).join('');
+    $('paneBooks').innerHTML = back + (list || '<div class="empty">这个分区还没有书</div>');
+  } else {
+    const folders = seriesNames(s).map(n => {
+      const count = s.books.filter(x => x.series === n).length;
+      return `<button class="item" data-series="${esc(n)}" style="font-weight:600">▸ ${esc(n)}<small>${count} 本</small></button>`;
+    }).join('');
+    const loose = s.books.map((bk, i) => [bk, i]).filter(pair => !pair[0].series);
+    const looseHtml = loose.length
+      ? `<h2>未分组</h2>` + loose.map(pair => bookItem(pair[0], pair[1])).join('')
+      : '';
+    $('paneBooks').innerHTML = back + `<h2>系列</h2>` + folders + looseHtml;
+  }
+
+  $('toHome').onclick = () => goBack();
+  $('paneBooks').querySelectorAll('[data-series]').forEach(el => el.onclick = () => {
+    openSeries = el.dataset.series; b = 0; c = 0;
+    renderBooks(); renderChapters(); show('paneBooks');
+  });
   $('paneBooks').querySelectorAll('[data-b]').forEach(el => el.onclick = () => {
     b = +el.dataset.b; c = 0; renderBooks(); renderChapters(); renderReader(); show('reader');
   });
-  $('tip').textContent = `${s.label} · ${s.books.length} 本`;
+  $('tip').textContent = openSeries
+    ? `${openSeries} · ${currentBooks().length} 本`
+    : `${s.label} · ${s.books.length} 本`;
 }
+
+function goBack(){
+  if(openSeries){ openSeries = null; b = 0; c = 0; renderBooks(); renderChapters(); show('paneBooks'); return; }
+  if(sec){ sec = null; b = 0; c = 0; renderBooks(); renderChapters(); show('paneBooks'); }
+}
+
+// 左边缘向右滑 = 返回上一级（与 iOS 一致）
+let swipeStart = null;
+$('paneBooks').addEventListener('pointerdown', e => { swipeStart = { x: e.clientX, y: e.clientY }; });
+$('paneBooks').addEventListener('pointerup', e => {
+  if(!swipeStart) return;
+  const dx = e.clientX - swipeStart.x;
+  const dy = Math.abs(e.clientY - swipeStart.y);
+  const fromEdge = swipeStart.x - $('paneBooks').getBoundingClientRect().left <= 44;
+  if(fromEdge && dx >= 80 && dy <= 70) goBack();
+  swipeStart = null;
+});
 
 function renderChapters(){
   if(!sec){ $('chapters').innerHTML = '<div class="empty">先在左栏选一个文件夹</div>'; return; }
-  const bk = section(sec).books[b];
+  const bk = currentBooks()[b];
   if(!bk){ $('chapters').innerHTML = '<div class="empty">这个分区还没有书</div>'; return; }
   $('chapters').innerHTML = bk.chapters.map((ch, i) => {
     const meta = ch.images.length ? `${ch.images.length} 页`
@@ -366,7 +426,7 @@ function renderChapters(){
 
 function renderReader(){
   if(!sec){ $('content').innerHTML = '<div class="empty">选择一本书开始阅读</div>'; return; }
-  const bk = section(sec).books[b];
+  const bk = currentBooks()[b];
   if(!bk){ $('content').innerHTML = '<div class="empty">选择一本书开始阅读</div>'; return; }
   const ch = bk.chapters[c];
   if(!ch){ $('content').innerHTML = '<div class="empty">选择一章开始阅读</div>'; return; }

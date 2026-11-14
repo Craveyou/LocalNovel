@@ -96,7 +96,7 @@ struct WelcomeView: View {
                 Text("本地小说阅读器")
                     .font(.title.bold())
 
-                Text("书库分三个文件夹：小说（每本一个 txt / epub / pdf 文件）、漫画（部 → 话，图片或 pdf）、整理（原来那种 作者 → 章节 的图文混排）。")
+                Text("书库分三个文件夹：小说（每本一个 txt / epub / pdf 文件，子文件夹 = 一个系列）、漫画（部 → 话，图片或 pdf）、整理（原来那种 作者 → 章节 的图文混排）。")
                     .font(.subheadline)
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
@@ -106,7 +106,7 @@ struct WelcomeView: View {
                     Label("最省事：把书放进「本地小说」的三个文件夹", systemImage: "star.fill")
                         .font(.headline)
                     Text("1. 打开「文件」App → 我的 iPhone → 本地小说\n"
-                       + "2. 小说/ 放 txt、md、epub、pdf（一个文件就是一本）\n"
+                       + "2. 小说/ 放 txt、md、epub、pdf（一个文件就是一本；建文件夹就是一个系列）\n"
                        + "3. 漫画/ 放漫画名文件夹：第1部 → 第1话 → 图片，或直接用 第5话.pdf\n"
                        + "4. 整理/ 放作者文件夹 → 章节文件夹 → 正文.txt + 按序号图片 + 音视频\n\n"
                        + "回到本 App —— 书会自动出现，无需点任何按钮、无需授权。\n"
@@ -169,6 +169,7 @@ struct WelcomeView: View {
                 HStack(spacing: 12) {
                     Button {
                         library.importTargetSection = nil
+                        library.importTargetSeries = nil
                         library.noteImportStarted(ImportMode.file.label)
                         library.activeImport = .file
                     } label: {
@@ -178,6 +179,7 @@ struct WelcomeView: View {
 
                     Button {
                         library.importTargetSection = nil
+                        library.importTargetSeries = nil
                         library.noteImportStarted(ImportMode.folder.label)
                         library.activeImport = .folder
                     } label: {

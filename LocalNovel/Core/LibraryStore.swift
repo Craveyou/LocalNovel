@@ -36,6 +36,8 @@ final class LibraryStore: ObservableObject {
     @Published var activeImport: ImportMode? = nil
     /// 导入目标分区：当前在哪个分区页就导到哪；首页为 nil（按内容自动判断）
     @Published var importTargetSection: BookCategory? = nil
+    /// 导入目标系列：当前在系列详情页时，复制进该系列的文件夹（「系列 · 子系列」按层拆开）
+    @Published var importTargetSeries: String? = nil
 
     private var contentCache: [String: ChapterContent] = [:]
     private var textCache: [String: String] = [:]
@@ -123,6 +125,7 @@ final class LibraryStore: ObservableObject {
             // 直接导入所选内容：不再反推「书库根」，避免把一个分区整批重复复制一遍
             let source = picked
             let target = importTargetSection
+            let targetSeries = importTargetSeries
 
             headline = "正在导入…"
             errorMessage = nil
@@ -131,7 +134,8 @@ final class LibraryStore: ObservableObject {
 
             DispatchQueue.global(qos: .userInitiated).async {
                 let report = BookImporter.importIntoDocuments(from: source, documents: docs,
-                                                              preferred: target)
+                                                              preferred: target,
+                                                              preferredSeries: targetSeries)
                 DispatchQueue.main.async {
                     self.importProgress = nil
                     guard !report.imported.isEmpty else {
@@ -146,7 +150,9 @@ final class LibraryStore: ObservableObject {
                     self.apply(scan, root: docs,
                                headline: "已导入 \(report.imported.count) 项，书库共 \(scan.library.books.count) 本")
                     self.diagnostics = (self.diagnostics ?? "")
-                        + " · " + report.summary + " · 已存入 App 内，重启后仍可阅读"
+                        + " · " + report.summary
+                        + (targetSeries.map { "（系列：\($0)）" } ?? "")
+                        + " · 已存入 App 内，重启后仍可阅读"
                 }
             }
         }
@@ -265,7 +271,9 @@ final class LibraryStore: ObservableObject {
             return Book(folderURL: book.folderURL,
                         title: book.title,
                         category: book.category,
-                        chapters: visible)
+                        chapters: visible,
+                        chaptersDeferred: false,
+                        series: book.series)
         }
         library = Library(rootURL: lib.rootURL, books: books)
         invalidateCaches()
@@ -385,7 +393,8 @@ final class LibraryStore: ObservableObject {
                               title: book.title,
                               category: book.category,
                               chapters: chapters,
-                              chaptersDeferred: book.chaptersDeferred && splitCache[book.id] == nil))
+                              chaptersDeferred: book.chaptersDeferred && splitCache[book.id] == nil,
+                              series: book.series))
         }
         self.library = Library(rootURL: report.library.rootURL, books: books)
         var line = buildDiagnosticsLine(root: root, report: report)
@@ -474,6 +483,18 @@ final class LibraryStore: ObservableObject {
 
     func count(in category: BookCategory) -> Int {
         library?.count(in: category) ?? 0
+    }
+
+    func seriesNames(in category: BookCategory) -> [String] {
+        library?.seriesNames(in: category) ?? []
+    }
+
+    func books(in category: BookCategory, series: String?) -> [Book] {
+        library?.books(in: category, series: series) ?? []
+    }
+
+    func count(in category: BookCategory, series: String?) -> Int {
+        library?.count(in: category, series: series) ?? 0
     }
 
     func ignoredHint(for chapter: Chapter) -> String? {

@@ -112,11 +112,28 @@ audio{width:100%}
   <button class="lb-nav next" id="lbNext">›</button>
 </div>
 <script>
-const DATA = {"sections": [{"key": "novel", "label": "小说", "icon": "📖", "hint": "每本一个文件：txt / md / epub / pdf", "books": [{"title": "无章节的短篇", "chapters": [{"title": "无章节的短篇", "paragraphs": ["这篇没有章节标题。", "整本会被当成一章显示。"], "images": [], "av": [], "group": "", "kind": "slice"}]}, {"title": "样例epub", "chapters": [{"title": "第一章 山门", "paragraphs": ["第一章 山门\n第一章 山门\n山门外站着一个少年。"], "images": [], "av": [], "group": "", "kind": "slice"}, {"title": "第二章 试剑", "paragraphs": ["第二章 试剑\n第二章 试剑\n剑锋上还有昨夜的血。"], "images": [], "av": [], "group": "", "kind": "slice"}, {"title": "第三章 下山", "paragraphs": ["第三章 下山\n第三章 下山\n他背着剑，走下石阶。"], "images": [], "av": [], "group": "", "kind": "slice"}]}, {"title": "样例pdf", "chapters": [{"title": "样例pdf", "paragraphs": [], "images": [], "av": [], "group": "", "kind": "pdf", "pdfPages": ["assets/n5_pdf-1.png", "assets/n5_pdf-2.png"], "note": "PDF 小说：正式 App 抽取文字阅读（本原型展示页面，共 2 页）"}]}, {"title": "风起长安", "chapters": [{"title": "第一章 起风", "paragraphs": ["长安城的春天来得迟，风里还带着沙。", "他站在城门口，忽然想起很多年前的那句话。"], "images": [], "av": [], "group": "", "kind": "slice"}, {"title": "第二章 入城", "paragraphs": ["城门开了，马蹄声从远处滚过来。"], "images": [], "av": [], "group": "", "kind": "slice"}, {"title": "第三章 夜雨", "paragraphs": ["雨下了一整夜，檐角的水滴答不停。"], "images": [], "av": [], "group": "", "kind": "slice"}]}]}, {"key": "comic", "label": "漫画", "icon": "🖼", "hint": "每部一个文件夹：部 → 话，图片或 pdf", "books": [{"title": "星海旅人", "chapters": [{"title": "第1话", "group": "第1部", "kind": "folder", "paragraphs": [], "images": [{"src": "assets/b2c0_img0.jpg", "label": "1.jpg", "animated": false}, {"src": "assets/b2c0_img1.jpg", "label": "2.jpg", "animated": false}, {"src": "assets/b2c0_img2.jpg", "label": "3.jpg", "animated": false}], "av": [], "pdfPages": [], "ignored": []}, {"title": "第2话", "group": "第1部", "kind": "folder", "paragraphs": [], "images": [{"src": "assets/b2c1_img0.jpg", "label": "1.jpg", "animated": false}, {"src": "assets/b2c1_img1.jpg", "label": "2.jpg", "animated": false}], "av": [], "pdfPages": [], "ignored": []}, {"title": "第5话", "group": "", "kind": "file", "paragraphs": [], "images": [], "av": [], "pdfPages": ["assets/b2c2_pdf-1.png", "assets/b2c2_pdf-2.png", "assets/b2c2_pdf-3.png"], "ignored": []}]}, {"title": "短篇集", "chapters": [{"title": "第1话", "group": "单行本", "kind": "folder", "paragraphs": [], "images": [{"src": "assets/b6c0_img0.png", "label": "1.png", "animated": false}, {"src": "assets/b6c0_img1.png", "label": "2.png", "animated": false}], "av": [], "pdfPages": [], "ignored": []}]}]}, {"key": "organized", "label": "整理", "icon": "📁", "hint": "作者 → 章节 → 正文 + 插图 + 音视频", "books": [{"title": "墨青山", "chapters": [{"title": "01_序章", "group": "", "kind": "folder", "paragraphs": ["清晨的雾还没散，巷口那盏灯亮了一整夜。", "他把书合上，听见远处有人在喊自己的名字。", "这一去，就是很多年。"], "images": [{"src": "assets/b0c0_img0.png", "label": "1.png", "animated": false}, {"src": "assets/b0c0_img1.gif", "label": "2.gif", "animated": true}, {"src": "assets/b0c0_img2.jpg", "label": "3.jpg", "animated": false}], "av": [{"src": "assets/b0c0_av0.mp4", "label": "序章影像.mp4", "kind": "video"}], "pdfPages": [], "ignored": []}, {"title": "02_第一章 起风了", "group": "", "kind": "folder", "paragraphs": ["风从山脊那边过来，卷起一地枯叶。", "她站在门口，没有回头。"], "images": [{"src": "assets/b0c1_img0.png", "label": "1.png", "animated": false}, {"src": "assets/b0c1_img1.png", "label": "2.png", "animated": false}, {"src": "assets/b0c1_img2.png", "label": "10.png", "animated": false}, {"src": "assets/b0c1_img3.jpg", "label": "无序号插图.jpg", "animated": false}], "av": [{"src": "assets/b0c1_av0.m4a", "label": "章末配乐.m4a", "kind": "audio"}], "pdfPages": [], "ignored": []}, {"title": "03_第二章 无声", "group": "", "kind": "folder", "paragraphs": ["这一章没有插图，也没有音视频。", "只有文字。"], "images": [], "av": [], "pdfPages": [], "ignored": []}, {"title": "04_空章", "group": "", "kind": "folder", "paragraphs": [], "images": [], "av": [], "pdfPages": [], "ignored": []}, {"title": "05_异常章", "group": "", "kind": "folder", "paragraphs": ["用于验证多个 txt 时取自然序第一个。"], "images": [{"src": "assets/b0c4_img0.png", "label": "２.png", "animated": false}, {"src": "assets/b0c4_img1.jpg", "label": "cover_extra.jpg", "animated": false}], "av": [], "pdfPages": [], "ignored": ["notes.docx", "附录.txt"]}]}, {"title": "林下客", "chapters": [{"title": "第一章 夜行", "group": "", "kind": "folder", "paragraphs": ["第二本书，用来验证书库并列显示。", "夜色很深。"], "images": [{"src": "assets/b3c0_img0.png", "label": "1.png", "animated": false}], "av": [], "pdfPages": [], "ignored": []}]}]}]};
-let sec = null, b = 0, c = 0, lbList = [];
+const DATA = {"sections": [{"key": "novel", "label": "小说", "icon": "📖", "hint": "每本一个文件：txt / md / epub / pdf", "books": [{"title": "前传", "series": "长篇三部曲 · 前传", "chapters": [{"title": "前传", "paragraphs": ["第一章 旧年", "故事开始得比所有人记得的都早。"], "images": [], "av": [], "group": "", "kind": "slice"}]}, {"title": "无章节的短篇", "series": "", "chapters": [{"title": "无章节的短篇", "paragraphs": ["这篇没有章节标题。", "整本会被当成一章显示。"], "images": [], "av": [], "group": "", "kind": "slice"}]}, {"title": "样例epub", "series": "", "chapters": [{"title": "第一章 山门", "paragraphs": ["第一章 山门\n第一章 山门\n山门外站着一个少年。"], "images": [], "av": [], "group": "", "kind": "slice"}, {"title": "第二章 试剑", "paragraphs": ["第二章 试剑\n第二章 试剑\n剑锋上还有昨夜的血。"], "images": [], "av": [], "group": "", "kind": "slice"}, {"title": "第三章 下山", "paragraphs": ["第三章 下山\n第三章 下山\n他背着剑，走下石阶。"], "images": [], "av": [], "group": "", "kind": "slice"}]}, {"title": "样例pdf", "series": "", "chapters": [{"title": "样例pdf", "paragraphs": [], "images": [], "av": [], "group": "", "kind": "pdf", "pdfPages": ["assets/n6_pdf-1.png", "assets/n6_pdf-2.png"], "note": "PDF 小说：正式 App 抽取文字阅读（本原型展示页面，共 2 页）"}]}, {"title": "第一部 启程", "series": "银河旧事", "chapters": [{"title": "第一章 出发", "paragraphs": ["船坞的灯一盏盏亮起来，他把最后一箱行李搬上舷梯。"], "images": [], "av": [], "group": "", "kind": "slice"}, {"title": "第二章 星尘", "paragraphs": ["舷窗外，星尘像雪一样落下来。"], "images": [], "av": [], "group": "", "kind": "slice"}]}, {"title": "第二部 归途", "series": "银河旧事", "chapters": [{"title": "第二部 归途", "paragraphs": ["第一章 回望", "返航的第七天，通讯器里终于传来熟悉的杂音。"], "images": [], "av": [], "group": "", "kind": "slice"}]}, {"title": "读书笔记", "series": "", "chapters": [{"title": "读书笔记", "paragraphs": ["# 笔记", "这里是一份可以直接打开的书。"], "images": [], "av": [], "group": "", "kind": "slice"}]}, {"title": "风起长安", "series": "", "chapters": [{"title": "第一章 起风", "paragraphs": ["长安城的春天来得迟，风里还带着沙。", "他站在城门口，忽然想起很多年前的那句话。"], "images": [], "av": [], "group": "", "kind": "slice"}, {"title": "第二章 入城", "paragraphs": ["城门开了，马蹄声从远处滚过来。"], "images": [], "av": [], "group": "", "kind": "slice"}, {"title": "第三章 夜雨", "paragraphs": ["雨下了一整夜，檐角的水滴答不停。"], "images": [], "av": [], "group": "", "kind": "slice"}]}]}, {"key": "comic", "label": "漫画", "icon": "🖼", "hint": "每部一个文件夹：部 → 话，图片或 pdf", "books": [{"title": "星海旅人", "series": "", "chapters": [{"title": "第1话", "group": "第1部", "kind": "folder", "paragraphs": [], "images": [{"src": "assets/b3c0_img0.jpg", "label": "1.jpg", "animated": false}, {"src": "assets/b3c0_img1.jpg", "label": "2.jpg", "animated": false}, {"src": "assets/b3c0_img2.jpg", "label": "3.jpg", "animated": false}], "av": [], "pdfPages": [], "ignored": []}, {"title": "第2话", "group": "第1部", "kind": "folder", "paragraphs": [], "images": [{"src": "assets/b3c1_img0.jpg", "label": "1.jpg", "animated": false}, {"src": "assets/b3c1_img1.jpg", "label": "2.jpg", "animated": false}], "av": [], "pdfPages": [], "ignored": []}, {"title": "第5话", "group": "", "kind": "file", "paragraphs": [], "images": [], "av": [], "pdfPages": ["assets/b3c2_pdf-1.png", "assets/b3c2_pdf-2.png", "assets/b3c2_pdf-3.png"], "ignored": []}]}, {"title": "短篇集", "series": "", "chapters": [{"title": "第1话", "group": "单行本", "kind": "folder", "paragraphs": [], "images": [{"src": "assets/b7c0_img0.png", "label": "1.png", "animated": false}, {"src": "assets/b7c0_img1.png", "label": "2.png", "animated": false}], "av": [], "pdfPages": [], "ignored": []}]}]}, {"key": "organized", "label": "整理", "icon": "📁", "hint": "作者 → 章节 → 正文 + 插图 + 音视频", "books": [{"title": "墨青山", "series": "", "chapters": [{"title": "01_序章", "group": "", "kind": "folder", "paragraphs": ["清晨的雾还没散，巷口那盏灯亮了一整夜。", "他把书合上，听见远处有人在喊自己的名字。", "这一去，就是很多年。"], "images": [{"src": "assets/b1c0_img0.png", "label": "1.png", "animated": false}, {"src": "assets/b1c0_img1.gif", "label": "2.gif", "animated": true}, {"src": "assets/b1c0_img2.jpg", "label": "3.jpg", "animated": false}], "av": [{"src": "assets/b1c0_av0.mp4", "label": "序章影像.mp4", "kind": "video"}], "pdfPages": [], "ignored": []}, {"title": "02_第一章 起风了", "group": "", "kind": "folder", "paragraphs": ["风从山脊那边过来，卷起一地枯叶。", "她站在门口，没有回头。"], "images": [{"src": "assets/b1c1_img0.png", "label": "1.png", "animated": false}, {"src": "assets/b1c1_img1.png", "label": "2.png", "animated": false}, {"src": "assets/b1c1_img2.png", "label": "10.png", "animated": false}, {"src": "assets/b1c1_img3.jpg", "label": "无序号插图.jpg", "animated": false}], "av": [{"src": "assets/b1c1_av0.m4a", "label": "章末配乐.m4a", "kind": "audio"}], "pdfPages": [], "ignored": []}, {"title": "03_第二章 无声", "group": "", "kind": "folder", "paragraphs": ["这一章没有插图，也没有音视频。", "只有文字。"], "images": [], "av": [], "pdfPages": [], "ignored": []}, {"title": "04_空章", "group": "", "kind": "folder", "paragraphs": [], "images": [], "av": [], "pdfPages": [], "ignored": []}, {"title": "05_异常章", "group": "", "kind": "folder", "paragraphs": ["用于验证多个 txt 时取自然序第一个。"], "images": [{"src": "assets/b1c4_img0.png", "label": "２.png", "animated": false}, {"src": "assets/b1c4_img1.jpg", "label": "cover_extra.jpg", "animated": false}], "av": [], "pdfPages": [], "ignored": ["notes.docx", "附录.txt"]}]}, {"title": "林下客", "series": "", "chapters": [{"title": "第一章 夜行", "group": "", "kind": "folder", "paragraphs": ["第二本书，用来验证书库并列显示。", "夜色很深。"], "images": [{"src": "assets/b4c0_img0.png", "label": "1.png", "animated": false}], "av": [], "pdfPages": [], "ignored": []}]}]}]};
+let sec = null, openSeries = null, b = 0, c = 0, lbList = [];
 const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 const section = key => DATA.sections.find(s => s.key === key);
+
+function currentBooks(){
+  const s = section(sec);
+  if(!s) return [];
+  if(openSeries) return s.books.filter(bk => bk.series === openSeries);
+  return s.books;
+}
+
+function seriesNames(s){
+  const out = [];
+  s.books.forEach(bk => { if(bk.series && out.indexOf(bk.series) < 0) out.push(bk.series); });
+  return out;
+}
+
+function bookItem(bk, index){
+  return `<button class="item ${index === b ? 'active' : ''}" data-b="${index}">${esc(bk.title)}<small>${bk.chapters.length} ${sec === 'comic' ? '话' : '章'}</small></button>`;
+}
 
 function renderBooks(){
   if(!sec){
@@ -126,28 +143,69 @@ function renderBooks(){
          <span><span class="t">${esc(s.label)}</span><small>${esc(s.hint)}</small></span>
          <span class="n">${s.books.length}</span>
        </button>`).join('');
-    $('paneBooks').innerHTML = `<h2>书库</h2>${cards}
-      <div class="hint" style="padding:0 16px">在「文件」App → 本地小说 里整理这三个文件夹，回到 App 会自动同步。</div>`;
+    $('paneBooks').innerHTML = `<h2>书库</h2>${cards}`;
     $('paneBooks').querySelectorAll('[data-sec]').forEach(el => el.onclick = () => {
-      sec = el.dataset.sec; b = 0; c = 0; renderBooks(); renderChapters(); show('paneBooks');
+      sec = el.dataset.sec; openSeries = null; b = 0; c = 0;
+      renderBooks(); renderChapters(); show('paneBooks');
     });
-    $('tip').textContent = '书库 → 分区 → 章节';
+    $('tip').textContent = '书库 → 分区 → 系列 → 章节';
     return;
   }
   const s = section(sec);
-  const list = s.books.map((bk, i) =>
-    `<button class="item ${i === b ? 'active' : ''}" data-b="${i}">${esc(bk.title)}<small>${bk.chapters.length} ${sec === 'comic' ? '话' : '章'}</small></button>`).join('');
-  $('paneBooks').innerHTML = `<div class="backbar"><button id="toHome">‹ 书库</button><span>${esc(s.label)}</span></div>${list || '<div class="empty">这个分区还没有书</div>'}`;
-  $('toHome').onclick = () => { sec = null; b = 0; c = 0; renderBooks(); renderChapters(); show('paneBooks'); };
+  const back = `<div class="backbar"><button id="toHome">‹ ${openSeries ? esc(s.label) : '书库'}</button>`
+    + `<span>${esc(openSeries || s.label)}</span></div>`;
+
+  if(openSeries){
+    const list = currentBooks().map((bk, i) => bookItem(bk, i)).join('');
+    $('paneBooks').innerHTML = back + (list || '<div class="empty">这个系列还没有书</div>');
+  } else if(!seriesNames(s).length){
+    const list = s.books.map((bk, i) => bookItem(bk, i)).join('');
+    $('paneBooks').innerHTML = back + (list || '<div class="empty">这个分区还没有书</div>');
+  } else {
+    const folders = seriesNames(s).map(n => {
+      const count = s.books.filter(x => x.series === n).length;
+      return `<button class="item" data-series="${esc(n)}" style="font-weight:600">▸ ${esc(n)}<small>${count} 本</small></button>`;
+    }).join('');
+    const loose = s.books.map((bk, i) => [bk, i]).filter(pair => !pair[0].series);
+    const looseHtml = loose.length
+      ? `<h2>未分组</h2>` + loose.map(pair => bookItem(pair[0], pair[1])).join('')
+      : '';
+    $('paneBooks').innerHTML = back + `<h2>系列</h2>` + folders + looseHtml;
+  }
+
+  $('toHome').onclick = () => goBack();
+  $('paneBooks').querySelectorAll('[data-series]').forEach(el => el.onclick = () => {
+    openSeries = el.dataset.series; b = 0; c = 0;
+    renderBooks(); renderChapters(); show('paneBooks');
+  });
   $('paneBooks').querySelectorAll('[data-b]').forEach(el => el.onclick = () => {
     b = +el.dataset.b; c = 0; renderBooks(); renderChapters(); renderReader(); show('reader');
   });
-  $('tip').textContent = `${s.label} · ${s.books.length} 本`;
+  $('tip').textContent = openSeries
+    ? `${openSeries} · ${currentBooks().length} 本`
+    : `${s.label} · ${s.books.length} 本`;
 }
+
+function goBack(){
+  if(openSeries){ openSeries = null; b = 0; c = 0; renderBooks(); renderChapters(); show('paneBooks'); return; }
+  if(sec){ sec = null; b = 0; c = 0; renderBooks(); renderChapters(); show('paneBooks'); }
+}
+
+// 左边缘向右滑 = 返回上一级（与 iOS 一致）
+let swipeStart = null;
+$('paneBooks').addEventListener('pointerdown', e => { swipeStart = { x: e.clientX, y: e.clientY }; });
+$('paneBooks').addEventListener('pointerup', e => {
+  if(!swipeStart) return;
+  const dx = e.clientX - swipeStart.x;
+  const dy = Math.abs(e.clientY - swipeStart.y);
+  const fromEdge = swipeStart.x - $('paneBooks').getBoundingClientRect().left <= 44;
+  if(fromEdge && dx >= 80 && dy <= 70) goBack();
+  swipeStart = null;
+});
 
 function renderChapters(){
   if(!sec){ $('chapters').innerHTML = '<div class="empty">先在左栏选一个文件夹</div>'; return; }
-  const bk = section(sec).books[b];
+  const bk = currentBooks()[b];
   if(!bk){ $('chapters').innerHTML = '<div class="empty">这个分区还没有书</div>'; return; }
   $('chapters').innerHTML = bk.chapters.map((ch, i) => {
     const meta = ch.images.length ? `${ch.images.length} 页`
@@ -163,7 +221,7 @@ function renderChapters(){
 
 function renderReader(){
   if(!sec){ $('content').innerHTML = '<div class="empty">选择一本书开始阅读</div>'; return; }
-  const bk = section(sec).books[b];
+  const bk = currentBooks()[b];
   if(!bk){ $('content').innerHTML = '<div class="empty">选择一本书开始阅读</div>'; return; }
   const ch = bk.chapters[c];
   if(!ch){ $('content').innerHTML = '<div class="empty">选择一章开始阅读</div>'; return; }

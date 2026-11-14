@@ -71,6 +71,7 @@ struct SettingsView: View {
                 Section("书库") {
                     Button("导入书籍（复制到「本地小说」）") {
                         library.importTargetSection = nil
+                        library.importTargetSeries = nil
                         library.noteImportStarted(ImportMode.file.label)
                         library.activeImport = .file
                         dismiss()

@@ -45,11 +45,14 @@ enum BookImporter {
     }
 
     /// 把选中的内容复制进 App 文档目录。调用方应在后台线程执行。
-    /// - Parameter preferred: 用户当前所在分区；nil 时按内容自动判断。
+    /// - Parameters:
+    ///   - preferred: 用户当前所在分区；nil 时按内容自动判断。
+    ///   - preferredSeries: 用户当前所在系列；复制进「分区/系列/」而不是分区根目录。
     static func importIntoDocuments(
         from source: URL,
         documents: URL,
         preferred: BookCategory? = nil,
+        preferredSeries: String? = nil,
         fileManager: FileManager = .default
     ) -> Report {
         var report = Report()
@@ -76,7 +79,12 @@ enum BookImporter {
             return report
         }
 
-        let targetDir = documents.appendingPathComponent(category.folderName)
+        var targetDir = documents.appendingPathComponent(category.folderName)
+        if let series = preferredSeries, !series.isEmpty {
+            for part in series.components(separatedBy: " · ") where !part.isEmpty {
+                targetDir.appendPathComponent(part)
+            }
+        }
         do {
             try fileManager.createDirectory(at: targetDir, withIntermediateDirectories: true)
         } catch {

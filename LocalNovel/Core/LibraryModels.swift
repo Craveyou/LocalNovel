@@ -131,7 +131,7 @@ enum BookCategory: String, Codable, CaseIterable, Identifiable, Hashable {
 
     var hint: String {
         switch self {
-        case .novel: return "每本一个文件：txt / md / epub / pdf"
+        case .novel: return "每本一个文件；一个文件夹 = 一个系列"
         case .comic: return "每部一个文件夹，按「部 → 话」分层，图片或 pdf"
         case .organized: return "作者文件夹 → 章节文件夹 → 正文 + 插图 + 音视频"
         }
@@ -141,7 +141,7 @@ enum BookCategory: String, Codable, CaseIterable, Identifiable, Hashable {
     var structureExample: String {
         switch self {
         case .novel:
-            return "小说/书名.txt（也支持 .md / .epub / .pdf）"
+            return "小说/书名.txt（也支持 .md / .epub / .pdf）\n小说/系列名/第1部.txt（文件夹 = 系列）"
         case .comic:
             return "漫画/漫画名/第1部/第1话/001.jpg\n漫画/漫画名/第5话.pdf"
         case .organized:
@@ -161,16 +161,21 @@ struct Book: Identifiable, Hashable {
     let chapters: [Chapter]
     /// 小说单文件：章节还没切（首次打开时才解析正文），先给一章占位
     let chaptersDeferred: Bool
+    /// 所属系列（小说分区里的中间文件夹），nil = 直接放在分区根目录。
+    /// 「系列 / 子系列」用 " · " 连接，列表里显示成一行。
+    let series: String?
 
     init(folderURL: URL, title: String,
          category: BookCategory = .organized,
          chapters: [Chapter],
-         chaptersDeferred: Bool = false) {
+         chaptersDeferred: Bool = false,
+         series: String? = nil) {
         self.folderURL = folderURL
         self.title = title
         self.category = category
         self.chapters = chapters
         self.chaptersDeferred = chaptersDeferred
+        self.series = series
     }
 }
 
@@ -185,5 +190,20 @@ struct Library {
 
     func count(in category: BookCategory) -> Int {
         books.lazy.filter { $0.category == category }.count
+    }
+
+    /// 该分区下出现过的系列名（自然排序）；没有系列时为空
+    func seriesNames(in category: BookCategory) -> [String] {
+        let names = Set(books.filter { $0.category == category }.compactMap { $0.series })
+        return NaturalSort.sorted(Array(names)) { $0 }
+    }
+
+    /// series == nil 时取「直接放在分区根目录」的书
+    func books(in category: BookCategory, series: String?) -> [Book] {
+        books.filter { $0.category == category && $0.series == series }
+    }
+
+    func count(in category: BookCategory, series: String?) -> Int {
+        books.lazy.filter { $0.category == category && $0.series == series }.count
     }
 }

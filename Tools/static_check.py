@@ -343,7 +343,7 @@ def main():
           and "DocumentsBootstrap.guideFileName" in resolver)
     check("切回前台补写说明文件", "DocumentsBootstrap.ensureVisibleInFilesApp()" in store)
     check("版本号提升以刷新系统元数据",
-          "<string>8</string>" in plist and "CURRENT_PROJECT_VERSION = 8" in pbx)
+          "<string>9</string>" in plist and "CURRENT_PROJECT_VERSION = 9" in pbx)
     check("UI 给出「文件 App 搜索本地小说」兜底路径",
           "搜索框搜「本地小说」" in welcome and "搜索「本地小说」" in store)
     check("AppIcon asset catalog（1024 + Contents.json）",
@@ -492,14 +492,46 @@ def main():
     check("首页就是三个文件夹卡片，点进去看该分区的书",
           "func sectionCard(" in sidebar and "openedSection" in sidebar
           and "library.count(in: category)" in sidebar
-          and "navigationTitle(openedSection?.label ?? \"书库\")" in sidebar)
+          and 'openedSeries ?? openedSection?.label ?? "书库"' in sidebar)
     check("分区内有书列表、无书给结构示例空态",
-          "List(books, id: \\.id, selection: $selection)" in sidebar
+          "List(loose, id: \\.id, selection: $selection)" in sidebar
           and "ContentUnavailableView" in sidebar
           and "emptyDescription" in sidebar)
     check("启动即建好三个分区目录（打开「文件」App 就能放书）",
           "for section in LibrarySection.allCases" in bootstrap
           and "section.folderName" in bootstrap)
+    check("小说分区支持文件夹 = 系列（含子系列，用 · 连接）",
+          "let series: String?" in models
+          and "series: series + [sub.lastPathComponent]" in sections
+          and 'series.joined(separator: " · ")' in sections
+          and "series: seriesName" in sections)
+    check("系列可由书推导（自然排序），并单独取书 / 计数",
+          "func seriesNames(in category: BookCategory) -> [String]" in models
+          and "func books(in category: BookCategory, series: String?) -> [Book]" in models
+          and "func count(in category: BookCategory, series: String?) -> Int" in models
+          and "NaturalSort.sorted(Array(names))" in models)
+    check("重扫 / 分章重建 Book 时系列归属不丢",
+          "series: book.series" in store)
+    check("分区页先列系列文件夹，再列未分组的书",
+          "func seriesRow(" in sidebar and 'Text("系列")' in sidebar
+          and 'Text("未分组")' in sidebar
+          and "library.seriesNames(in: category)" in sidebar)
+    check("点系列进入系列内的书列表，导航标题显示系列名",
+          "func seriesBooks(_ category: BookCategory, series: String)" in sidebar
+          and "openedSeries = name" in sidebar and "private var currentTitle" in sidebar)
+    check("导入按当前层级落到分区 / 系列目录",
+          "preferredSeries" in importer and "importTargetSeries" in store
+          and 'components(separatedBy: " · ")' in importer)
+    check("分区 / 系列页支持左边缘右滑返回上一级",
+          "private var backSwipe: some Gesture" in sidebar
+          and "value.startLocation.x <= 44" in sidebar
+          and "value.translation.width >= 80" in sidebar
+          and "simultaneousGesture(backSwipe)" in sidebar
+          and "private func backToParent()" in sidebar)
+    check("书库底部不再有常驻说明文字",
+          "library.diagnostics" not in sidebar.split("private var statusBar")[1]
+                                          .split("// MARK: - 分区空态文案")[0]
+          and "在「文件」App → 本地小说 里整理这三个文件夹" not in sidebar)
 
     print("\n== K. 小说格式：自动分章 / epub / pdf ==")
     splitter = (APP / "Core" / "ChapterSplitter.swift").read_text(encoding="utf-8")
