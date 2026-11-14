@@ -9,9 +9,11 @@ import UIKit
 struct ZoomableImageView: UIViewRepresentable {
     let image: UIImage
     let onSingleTap: () -> Void
+    /// 缩放状态上报：放大时上层需让出「上滑 / 右滑关闭」手势，避免误关
+    var onZoomChanged: ((Bool) -> Void)? = nil
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onSingleTap: onSingleTap)
+        Coordinator(onSingleTap: onSingleTap, onZoomChanged: onZoomChanged)
     }
 
     func makeUIView(context: Context) -> UIScrollView {
@@ -53,6 +55,7 @@ struct ZoomableImageView: UIViewRepresentable {
 
     func updateUIView(_ uiView: UIScrollView, context: Context) {
         context.coordinator.onSingleTap = onSingleTap
+        context.coordinator.onZoomChanged = onZoomChanged
         if context.coordinator.imageView?.image !== image {
             context.coordinator.imageView?.image = image
         }
@@ -61,9 +64,13 @@ struct ZoomableImageView: UIViewRepresentable {
     final class Coordinator: NSObject, UIScrollViewDelegate {
         weak var imageView: UIImageView?
         var onSingleTap: () -> Void
+        var onZoomChanged: ((Bool) -> Void)?
+        private var lastReportedZoom = false
 
-        init(onSingleTap: @escaping () -> Void) {
+        init(onSingleTap: @escaping () -> Void,
+             onZoomChanged: ((Bool) -> Void)? = nil) {
             self.onSingleTap = onSingleTap
+            self.onZoomChanged = onZoomChanged
         }
 
         func viewForZooming(in scrollView: UIScrollView) -> UIView? { imageView }
@@ -71,6 +78,14 @@ struct ZoomableImageView: UIViewRepresentable {
         func scrollViewDidZoom(_ scrollView: UIScrollView) {
             // 放大后才允许内部平移看局部；还原到 1× 立刻把横向手势还给分页
             scrollView.isScrollEnabled = scrollView.zoomScale > 1.01
+            reportZoom(scrollView.zoomScale > 1.01)
+        }
+
+        /// 只在状态真正变化时上报，避免缩放过程中高频回调触发上层重绘
+        private func reportZoom(_ zoomed: Bool) {
+            guard zoomed != lastReportedZoom else { return }
+            lastReportedZoom = zoomed
+            onZoomChanged?(zoomed)
         }
 
         @objc func handleSingleTap(_ gesture: UITapGestureRecognizer) {
@@ -82,6 +97,7 @@ struct ZoomableImageView: UIViewRepresentable {
             if scroll.zoomScale > 1.01 {
                 scroll.setZoomScale(1.0, animated: true)
                 scroll.isScrollEnabled = false
+                reportZoom(false)
                 return
             }
             // 放大后允许内部平移看局部；scrollViewDidZoom 也会同步这一状态

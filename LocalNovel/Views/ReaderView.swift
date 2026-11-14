@@ -1,24 +1,36 @@
 import SwiftUI
 
 // MARK: - 第三栏：连续滚动阅读器
-// 固定三段：正文 → 按序号图片（含动图）→ 章末音视频。
+// 固定结构：正文 → 按序号图片（含动图）→ 章末音视频 → 下一章。
 //
-// 本版关键修复：
-// 1) 去掉 .task + @State content 的异步状态机。自动恢复「上次读的章节」时
+// 需长期保留的三条约束：
+// 1) 不用 .task + @State content 的异步状态机。自动恢复「上次读的章节」时
 //    task 不重跑，content 永远为 nil，表现就是「一直显示载入章节」。
-//    现在内容全部同步取自 LibraryStore 的缓存，压根不存在 nil 状态。
-// 2) 滚动时不再修改任何 @State：锚点记录改为节流写盘（ProgressStore.noteAnchor），
-//    动图可见性下沉到每个 InlineMediaView 自己的 @State。
-//    之前每滑过一段就整页重绘 + 同步写 UserDefaults，是一卡一卡的主因。
+//    内容全部同步取自 LibraryStore 的缓存。
+// 2) 滚动时不修改任何上层 @State：锚点记录走 ProgressStore.noteAnchor 节流写盘，
+//    动图可见性下沉到 InlineMediaView 自己的 @State，避免整页重绘导致卡顿。
+// 3) 全屏大图关闭后要能定位回刚看的那张图（pendingAnchor + ScrollViewReader）。
 
 struct ReaderView: View {
     let chapter: Chapter
+    let nextChapter: Chapter?
+    let onOpenNext: (Chapter) -> Void
 
     @EnvironmentObject private var library: LibraryStore
     @EnvironmentObject private var prefs: Preferences
 
     @State private var galleryItem: MediaItem?
     @State private var showSettings = false
+    /// 关闭全屏大图后要滚回的插图锚点（如 "blk-i3"）
+    @State private var pendingAnchor: String?
+
+    init(chapter: Chapter,
+         nextChapter: Chapter? = nil,
+         onOpenNext: @escaping (Chapter) -> Void = { _ in }) {
+        self.chapter = chapter
+        self.nextChapter = nextChapter
+        self.onOpenNext = onOpenNext
+    }
 
     private var content: ChapterContent { library.content(for: chapter) }
     private var paragraphs: [String] { library.paragraphs(for: chapter) }
@@ -37,7 +49,10 @@ struct ReaderView: View {
             }
             .sheet(isPresented: $showSettings) { SettingsView() }
             .fullScreenCover(item: $galleryItem) { item in
-                MediaGalleryView(items: content.images, initial: item)
+                // 关闭时回传当前图片 → 换算成插图锚点，滚动定位回这张
+                MediaGalleryView(items: content.images, initial: item) { closed in
+                    pendingAnchor = imageAnchor(for: closed, in: content)
+                }
             }
             .onDisappear { ProgressStore.shared.flushAnchors() }
     }
@@ -95,6 +110,9 @@ struct ReaderView: View {
                             .padding(.top, 8)
                     }
 
+                    // 4. 章末：下一章 / 已是最后一章
+                    chapterFooter
+
                     Color.clear.frame(height: 40)
                 }
                 .padding(.horizontal, 20)
@@ -107,6 +125,61 @@ struct ReaderView: View {
                     proxy.scrollTo(anchor, anchor: .top)
                 }
             }
+            // 全屏大图关闭后：滚回刚看的那张图，并把记忆锚点更新为它
+            .onChange(of: pendingAnchor) { _, anchor in
+                guard let anchor else { return }
+                // 等 fullScreenCover 收起动画结束再定位，避免滚动被覆盖视图吞掉
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                    withAnimation(.easeInOut(duration: 0.25)) {
+                        proxy.scrollTo(anchor, anchor: .center)
+                    }
+                    ProgressStore.shared.noteAnchor(anchor, for: chapter.id)
+                    pendingAnchor = nil
+                }
+            }
+        }
+    }
+
+    // MARK: 章末导航
+
+    @ViewBuilder
+    private var chapterFooter: some View {
+        if let next = nextChapter {
+            Button {
+                onOpenNext(next)
+            } label: {
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("下一章")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text(next.title)
+                            .font(.body.weight(.medium))
+                            .lineLimit(2)
+                            .multilineTextAlignment(.leading)
+                    }
+                    Spacer(minLength: 8)
+                    Image(systemName: "chevron.right")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 12))
+                .contentShape(RoundedRectangle(cornerRadius: 12))
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 28)
+        } else {
+            VStack(spacing: 6) {
+                Image(systemName: "checkmark.circle")
+                    .font(.title3)
+                Text("已是最后一章")
+                    .font(.footnote.weight(.medium))
+            }
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity)
+            .padding(.top, 28)
         }
     }
 
@@ -115,5 +188,11 @@ struct ReaderView: View {
             .font(.caption.weight(.semibold))
             .foregroundStyle(.secondary)
             .padding(.top, 14)
+    }
+
+    /// 插图 → 滚动锚点（与 ForEach 里的 .id("blk-i\(index)") 对应）
+    private func imageAnchor(for item: MediaItem, in content: ChapterContent) -> String? {
+        guard let index = content.images.firstIndex(where: { $0.id == item.id }) else { return nil }
+        return "blk-i\(index)"
     }
 }

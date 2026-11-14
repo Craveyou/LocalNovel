@@ -234,9 +234,41 @@ final class LibraryStore: ObservableObject {
         return message
     }
 
+    /// 批量删除：一次重扫，避免逐章 reload 反复全量扫描整个书库。
+    /// 能删源文件夹就删；只读外部目录删不掉时逐章改为隐藏。
     @discardableResult
-    func deleteBook(_ book: Book) -> String {
+    func deleteChapters(_ chapters: [Chapter]) -> String {
+        guard !chapters.isEmpty else { return "没有选中任何章节。" }
         invalidateCaches()
+        var deleted = 0
+        var hidden = 0
+        for chapter in chapters {
+            do {
+                try FileManager.default.removeItem(at: chapter.folderURL)
+                deleted += 1
+            } catch {
+                ProgressStore.shared.hideChapter(chapter.id)
+                hidden += 1
+            }
+            ProgressStore.shared.clearProgress(for: chapter.id)
+        }
+        reload()
+        var parts: [String] = []
+        if deleted > 0 {
+            parts.append("已删除 \(deleted) 个章节（源文件夹已移除，不可恢复）")
+        }
+        if hidden > 0 {
+            parts.append("\(hidden) 个章节因目录只读改为隐藏（可在「设置 → 书库」恢复）")
+        }
+        let message = parts.joined(separator: "；") + "。"
+        headline = "已删除 \(chapters.count) 章"
+        diagnostics = message
+        errorMessage = nil
+        return message
+    }
+
+    @discardableResult
+    func deleteBook(_ book: Book) -> String {        invalidateCaches()
         var removed = false
         do {
             try FileManager.default.removeItem(at: book.folderURL)

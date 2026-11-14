@@ -22,7 +22,9 @@ struct RootView: View {
             ChapterListView(book: selectedBook, selection: $selectedChapter)
         } detail: {
             if let chapter = selectedChapter {
-                ReaderView(chapter: chapter)
+                ReaderView(chapter: chapter,
+                           nextChapter: nextChapter(after: chapter),
+                           onOpenNext: { next in selectedChapter = next })
                     .id(chapter.id) // 切章时重建，重置滚动与播放器
             } else {
                 WelcomeView()
@@ -62,6 +64,19 @@ struct RootView: View {
             selectedBook = nil
             selectedChapter = nil
         }
+    }
+
+    /// 用最新扫描结果里的书：删除章节后 selectedBook 仍是旧快照
+    private func latestBook() -> Book? {
+        guard let book = selectedBook else { return nil }
+        return library.library?.books.first(where: { $0.id == book.id }) ?? book
+    }
+
+    private func nextChapter(after chapter: Chapter) -> Chapter? {
+        guard let chapters = latestBook()?.chapters,
+              let index = chapters.firstIndex(where: { $0.id == chapter.id }),
+              index + 1 < chapters.count else { return nil }
+        return chapters[index + 1]
     }
 }
 

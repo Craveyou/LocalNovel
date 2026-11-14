@@ -341,7 +341,7 @@ def main():
           and "DocumentsBootstrap.guideFileName" in resolver)
     check("切回前台补写说明文件", "DocumentsBootstrap.ensureVisibleInFilesApp()" in store)
     check("版本号提升以刷新系统元数据",
-          "<string>4</string>" in plist and "CURRENT_PROJECT_VERSION = 4" in pbx)
+          "<string>5</string>" in plist and "CURRENT_PROJECT_VERSION = 5" in pbx)
     check("UI 给出「文件 App 搜索本地小说」兜底路径",
           "搜索框搜「本地小说」" in welcome and "搜索「本地小说」" in store)
     check("AppIcon asset catalog（1024 + Contents.json）",
@@ -392,6 +392,43 @@ def main():
           "rotate.right" in fullscreen and "rotation = (rotation + 90) % 360" in fullscreen
           and ".rotationEffect(.degrees(Double(rotation)))" in fullscreen
           and "sideways ? h : w" in fullscreen)
+
+    print("\n== I. 本轮：单击切遮罩 / 上滑关闭 / 末页右滑关闭 / 下一章 / 多选删除 ==")
+    check("全屏大图不再常驻底部操作提示",
+          "bottomHint" not in gallery and "单击关闭 · 左右滑动翻页" not in gallery)
+    check("单击切换顶部遮罩显隐（不再单击即关）",
+          "chromeVisible" in gallery and "toggleChrome()" in gallery
+          and "if chromeVisible" in gallery)
+    check("上滑关闭大图（跟手位移 + 松手阈值）",
+          "verticalDrag" in gallery and "swipedUp" in gallery and "dy < -90" in gallery)
+    check("最后一张继续右滑关闭",
+          "isLastPage" in gallery and "pulledAtLastPage" in gallery
+          and "dx > 90" in gallery)
+    check("图片放大后让出关闭手势，避免缩放时误关",
+          "zoomedId == nil" in gallery and "onZoomChanged" in gallery
+          and "scrollViewDidZoom" in zoom and "onZoomChanged" in zoom)
+    check("关闭时回传当前图片，阅读器滚动定位回该插图",
+          "onClose: (MediaItem) -> Void" in gallery
+          and "pendingAnchor = imageAnchor" in reader
+          and "proxy.scrollTo(anchor, anchor: .center)" in reader
+          and "noteAnchor(anchor, for: chapter.id)" in reader)
+    check("章末有下一章按钮，最后一章给出提示",
+          "下一章" in reader and "onOpenNext(next)" in reader
+          and "已是最后一章" in reader and "chapterFooter" in reader)
+    check("下一章基于最新章节列表计算并直接切换",
+          "nextChapter(after: chapter)" in welcome
+          and "onOpenNext: { next in selectedChapter = next }" in welcome
+          and "func nextChapter(after chapter: Chapter)" in welcome)
+    check("章节支持多选批量删除（全选 / 计数 / 二次确认）",
+          "isSelecting" in chapters and "selectedIds" in chapters
+          and "confirmBatchDelete" in chapters and "deleteSelected(in:" in chapters
+          and "toggleSelectAll" in chapters and "已选 \\(selectedIds.count) 章" in chapters)
+    check("批量删除一次重扫，只读目录同样改为隐藏",
+          "func deleteChapters" in store and "hidden += 1" in store
+          and "invalidateCaches()" in store)
+    check("章节列表渲染取最新扫描结果（删除后不再显示旧快照）",
+          "private var currentBook: Book?" in chapters
+          and "library.library?.books.first" in chapters)
 
     print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")
     if FAIL:
