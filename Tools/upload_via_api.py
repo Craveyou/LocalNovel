@@ -23,6 +23,7 @@ import time
 import urllib.error
 import urllib.request
 import zipfile
+from pathlib import Path
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 API = "https://api.github.com"
@@ -92,28 +93,128 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 _NO_REDIRECT = urllib.request.build_opener(_NoRedirect())
 
 
-def get_with_redirect(path, timeout=120):
-    """GET 可能返回 302 的下载端点；重定向后用【不带凭据】的请求取回内容。"""
+def get_with_redirect(path, timeout=300, retries=4):
+    """GET 可能返回 302 的下载端点；重定向后用【不带凭据】的请求取回内容。
+
+    artifact 的签名地址有效期短，大文件下载也容易读超时。失败时重新向 API
+    申请一个新的签名地址再试，避免整轮编译白跑（编译成功却拿不到 ipa）。
+    """
     url = path if path.startswith("http") else API + path
-    req = urllib.request.Request(url, headers={
-        "Authorization": "Bearer " + TOKEN,
-        "Accept": "application/vnd.github+json",
-        "User-Agent": "LocalNovel-Builder",
-    })
-    try:
-        with _NO_REDIRECT.open(req, timeout=timeout) as r:
-            return 200, r.read()
-    except urllib.error.HTTPError as e:
-        if e.code in (301, 302, 303, 307, 308):
-            loc = e.headers.get("Location")
-            if loc:
+    last = ""
+    for attempt in range(1, retries + 1):
+        req = urllib.request.Request(url, headers={
+            "Authorization": "Bearer " + TOKEN,
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "LocalNovel-Builder",
+        })
+        loc = ""
+        try:
+            with _NO_REDIRECT.open(req, timeout=30) as r:
+                return 200, r.read()
+        except urllib.error.HTTPError as e:
+            if e.code not in (301, 302, 303, 307, 308):
+                return e.code, e.read()
+            loc = e.headers.get("Location") or ""
+            if not loc:
+                return e.code, e.read()
+        except Exception as e:  # noqa: BLE001
+            last = f"取下载地址失败：{type(e).__name__}"
+        if loc:
+            try:
                 clean = urllib.request.Request(
                     loc, headers={"User-Agent": "LocalNovel-Builder"})
                 with urllib.request.urlopen(clean, timeout=timeout) as r:
                     return 200, r.read()
-        return e.code, e.read()
-    except Exception as e:
-        return -1, str(e).encode()
+            except Exception as e:  # noqa: BLE001
+                last = f"第 {attempt}/{retries} 次下载失败：{type(e).__name__}"
+        print("   " + (last or "下载失败") + "，重试…")
+        time.sleep(3)
+    return -1, (last or "下载失败").encode()
+
+
+def download_artifact_resumable(path, dest, rounds=100):
+    """断点续传下载 artifact：每轮刷新签名地址，用 Range 从已落盘偏移继续。
+
+    artifact 的签名地址有效期很短，对象存储对大文件读也很慢，一次性 GET
+    常在几分钟后超时。这里按 64KB 分块立即落盘，中断后换地址续传，
+    直到 zip 的中央目录完整可解析。
+    """
+    dest = Path(dest)
+    if dest.exists() and zipfile.is_zipfile(dest):
+        return True
+    pos = dest.stat().st_size if dest.exists() else 0
+    url = path if path.startswith("http") else API + path
+    stalled = 0
+    for round_no in range(1, rounds + 1):
+        before = pos
+        loc = ""
+        req = urllib.request.Request(url, headers={
+            "Authorization": "Bearer " + TOKEN,
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "LocalNovel-Builder"})
+        try:
+            with _NO_REDIRECT.open(req, timeout=30) as r:
+                # 极少数情况下 API 直接返回内容
+                dest.write_bytes(r.read())
+                return zipfile.is_zipfile(dest)
+        except urllib.error.HTTPError as e:
+            if e.code not in (301, 302, 303, 307, 308):
+                print(f"   取地址 HTTP {e.code}，重试…")
+                time.sleep(2)
+                continue
+            loc = e.headers.get("Location") or ""
+        except Exception as e:  # noqa: BLE001
+            print(f"   取地址失败 {type(e).__name__}，重试…")
+            time.sleep(2)
+            continue
+        if not loc:
+            time.sleep(2)
+            continue
+        try:
+            clean = urllib.request.Request(loc, headers={
+                "User-Agent": "LocalNovel-Builder",
+                "Range": f"bytes={pos}-"})
+            with urllib.request.urlopen(clean, timeout=90) as r:
+                mode = "ab" if pos else "wb"
+                if r.status == 200:  # 服务端不支持 Range，从头写
+                    pos, mode = 0, "wb"
+                elif r.status == 206:
+                    cr = r.headers.get("Content-Range") or ""
+                    start = cr.rsplit(" ", 1)[-1].split("-")[0]
+                    if start.isdigit() and int(start) != pos:
+                        pos, mode = 0, "wb"
+                with open(dest, mode) as f:
+                    while True:
+                        chunk = r.read(65536)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        f.flush()
+                        pos += len(chunk)
+        except Exception as e:  # noqa: BLE001
+            print(f"   第 {round_no} 轮中断 {type(e).__name__}，已落盘 {pos} 字节，续传…")
+            time.sleep(2)
+        if dest.exists() and zipfile.is_zipfile(dest):
+            print(f"   ✅ 下载完成：{pos} 字节")
+            return True
+        stalled = stalled + 1 if pos == before else 0
+        if stalled >= 3:  # 卡住就从头再来
+            dest.unlink(missing_ok=True)
+            pos, stalled = 0, 0
+    return False
+
+
+# 只下载模式：编译已成功但下载失败时，不必重跑整轮编译
+if len(sys.argv) >= 3 and sys.argv[1] == "--download-only":
+    _art = sys.argv[2]
+    _out = sys.argv[3] if len(sys.argv) > 3 else "/tmp/ln_artifact.zip"
+    _code, _u, _ = call("GET", "/user")
+    _owner = _u.get("login", "")
+    _repo = os.environ.get("REPO_NAME", "LocalNovel")
+    print(f"== 断点续传下载 artifact {_art} ==")
+    ok = download_artifact_resumable(
+        f"/repos/{_owner}/{_repo}/actions/artifacts/{_art}/zip", _out)
+    sys.exit(0 if ok else 1)
 
 
 # ---------- 1. 身份与仓库 ----------
@@ -305,11 +406,17 @@ alive.sort(key=lambda a: (0 if "ipa" in (a.get("name") or "").lower() else 1))
 art_id = alive[0]["id"]
 print(f"   artifact: {alive[0].get('name')} (id={art_id})")
 
-# 手动处理 302：带 token 请求只用于换取签名地址，重定向后的下载不带任何凭据
-c, blob = get_with_redirect(REPO + f"/actions/artifacts/{art_id}/zip", timeout=180)
-if c != 200 or not blob:
-    print(f"❌ artifact 下载失败 (HTTP {c})")
+# 带 token 的请求只用于换取签名地址；重定向后的下载不带任何凭据。
+# 大文件走断点续传：签名地址有效期短、对象存储读超时很常见。
+_resume_dest = Path(os.environ.get("LN_ARTIFACT_CACHE", "/tmp/ln_artifact.zip"))
+if not download_artifact_resumable(
+        REPO + f"/actions/artifacts/{art_id}/zip", _resume_dest):
+    print("❌ artifact 下载失败。编译产物仍在，可稍后续传：")
+    print(f"   LN_GH_PAT_FILE=<pat> python3 Tools/upload_via_api.py "
+          f"--download-only {art_id} /tmp/ln_artifact.zip")
     sys.exit(1)
+blob = _resume_dest.read_bytes()
+c = 200
 
 ipa_bytes = None
 try:

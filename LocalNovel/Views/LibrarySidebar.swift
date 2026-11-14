@@ -7,6 +7,9 @@ struct LibrarySidebar: View {
     @EnvironmentObject private var library: LibraryStore
     @Binding var selection: Book?
 
+    @State private var pendingDelete: Book?
+    @State private var resultMessage: String?
+
     var body: some View {
         Group {
             if let lib = library.library, !lib.books.isEmpty {
@@ -20,9 +23,15 @@ struct LibrarySidebar: View {
                     }
                     .padding(.vertical, 4)
                     .tag(book)
+                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                        Button(role: .destructive) {
+                            pendingDelete = book
+                        } label: {
+                            Label("删除", systemImage: "trash")
+                        }
+                    }
                 }
             } else {
-                // 空态：把「当前状态 + 下一步怎么做」放在主体大字号显示
                 EmptyLibraryState()
             }
         }
@@ -34,18 +43,18 @@ struct LibrarySidebar: View {
                         library.noteImportStarted(ImportMode.file.label)
                         library.activeImport = .file
                     } label: {
-                        Label("选择书库内任意文件（推荐）", systemImage: "doc.badge.plus")
+                        Label("导入书里的任意文件（推荐）", systemImage: "doc.badge.plus")
                     }
                     Button {
                         library.noteImportStarted(ImportMode.folder.label)
                         library.activeImport = .folder
                     } label: {
-                        Label("选择书库目录（文件夹）", systemImage: "folder.badge.plus")
+                        Label("导入书库目录（文件夹）", systemImage: "folder.badge.plus")
                     }
                     Button {
                         library.useAppDocuments()
                     } label: {
-                        Label("App 文档目录（免授权）", systemImage: "doc.text.magnifyingglass")
+                        Label("重新读取「本地小说」目录", systemImage: "doc.text.magnifyingglass")
                     }
                 } label: {
                     Label("添加书籍", systemImage: "plus")
@@ -60,8 +69,17 @@ struct LibrarySidebar: View {
             }
         }
         .safeAreaInset(edge: .bottom) {
-            // 底部只作补充，字号已提升到正常可读级别
             VStack(spacing: 0) {
+                if let progress = library.importProgress {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                        Text(progress)
+                            .font(.footnote)
+                    }
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.orange.opacity(0.12))
+                }
                 if let info = library.diagnostics {
                     Text(info)
                         .font(.footnote)
@@ -79,6 +97,35 @@ struct LibrarySidebar: View {
                         .background(Color.red.opacity(0.08))
                 }
             }
+        }
+        .confirmationDialog(
+            "删除书籍",
+            isPresented: Binding(
+                get: { pendingDelete != nil },
+                set: { if !$0 { pendingDelete = nil } }
+            ),
+            presenting: pendingDelete
+        ) { book in
+            Button("删除《\(book.title)》", role: .destructive) {
+                let message = library.deleteBook(book)
+                if selection?.id == book.id { selection = nil }
+                pendingDelete = nil
+                resultMessage = message
+            }
+            Button("取消", role: .cancel) { pendingDelete = nil }
+        } message: { book in
+            Text("《\(book.title)》（\(book.chapters.count) 章）将从书库移除。若在 App 文档目录内，源文件会被一并删除且不可恢复；若在只读目录，则改为隐藏。")
+        }
+        .alert(
+            "删除结果",
+            isPresented: Binding(
+                get: { resultMessage != nil },
+                set: { if !$0 { resultMessage = nil } }
+            )
+        ) {
+            Button("好", role: .cancel) { resultMessage = nil }
+        } message: {
+            Text(resultMessage ?? "")
         }
     }
 }
@@ -98,6 +145,13 @@ private struct EmptyLibraryState: View {
                 Text(library.headline ?? "书库为空")
                     .font(.title2.bold())
 
+                if let progress = library.importProgress {
+                    Label(progress, systemImage: "square.and.arrow.down")
+                        .font(.callout)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
                 Label("最省事的做法（无需点按钮、无需授权）", systemImage: "star.fill")
                     .font(.headline)
 
@@ -105,9 +159,14 @@ private struct EmptyLibraryState: View {
                     .font(.body)
                     .fixedSize(horizontal: false, vertical: true)
 
-                Text("注意：放的是作者文件夹本身，不要再多包一层「书」文件夹。")
+                Text("也可以在下面点「导入」：选中的书会被复制进「本地小说」，之后重启也能读。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+
+                Text("在文件选择器里：进入文件夹后要点右上角「打开」才会确认选择；或直接点书里任意一个 txt / 图片文件，会立即开始导入。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
 
                 if let info = library.diagnostics {
                     Label(info, systemImage: "info.circle")
@@ -134,7 +193,7 @@ private struct EmptyLibraryState: View {
                         library.noteImportStarted(ImportMode.file.label)
                         library.activeImport = .file
                     } label: {
-                        Label("选择书库内任意文件", systemImage: "doc.badge.plus")
+                        Label("导入书籍", systemImage: "square.and.arrow.down")
                     }
                     .buttonStyle(.borderedProminent)
 

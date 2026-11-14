@@ -2,18 +2,20 @@ import SwiftUI
 import UIKit
 
 // MARK: - 章节内插图（静态图降采样 / 动图逐帧播放 / 点击放大）
+// 可见性放在【本视图自己】的 @State 里：滚动时只重绘这一张图，
+// 不再让父级 ReaderView 整页重算（此前是滑动卡顿的主要来源之一）。
 
 struct InlineMediaView: View {
     let item: MediaItem
-    let isVisible: Bool
     let onTap: () -> Void
 
     @State private var staticImage: UIImage?
+    @State private var onScreen = false
 
     var body: some View {
         Group {
             if item.kind == .animatedImage {
-                AnimatedImageView(url: item.url, isVisible: isVisible)
+                AnimatedImageView(url: item.url, isVisible: onScreen)
                     .frame(maxWidth: .infinity, minHeight: 220)
                     .background(Color.black.opacity(0.04))
             } else if let image = staticImage {
@@ -32,7 +34,6 @@ struct InlineMediaView: View {
         }
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .overlay(alignment: .topTrailing) {
-            // 明确提示：点击可进入沉浸式全屏
             Image(systemName: "arrow.up.left.and.arrow.down.right")
                 .font(.caption)
                 .foregroundStyle(.white)
@@ -44,9 +45,11 @@ struct InlineMediaView: View {
         .contentShape(Rectangle())
         .onTapGesture(perform: onTap)
         .onAppear {
+            onScreen = true
             if item.kind != .animatedImage, staticImage == nil {
                 staticImage = ImageLoader.load(url: item.url)
             }
         }
+        .onDisappear { onScreen = false }
     }
 }

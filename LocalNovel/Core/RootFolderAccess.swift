@@ -1,15 +1,11 @@
 import Foundation
 
-// MARK: - 目录访问权（S2）
-// 通过 .fileImporter 选中的文件夹返回的是 security-scoped URL。
-// iOS 与 macOS 的关键差异：
-//   * iOS 不支持 security-scoped bookmark（.withSecurityScope 仅 macOS 可用），
-//     因此用 .minimalBookmark 保存「普通书签」即可持久化访问。
-//   * iOS 上 resolvingBookmarkData 本身会隐式获得访问权；反复
-//     start/stopAccessingSecurityScopedResource 会让内核的 access count 错乱。
-// 所以这里：选中后立刻 startAccessing 并【保持】，直接用原始 URL 扫描；
-// 书签只用于下次启动恢复，不在同一次会话里 stop→resolve→start 来回倒手。
-// 全程不复制、不移动、不写回用户目录。
+// MARK: - 目录访问权（兼容旧版本留下的外部书库书签）
+// 现在主路径是 App 文档目录 + 导入复制，这里只用于恢复旧版 App 曾选中的外部目录。
+// 修正：.minimalBookmark 会生成【不含 security scope】的最小书签，iOS 上
+// 重启后 resolve 出来的 URL 读不了外部目录；应改用默认选项，让系统把
+// security scope 一并写进书签。反复 start/stop 会让内核 access count 错乱，
+// 因此这里 start 一次并保持，不在同一次会话里来回倒手。
 
 final class RootFolderAccess {
     static let shared = RootFolderAccess()
@@ -36,9 +32,9 @@ final class RootFolderAccess {
         }
         activeURL = url
 
-        // .minimalBookmark 是 iOS 上正确的持久化方式（无需 .withSecurityScope）
+        // 默认选项会保留 iOS 的 security scope；.minimalBookmark 会丢掉它
         if let data = try? url.bookmarkData(
-            options: .minimalBookmark,
+            options: [],
             includingResourceValuesForKeys: nil,
             relativeTo: nil
         ) {
@@ -72,7 +68,7 @@ final class RootFolderAccess {
         activeURL = url
         if stale {
             if let refreshed = try? url.bookmarkData(
-                options: .minimalBookmark,
+                options: [],
                 includingResourceValuesForKeys: nil,
                 relativeTo: nil
             ) {

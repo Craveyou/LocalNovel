@@ -111,7 +111,7 @@ EXPECTED_TYPES = [
     "LibrarySidebar", "ChapterListView", "SettingsView", "LocalNovelApp",
     "RateBoostGesture", "RateBoostCoordinator", "AudioSurfaceView",
     "ZoomableImageView", "FullscreenVideoView", "FullscreenPlayerHost",
-    "DocumentsBootstrap", "ImportMode",
+    "DocumentsBootstrap", "ImportMode", "BookImporter", "BookImportError",
 ]
 
 NETWORK_PATTERNS = [
@@ -205,10 +205,15 @@ def main():
     check("书签持久化失败不阻断本次扫描",
           "try? url.bookmarkData" in access
           and "try RootFolderAccess.shared.saveRootFolder" not in store)
-    check("handleImport 直接用仍持有访问权的原 URL 扫描",
-          "saveRootFolder(url)" in store and "apply(" in store)
-    check("书签未持久化时有可见提示",
-          "hasSavedRoot()" in store and "权限未能持久化" in store)
+    check("导入改为复制进 App 文档目录（不再依赖临时授权 URL 的持久化）",
+          "BookImporter.importIntoDocuments" in store
+          and "performImport" in store and "appDocumentsURL()" in store)
+    check("导入在后台线程执行、完成后自动重扫文档目录",
+          "DispatchQueue.global" in store and "DispatchQueue.main.async" in store
+          and "scanWithDiagnostics(rootURL: docs" in store)
+    check("选择器失败 / 无选择 / 空结果都有醒目反馈",
+          "applyImportFailure" in store and "applyNoSelection" in store
+          and "headline =" in store and "importProgress" in store)
     check("选文件通道由 bestRoot 反推书库根",
           "static func bestRoot(from" in scanner and "BookScanner.bestRoot" in store
           and "handleFileImport" in store)
@@ -216,9 +221,12 @@ def main():
           "noteImportStarted" in store and "noteImportStarted" in welcome
           and "headline =" in store and "library.headline" in welcome)
     check("iPhone 第一屏可见三种导入方式",
-          all(t in sidebar for t in ["选择书库内任意文件", "选择书库目录", "App 文档目录（免授权）"]))
+          all(t in sidebar for t in ["导入书里的任意文件", "导入书库目录", "重新读取"]))
     check("UI 明确引导零交互路径（文件 App → 本地小说）",
-          "我的 iPhone → 本地小说" in welcome and "选择书库内任意文件" in welcome)
+          "我的 iPhone → 本地小说" in welcome and "导入书里的任意文件" in welcome)
+    check("UI 明确说明「点文件夹需点打开 / 点文件立即导入」",
+          "右上角「打开」" in welcome and "立即开始导入" in welcome
+          and "右上角「打开」" in sidebar)
     check("提供 App 文档目录零权限兜底", "useAppDocuments" in store and "usingAppDocuments" in store)
     check("Info.plist 开启文件共享（文档目录可见）", "UIFileSharingEnabled" in plist)
     check("诊断信息在 iPhone 第一栏也可见", "library.diagnostics" in sidebar)
@@ -227,10 +235,10 @@ def main():
     check("全工程【唯一】一个 .fileImporter（多个叠加会都不弹出）",
           code_only.count(".fileImporter(") == 1,
           f"实到 {code_only.count('.fileImporter(')} 个")
-    check("单选择器由 activeImport 驱动，按模式切换 .folder / .item",
+    check("单选择器由 activeImport 驱动，两种模式都允许选文件夹或文件",
           "enum ImportMode" in store and "activeImport" in store
           and "activeImport" in welcome
-          and "[.item]" in welcome and "[.folder]" in welcome)
+          and ".item" in welcome and ".folder" in welcome)
     check("不再残留 isImporting / isFileImporting 双开关",
           "isImporting" not in code_only and "isFileImporting" not in code_only)
     check("切回前台自动补扫 App 文档目录（零点击出书）",
@@ -243,6 +251,53 @@ def main():
           "headline" in store and "library.headline" in sidebar
           and "EmptyLibraryState" in sidebar
           and "caption2" not in strip_non_code(sidebar))
+
+    print("\n== F0-BIS. 本轮修复：章节记忆 / 滑动流畅度 / 章节删除 ==")
+    reader = (APP / "Views" / "ReaderView.swift").read_text(encoding="utf-8")
+    inline = (APP / "Views" / "InlineMediaView.swift").read_text(encoding="utf-8")
+    chapters = (APP / "Views" / "ChapterListView.swift").read_text(encoding="utf-8")
+    progress = (APP / "Core" / "ProgressStore.swift").read_text(encoding="utf-8")
+    settings = (APP / "Views" / "SettingsView.swift").read_text(encoding="utf-8")
+    importer = (APP / "Core" / "BookImporter.swift").read_text(encoding="utf-8")
+    reader_code = strip_non_code(reader)
+
+    check("阅读器去掉 .task 异步状态机（消除「一直载入章节」）",
+          ".task(" not in reader_code
+          and "@State private var content" not in reader_code
+          and "载入章节" not in reader_code)
+    check("内容 / 段落全部同步取自缓存，无 nil 等待态",
+          "library.content(for: chapter)" in reader
+          and "library.paragraphs(for: chapter)" in reader
+          and "func paragraphs(for chapter: Chapter)" in store)
+    check("滚动不再改父级 @State、不再同步写 UserDefaults",
+          "currentAnchor" not in reader_code
+          and "visibleAnimated" not in reader_code
+          and "setAnchor(" not in reader_code
+          and "noteAnchor(" in reader_code)
+    check("进度写入节流 + 停滚合并落盘",
+          "asyncAfter(deadline: .now() + 0.6" in progress
+          and "flushAnchors()" in progress and "flushAnchors()" in reader_code)
+    check("动图可见性下沉到子视图自己的 @State（不触发整页重绘）",
+          "@State private var onScreen" in inline
+          and "onDisappear { onScreen = false }" in inline)
+    check("restore 只跑一次，不再每次 onAppear 全量重扫清缓存",
+          "didRestore" in welcome)
+    check("章节列表支持左滑删除 + 二次确认",
+          ".swipeActions" in chapters and "confirmationDialog(" in chapters
+          and "deleteChapter(" in store)
+    check("书库支持左滑删除整本书 + 二次确认",
+          ".swipeActions" in sidebar and "confirmationDialog(" in sidebar
+          and "deleteBook(" in store)
+    check("删除后清理进度；只读目录删不掉时改为隐藏",
+          "func clearProgress" in progress and "clearProgress(for:" in store
+          and "hideChapter(" in store and "hiddenChapterIds()" in store)
+    check("隐藏章节可在设置里恢复",
+          "restoreHiddenChapters()" in store and "恢复已隐藏" in settings)
+    check("导入复制失败可回滚，不留半本书",
+          "replaceCopy(" in importer and "moveItem(at: backup" in importer)
+    check("书签改用默认选项以保留 iOS security scope",
+          "options: []" in access
+          and ".minimalBookmark" not in strip_non_code(access))
 
     print("\n== F. 全屏图片 / 视频全屏 / 长按倍速 ==")
     gallery = (APP / "Views" / "MediaGalleryView.swift").read_text(encoding="utf-8")
@@ -284,13 +339,13 @@ def main():
           and "DocumentsBootstrap.guideFileName" in resolver)
     check("切回前台补写说明文件", "DocumentsBootstrap.ensureVisibleInFilesApp()" in store)
     check("版本号提升以刷新系统元数据",
-          "<string>2</string>" in plist and "CURRENT_PROJECT_VERSION = 2" in pbx)
+          "<string>3</string>" in plist and "CURRENT_PROJECT_VERSION = 3" in pbx)
     check("UI 给出「文件 App 搜索本地小说」兜底路径",
           "搜索框搜「本地小说」" in welcome and "搜索「本地小说」" in store)
     check("AppIcon asset catalog（1024 + Contents.json）",
           (icon_set / "Contents.json").is_file() and (icon_set / "AppIcon.png").is_file())
-    check("散装图标 PNG 覆盖 iPhone / iPad 尺寸",
-          all((APP / f"AppIcon-{s}.png").is_file() for s in (120, 152, 167, 180, 1024)))
+    check("散装图标 PNG 覆盖 iPhone / iPad 主屏尺寸",
+          all((APP / f"AppIcon-{s}.png").is_file() for s in (120, 152, 167, 180)))
     check("Info.plist 声明图标文件（无 asset catalog 时的退路）",
           "CFBundleIconFiles" in plist and "CFBundleIcons~ipad" in plist)
     check("构建设置指向 AppIcon asset",

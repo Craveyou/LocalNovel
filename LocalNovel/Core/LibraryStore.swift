@@ -2,12 +2,12 @@ import SwiftUI
 import Foundation
 
 // MARK: - 书库状态
-// 交互模型：零交互主路径（App 文档目录，启动/前台自动扫描） + 唯一一个文件选择器作为备用。
-// 不再依赖「系统选择器一定回调」这一脆弱假设：用户把书放进「文件」App → 我的 iPhone →
-// 本地小说 后，切回 App 即自动出现，全程无需点任何按钮、无需授权。
+// 主路径：书放在 App 文档目录（「文件」App → 我的 iPhone → 本地小说），零权限、零交互自动扫描。
+// 导入按钮：把用户在文件选择器里选中的书【复制】进该目录，之后走同一条稳定路径。
+// 不再依赖临时授权 URL 的跨会话持久化。
 
-/// 唯一的导入通道类型。视图里只挂一个 .fileImporter，
-/// 由 activeImport 决定 allowedContentTypes，避免多个 importer 叠加导致都不弹出。
+/// 导入通道类型。仍保留两种模式，只用于给用户不同的操作提示；
+/// 视图里始终只有【唯一一个】fileImporter，避免多个弹层叠加导致都不弹出。
 enum ImportMode: String {
     case folder
     case file
@@ -22,35 +22,37 @@ enum ImportMode: String {
 final class LibraryStore: ObservableObject {
     @Published private(set) var library: Library?
     @Published private(set) var errorMessage: String?
-    /// 扫描诊断（成功或失败都显示）
+    /// 扫描 / 导入诊断（成功或失败都显示）
     @Published private(set) var diagnostics: String?
     /// 醒目状态标题：显示在书库主体，替代底部极小的灰字
     @Published private(set) var headline: String?
-    /// 当前载入方式：true = 读 App 文档目录（零权限），false = 用户选的外部目录
+    /// 当前载入方式：true = 读 App 文档目录（零权限）
     @Published private(set) var usingAppDocuments = false
+    /// 导入进行中的可见反馈
+    @Published private(set) var importProgress: String?
     /// 全工程唯一一个 fileImporter 的驱动状态
     @Published var activeImport: ImportMode? = nil
 
     private var contentCache: [String: ChapterContent] = [:]
     private var textCache: [String: String] = [:]
+    private var paragraphCache: [String: [String]] = [:]
     private let animatedDetector: (URL) -> Bool
 
     init(animatedDetector: @escaping (URL) -> Bool = FrameDetector.isAnimated) {
         self.animatedDetector = animatedDetector
     }
 
+    var hiddenChapterCount: Int { ProgressStore.shared.hiddenChapterCount }
+
     // MARK: - 零交互主路径
 
-    /// 启动恢复：优先读 App 文档目录（零权限、零交互），没书再尝试上次选中的外部目录。
-    /// 任何一步失败都不 return 死锁、不吞掉诊断。
+    /// 启动恢复：优先读 App 文档目录；没书再尝试上次选中的外部目录（兼容旧版本数据）。
     func restore() {
         let docs = appDocumentsURL()
         var docsReport: ScanDiagnostics?
         if let docs {
             let report = BookScanner.scanWithDiagnostics(
-                rootURL: docs,
-                cleanTitles: Preferences.shared.cleanTitles
-            )
+                rootURL: docs, cleanTitles: Preferences.shared.cleanTitles)
             if !report.library.books.isEmpty {
                 usingAppDocuments = true
                 invalidateCaches()
@@ -60,14 +62,11 @@ final class LibraryStore: ObservableObject {
             }
             docsReport = report
         }
-
         if let external = RootFolderAccess.shared.restoreRootFolder() {
             usingAppDocuments = false
             invalidateCaches()
             let report = BookScanner.scanWithDiagnostics(
-                rootURL: external,
-                cleanTitles: Preferences.shared.cleanTitles
-            )
+                rootURL: external, cleanTitles: Preferences.shared.cleanTitles)
             if !report.library.books.isEmpty {
                 apply(report, root: external, headline: "已载入书库")
                 return
@@ -75,21 +74,17 @@ final class LibraryStore: ObservableObject {
             applyEmpty(report, docsReport: docsReport)
             return
         }
-
         applyEmpty(docsReport, docsReport: docsReport)
     }
 
-    /// 每次回到前台：当前没有书时自动补扫 App 文档目录。
-    /// 用户在「文件」App 把作者文件夹放进去后，切回 App 书就自动出现，零点击。
+    /// 每次回到前台：补写说明文件（保证「文件」App 里目录可见），书库为空时自动补扫。
     func refreshOnForeground() {
-        // 用户可能删掉了说明文件；每次回前台补写，保证「文件」App 里目录始终可见
         DocumentsBootstrap.ensureVisibleInFilesApp()
+        ProgressStore.shared.flushAnchors()
         guard library?.books.isEmpty != false else { return }
         guard let docs = appDocumentsURL() else { return }
         let report = BookScanner.scanWithDiagnostics(
-            rootURL: docs,
-            cleanTitles: Preferences.shared.cleanTitles
-        )
+            rootURL: docs, cleanTitles: Preferences.shared.cleanTitles)
         if !report.library.books.isEmpty {
             usingAppDocuments = true
             invalidateCaches()
@@ -99,57 +94,63 @@ final class LibraryStore: ObservableObject {
         }
     }
 
-    /// 点导入按钮的瞬间给【醒目】反馈，且明确给出不依赖选择器的退路。
+    /// 点导入按钮的瞬间给【醒目】反馈
     func noteImportStarted(_ label: String) {
         headline = "正在打开「\(label)」…"
         errorMessage = nil
-        diagnostics = "若没有弹出文件选择器：请在「文件」App 顶部搜索框搜「本地小说」找到文档目录，把作者文件夹放进去，回到本 App 会自动出现。"
+        diagnostics = "在文件选择器里：进入文件夹后请点右上角「打开」确认选择；"
+            + "或直接点书里任意一个 txt / 图片文件，会立即开始导入。"
+            + "导入会把书复制进「本地小说」，之后重启也能读。"
     }
 
-    // MARK: - 备用：唯一的文件选择器
+    // MARK: - 导入：复制进 App 文档目录
 
-    /// 选择目录（.folder）
-    func handleImport(_ result: Result<[URL], Error>) {
+    func handleImport(_ result: Result<[URL], Error>) { performImport(result) }
+    func handleFileImport(_ result: Result<[URL], Error>) { performImport(result) }
+
+    private func performImport(_ result: Result<[URL], Error>) {
         switch result {
         case .failure(let error):
             applyImportFailure(error)
         case .success(let urls):
-            guard let url = urls.first else {
-                applyNoSelection()
+            guard let picked = urls.first else { applyNoSelection(); return }
+            guard let docs = appDocumentsURL() else {
+                headline = "无法访问 App 文档目录"
+                errorMessage = "请重启 App 再试；或直接在「文件」App → 我的 iPhone → 本地小说 里放书。"
                 return
             }
-            let root = RootFolderAccess.shared.saveRootFolder(url)
-            usingAppDocuments = false
-            invalidateCaches()
-            let report = BookScanner.scanWithDiagnostics(
-                rootURL: root, cleanTitles: Preferences.shared.cleanTitles)
-            apply(report, root: root,
-                  headline: report.library.books.isEmpty ? "未识别到书" : "已载入书库")
-        }
-    }
+            let clean = Preferences.shared.cleanTitles
+            // 选文件时在授权作用域内反推书库根；选文件夹则直接用
+            let source: URL = {
+                if picked.hasDirectoryPath { return picked }
+                let accessing = picked.startAccessingSecurityScopedResource()
+                defer { if accessing { picked.stopAccessingSecurityScopedResource() } }
+                return BookScanner.bestRoot(from: picked, cleanTitles: clean)
+            }()
 
-    /// 选择书库内任意文件（.item），由该文件向上反推书库根
-    func handleFileImport(_ result: Result<[URL], Error>) {
-        switch result {
-        case .failure(let error):
-            applyImportFailure(error)
-        case .success(let urls):
-            guard let file = urls.first else {
-                applyNoSelection()
-                return
-            }
-            let root = BookScanner.bestRoot(from: file,
-                                            cleanTitles: Preferences.shared.cleanTitles)
-            let saved = RootFolderAccess.shared.saveRootFolder(root)
-            usingAppDocuments = false
-            invalidateCaches()
-            let report = BookScanner.scanWithDiagnostics(
-                rootURL: saved, cleanTitles: Preferences.shared.cleanTitles)
-            apply(report, root: saved,
-                  headline: report.library.books.isEmpty ? "未识别到书" : "已载入书库")
-            if library?.books.isEmpty == true {
-                diagnostics = (diagnostics ?? "")
-                    + " · 由「\(file.lastPathComponent)」定位到「\(root.lastPathComponent)」但未识别出书，请确认所选文件确实在书库目录内。"
+            headline = "正在导入到「本地小说」…"
+            errorMessage = nil
+            importProgress = "正在复制《\(source.lastPathComponent)》…（大文件可能需要一点时间）"
+            diagnostics = "复制完成后会自动重新扫描；书会保存在 App 内，占用一份额外空间。"
+
+            DispatchQueue.global(qos: .userInitiated).async {
+                let report = BookImporter.importIntoDocuments(from: source, documents: docs)
+                DispatchQueue.main.async {
+                    self.importProgress = nil
+                    guard !report.imported.isEmpty else {
+                        self.headline = "导入未完成"
+                        self.errorMessage = report.error ?? "没有内容被导入。"
+                        self.diagnostics = "最稳妥的做法：把【作者文件夹】整个放进「文件」App → 我的 iPhone → 本地小说，回到本 App 会自动出现。"
+                        return
+                    }
+                    self.usingAppDocuments = true
+                    self.invalidateCaches()
+                    let scan = BookScanner.scanWithDiagnostics(rootURL: docs, cleanTitles: clean)
+                    self.apply(scan, root: docs,
+                               headline: "已导入 \(report.imported.count) 项，书库共 \(scan.library.books.count) 本书")
+                    self.diagnostics = (self.diagnostics ?? "")
+                        + " · " + report.summary + " · 已存入 App 内，重启后仍可阅读"
+                }
             }
         }
     }
@@ -157,25 +158,23 @@ final class LibraryStore: ObservableObject {
     private func applyImportFailure(_ error: Error) {
         headline = "导入失败"
         errorMessage = "导入失败：\(error.localizedDescription)"
-        diagnostics = "可改用零交互方式：在「文件」App 顶部搜索「本地小说」找到文档目录，把作者文件夹放进去，回到本 App 会自动出现。"
+        diagnostics = "可把作者文件夹直接放进「文件」App → 我的 iPhone → 本地小说，回到本 App 会自动出现。"
     }
 
     private func applyNoSelection() {
-        headline = "没有拿到文件/文件夹"
-        errorMessage = "系统没有返回所选内容。请直接把作者文件夹放进「文件」App → 我的 iPhone → 本地小说，回到本 App 会自动出现（这条路径不需要文件选择器）。"
-        diagnostics = nil
+        headline = "没有拿到所选内容"
+        errorMessage = "系统没有返回所选内容。进入文件夹后请点右上角「打开」，或直接点书里任意一个 txt 文件。"
+        diagnostics = "若在「文件」App 看不到目录，可在顶部搜索框搜索「本地小说」；把作者文件夹放进去后回到本 App 会自动出现。"
     }
 
-    /// 手动「重新扫描」
+    // MARK: - 重新扫描 / 切换书库
+
     func reload() {
         let root: URL? = usingAppDocuments
             ? appDocumentsURL()
             : (RootFolderAccess.shared.currentRootURL()
                ?? RootFolderAccess.shared.restoreRootFolder())
-        guard let url = root else {
-            restore()
-            return
-        }
+        guard let url = root else { restore(); return }
         invalidateCaches()
         let report = BookScanner.scanWithDiagnostics(
             rootURL: url, cleanTitles: Preferences.shared.cleanTitles)
@@ -187,7 +186,7 @@ final class LibraryStore: ObservableObject {
     func useAppDocuments() {
         guard let docs = appDocumentsURL() else {
             headline = "无法访问 App 文档目录"
-            errorMessage = "请重启 App 再试；或点右上角「＋」用文件选择器导入。"
+            errorMessage = "请重启 App 再试；或点右上角「＋」导入。"
             return
         }
         usingAppDocuments = true
@@ -196,7 +195,7 @@ final class LibraryStore: ObservableObject {
             rootURL: docs, cleanTitles: Preferences.shared.cleanTitles)
         if report.library.books.isEmpty {
             applyEmpty(report, docsReport: report)
-            errorMessage = "App 文档目录里还没有书。把作者文件夹放进「文件」App → 我的 iPhone → 本地小说，然后回到本 App（会自动出现）。"
+            errorMessage = "App 文档目录里还没有书。把作者文件夹放进「文件」App → 我的 iPhone → 本地小说，回到本 App 会自动出现。"
         } else {
             apply(report, root: docs,
                   headline: "已从 App 文档目录载入 \(report.library.books.count) 本书")
@@ -210,17 +209,77 @@ final class LibraryStore: ObservableObject {
                                      create: true)
     }
 
+    // MARK: - 删除章节 / 书籍
+
+    /// 删除章节：能删就删源文件夹；只读目录删不掉时改为隐藏（可在设置里恢复）。
+    /// 返回可直接展示的结果文案。
+    @discardableResult
+    func deleteChapter(_ chapter: Chapter) -> String {
+        invalidateCaches()
+        var removed = false
+        do {
+            try FileManager.default.removeItem(at: chapter.folderURL)
+            removed = true
+        } catch {
+            ProgressStore.shared.hideChapter(chapter.id)
+        }
+        ProgressStore.shared.clearProgress(for: chapter.id)
+        reload()
+        let message = removed
+            ? "《\(chapter.title)》的文件夹已删除，不可恢复。"
+            : "源文件无法删除（目录只读），《\(chapter.title)》已从书库隐藏；可在「阅读设置 → 书库」里恢复。"
+        headline = "章节已删除"
+        diagnostics = message
+        errorMessage = nil
+        return message
+    }
+
+    @discardableResult
+    func deleteBook(_ book: Book) -> String {
+        invalidateCaches()
+        var removed = false
+        do {
+            try FileManager.default.removeItem(at: book.folderURL)
+            removed = true
+        } catch {
+            book.chapters.forEach { ProgressStore.shared.hideChapter($0.id) }
+        }
+        book.chapters.forEach { ProgressStore.shared.clearProgress(for: $0.id) }
+        ProgressStore.shared.clearLastChapter(for: book.id)
+        reload()
+        let message = removed
+            ? "《\(book.title)》的文件夹已删除，不可恢复。"
+            : "源文件无法删除（目录只读），《\(book.title)》已从书库隐藏；可在「阅读设置 → 书库」里恢复。"
+        headline = "书籍已删除"
+        diagnostics = message
+        errorMessage = nil
+        return message
+    }
+
+    func restoreHiddenChapters() {
+        ProgressStore.shared.unhideAllChapters()
+        reload()
+        headline = "已恢复隐藏的章节"
+        diagnostics = "隐藏记录已清空，重新扫描完成。"
+        errorMessage = nil
+    }
+
     // MARK: - 结果应用（始终给可见反馈）
 
     private func apply(_ report: ScanDiagnostics, root: URL, headline: String) {
-        self.library = report.library
-        var line = buildDiagnosticsLine(root: root, report: report)
-        // 书签没存上：本次仍能读，但重启后要重选；明确告知并指向免授权路径
-        if !usingAppDocuments && !RootFolderAccess.shared.hasSavedRoot() {
-            line += " · 目录权限未能持久化，重启后需重新选择；也可改用「App 文档目录里的书（免授权）」"
+        let hidden = ProgressStore.shared.hiddenChapterIds()
+        let books: [Book] = report.library.books.compactMap { book in
+            let chapters = book.chapters.filter { !hidden.contains($0.id) }
+            guard !chapters.isEmpty else { return nil }
+            return Book(folderURL: book.folderURL, title: book.title, chapters: chapters)
         }
+        self.library = Library(rootURL: report.library.rootURL, books: books)
+        var line = buildDiagnosticsLine(root: root, report: report)
+        if !hidden.isEmpty { line += " · 已隐藏 \(hidden.count) 个章节" }
         self.diagnostics = line
-        self.errorMessage = report.library.books.isEmpty ? report.failureHint : nil
+        self.errorMessage = books.isEmpty
+            ? (report.failureHint ?? "书库里没有可显示的章节，可在「阅读设置 → 书库」里恢复隐藏的章节。")
+            : nil
         self.headline = headline
     }
 
@@ -233,7 +292,7 @@ final class LibraryStore: ObservableObject {
                                books: [])
         self.diagnostics = line
         self.headline = "书库为空"
-        self.errorMessage = "把【作者文件夹】放进「文件」App → 我的 iPhone → 本地小说，回到本 App 会自动出现。若在「文件」App 看不到该目录：在顶部搜索框搜「本地小说」，或直接点右上角「＋」选择书库目录 / 书库内任意文件。"
+        self.errorMessage = "把【作者文件夹】放进「文件」App → 我的 iPhone → 本地小说，回到本 App 会自动出现；或点右上角「＋」把书导入进来。"
         self.usingAppDocuments = false
         _ = docsReport
     }
@@ -245,7 +304,7 @@ final class LibraryStore: ObservableObject {
         return parts.joined(separator: " · ")
     }
 
-    // MARK: - 章节内容（带缓存）
+    // MARK: - 章节内容（全部带缓存，同步取值，无异步状态机）
 
     func content(for chapter: Chapter) -> ChapterContent {
         if let cached = contentCache[chapter.id] { return cached }
@@ -272,6 +331,14 @@ final class LibraryStore: ObservableObject {
         }
     }
 
+    /// 段落切分结果也缓存：阅读器 body 重算时不再重复处理整本正文
+    func paragraphs(for chapter: Chapter) -> [String] {
+        if let cached = paragraphCache[chapter.id] { return cached }
+        let value = TextLoader.paragraphs(text(for: chapter))
+        paragraphCache[chapter.id] = value
+        return value
+    }
+
     func ignoredHint(for chapter: Chapter) -> String? {
         let ignored = content(for: chapter).ignoredFiles
         guard !ignored.isEmpty else { return nil }
@@ -281,5 +348,6 @@ final class LibraryStore: ObservableObject {
     private func invalidateCaches() {
         contentCache.removeAll()
         textCache.removeAll()
+        paragraphCache.removeAll()
     }
 }

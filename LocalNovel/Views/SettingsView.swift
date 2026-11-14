@@ -62,10 +62,18 @@ struct SettingsView: View {
                 }
 
                 Section("书库") {
-                    Button("重新选择书库目录") {
+                    Button("导入书籍（复制到「本地小说」）") {
                         library.noteImportStarted(ImportMode.file.label)
                         library.activeImport = .file
                         dismiss()
+                    }
+                    if library.hiddenChapterCount > 0 {
+                        Button("恢复已隐藏的 \(library.hiddenChapterCount) 个章节") {
+                            library.restoreHiddenChapters()
+                        }
+                        Text("外部只读目录里删不掉的章节会被隐藏，点这里可让它们重新出现在书库。")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
                     }
                 }
 

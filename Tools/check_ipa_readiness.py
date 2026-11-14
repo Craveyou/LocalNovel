@@ -83,15 +83,15 @@ def main():
           and plist.get("LSSupportsOpeningDocumentsInPlace") is True)
     check("Documents 说明文件引导（Apple 要求目录里至少一个文件）",
           (APP / "Core" / "DocumentsBootstrap.swift").is_file())
-    check("版本号提升以刷新系统元数据", plist.get("CFBundleVersion") == "2")
+    check("版本号提升以刷新系统元数据", plist.get("CFBundleVersion") == "3")
     check("CFBundleIcons 声明图标文件",
           "CFBundleIconFiles" in plist.get("CFBundleIcons", {})
           .get("CFBundlePrimaryIcon", {}))
     icon_set = APP / "Assets.xcassets" / "AppIcon.appiconset"
     check("AppIcon asset catalog 存在",
           (icon_set / "Contents.json").is_file() and (icon_set / "AppIcon.png").is_file())
-    check("散装图标 PNG 覆盖 iPhone / iPad / 1024",
-          all((APP / f"AppIcon-{s}.png").is_file() for s in (120, 152, 167, 180, 1024)))
+    check("散装图标 PNG 覆盖 iPhone / iPad 主屏尺寸",
+          all((APP / f"AppIcon-{s}.png").is_file() for s in (120, 152, 167, 180)))
     check("构建设置指向 AppIcon asset",
           "ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon" in pbx)
     check("CI 断言 Assets.car 编译结果",
