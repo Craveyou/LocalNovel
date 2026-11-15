@@ -349,8 +349,8 @@ def main():
           and "DocumentsBootstrap.guideFileName" in resolver)
     check("切回前台补写说明文件", "DocumentsBootstrap.ensureVisibleInFilesApp()" in store)
     check("版本号提升以刷新系统元数据",
-          "<string>2.4</string>" in plist and "CURRENT_PROJECT_VERSION = 1" in pbx
-          and "MARKETING_VERSION = 2.4" in pbx)
+          "<string>2.5</string>" in plist and "CURRENT_PROJECT_VERSION = 1" in pbx
+          and "MARKETING_VERSION = 2.5" in pbx)
     check("UI 给出「文件 App 搜索本地小说」兜底路径",
           "搜索框搜「本地小说」" in welcome and "搜索「本地小说」" in store)
     check("AppIcon asset catalog（1024 + Contents.json）",
@@ -697,8 +697,8 @@ def main():
     check("文档正文含双格式包一节",
           "### 5. 同一部书按格式分成两个包（PDF 包 + 图片包）"
           in (ROOT / "Docs" / "漫画目录结构说明.md").read_text(encoding="utf-8"))
-    check("版本升到 2.4 / build 1",
-          "<string>2.4</string>" in plist and "<key>CFBundleVersion</key>\n\t<string>1</string>" in plist)
+    check("版本升到 2.5 / build 1",
+          "<string>2.5</string>" in plist and "<key>CFBundleVersion</key>\n\t<string>1</string>" in plist)
 
 
     print("\n== N. 本轮：底部三页 / 短剧 / NAS 连接 ==")
@@ -904,8 +904,23 @@ def main():
     check("NAS 分类入口直接进书名层（与书库同一层级）",
           "level: .books" in nas_views
           and "case .books:" in nas_views
-          and "case .chapters:" in nas_views
-          and "case .reader:" in nas_views)
+          and "case .chapters:" in nas_views)
+    check("NAS 阅读层拿到兄弟章节，章末可「下一章 / 下一集」",
+          "let siblings: [NASChapterRef]" in nas_lib_views
+          and "NASChapterReaderView(route: route, chapter: chapter, siblings: chapters)" in nas_lib_views
+          and "private var nextChapter: NASChapterRef?" in nas_lib_views)
+    check("NAS 阅读进度与书库共用 ProgressStore（书 / 章两级 key）",
+          "enum NASProgress" in nas_lib_views
+          and "static func bookKey" in nas_lib_views
+          and "static func chapterKey" in nas_lib_views
+          and "ProgressStore.shared.setLastChapter(progressKey" in nas_lib_views
+          and "ProgressStore.shared.noteAnchor" in nas_lib_views)
+    check("NAS 章节列表标出「读到这章」",
+          "lastChapterId == NASProgress.chapterKey(chapter.url)" in nas_lib_views)
+    check("NAS 关掉大图后能滚回刚看的那张",
+          "onClose: ((Int) -> Void)? = nil" in media_views
+          and "onClose?(currentIndex)" in media_views
+          and 'pendingAnchor = "blk-i\\(closed)"' in nas_lib_views)
     check("NAS 阅读页顺序与整理一致：正文 → 插图 → 章末媒体",
           "sectionLabel(\"插图 · \(images.count)\")" in nas_lib_views
           and "MediaAttachmentView(item: item," in nas_lib_views
@@ -913,8 +928,8 @@ def main():
     check("NAS 书目录里直接放文件时仍当作一本书",
           "把目录本身当成一本书" in nas_lib_views
           and "hasMedia ? 1 : nil" in nas_lib)
-    check("版本升到 2.4 / build 1",
-          "<string>2.4</string>" in plist
+    check("版本升到 2.5 / build 1",
+          "<string>2.5</string>" in plist
           and "<key>CFBundleVersion</key>\n\t<string>1</string>" in plist)
 
     print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")

@@ -7,6 +7,9 @@ import SwiftUI
 // 右下角 ➕ 新建连接：内网地址 + 外网地址，连接时自动判断走哪条。
 
 /// 目录在「书库式层级」里的位置
+///
+/// 阅读层不走 value 路由：它需要拿到「同一本书的兄弟章节」才能做
+/// 章末「下一章 / 下一集」，所以由章节列表直接用 destination 形式推入。
 enum NASLevel: String, Hashable {
     /// 原始目录浏览（旧行为，结构不规范时的兜底）
     case browse
@@ -14,8 +17,6 @@ enum NASLevel: String, Hashable {
     case books
     /// 一本书：章节列表
     case chapters
-    /// 一章：正文 / 图片 / 音视频
-    case reader
 }
 
 struct NASRoute: Hashable {
@@ -132,8 +133,6 @@ struct NASRootView: View {
                     NASBookListView(route: route)
                 case .chapters:
                     NASChapterListView(route: route)
-                case .reader:
-                    NASChapterReaderView(route: route)
                 }
             }
             .navigationDestination(for: RemoteImagesRoute.self) { route in

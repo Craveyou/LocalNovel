@@ -138,6 +138,8 @@ struct RemoteGalleryView: View {
     let startIndex: Int
     let account: WebDAVAccount
     var title: String = ""
+    /// 关闭时回传最后停留的序号：阅读页据此滚回那一张（与本地 MediaGalleryView 一致）
+    var onClose: ((Int) -> Void)? = nil
 
     @Environment(\.dismiss) private var dismiss
     @State private var selection: String?
@@ -145,11 +147,13 @@ struct RemoteGalleryView: View {
     @State private var verticalDrag: CGFloat = 0
 
     init(entries: [RemoteEntry], startIndex: Int,
-         account: WebDAVAccount, title: String = "") {
+         account: WebDAVAccount, title: String = "",
+         onClose: ((Int) -> Void)? = nil) {
         self.entries = entries
         self.startIndex = startIndex
         self.account = account
         self.title = title
+        self.onClose = onClose
         let safe = entries.indices.contains(startIndex) ? startIndex : 0
         _selection = State(initialValue: entries.indices.contains(safe) ? entries[safe].id : nil)
     }
@@ -191,7 +195,7 @@ struct RemoteGalleryView: View {
 
     private var topBar: some View {
         HStack {
-            Button { dismiss() } label: {
+            Button { close() } label: {
                 Image(systemName: "xmark")
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(.white)
@@ -235,7 +239,7 @@ struct RemoteGalleryView: View {
                 let dy = value.translation.height
                 let dx = value.translation.width
                 if dy < -90, abs(dy) > abs(dx) {
-                    dismiss()
+                    close()
                 } else {
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.86)) {
                         verticalDrag = 0
@@ -246,6 +250,12 @@ struct RemoteGalleryView: View {
 
     private func toggleChrome() {
         withAnimation(.easeInOut(duration: 0.2)) { chromeVisible.toggle() }
+    }
+
+    /// 先回传位置再收起：阅读页据此把列表滚回刚看的那张
+    private func close() {
+        onClose?(currentIndex)
+        dismiss()
     }
 }
 

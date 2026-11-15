@@ -169,6 +169,8 @@ struct NASChapterListView: View {
     @State private var chapters: [NASChapterRef] = []
     @State private var isLoading = true
     @State private var errorMessage: String?
+    /// 上次读到的那一章（与书库共用同一份进度，key 见 NASProgress）
+    @State private var lastChapterId: String?
 
     private var account: WebDAVAccount { store.account(for: route.connection) }
     private var category: BookCategory { route.category ?? .organized }
@@ -199,6 +201,10 @@ struct NASChapterListView: View {
         .navigationTitle(route.title)
         .navigationBarTitleDisplayMode(.inline)
         .task { await load() }
+        // 从阅读页返回时刷新「在读」标记（进度与书库共用）
+        .onAppear {
+            lastChapterId = ProgressStore.shared.lastChapterId(for: NASProgress.bookKey(route.url))
+        }
         .refreshable { await load() }
     }
 
@@ -244,11 +250,10 @@ struct NASChapterListView: View {
     }
 
     private func row(_ chapter: NASChapterRef) -> some View {
-        NavigationLink(value: NASRoute(connection: route.connection,
-                                       url: chapter.url,
-                                       title: chapter.displayName,
-                                       category: category,
-                                       level: .reader)) {
+        // 阅读层要拿到兄弟章节才能做「下一章 / 下一集」，所以这里用 destination 形式推入
+        NavigationLink {
+            NASChapterReaderView(route: route, chapter: chapter, siblings: chapters)
+        } label: {
             HStack(spacing: 10) {
                 Image(systemName: chapter.kind.symbol)
                     .font(.footnote)
@@ -269,6 +274,12 @@ struct NASChapterListView: View {
                     .foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)
+                // 与书库一致：这一章就是上次读到的地方
+                if lastChapterId == NASProgress.chapterKey(chapter.url) {
+                    Image(systemName: "bookmark.fill")
+                        .font(.caption)
+                        .foregroundStyle(.tint)
+                }
             }
         }
         .task(id: chapter.id) {
@@ -293,19 +304,40 @@ struct NASChapterListView: View {
         } catch {
             errorMessage = error.localizedDescription
         }
+        lastChapterId = ProgressStore.shared.lastChapterId(for: NASProgress.bookKey(route.url))
         isLoading = false
     }
 }
 
 // MARK: - 阅读层
+//
+// 与书库「整理」的阅读器同一套：正文 → 插图 → 章末音视频，
+// 章末同样有「下一章 / 下一集」和「已是最后一章」。
+// 差别只在数据来源：这里全部按需从 WebDAV 取，图片走磁盘缓存、视频带认证头流式播放。
+//
+// 进度与书库共用 ProgressStore（key 加 nas. 前缀，不会和本地书 id 撞）：
+// 书 → 读到哪一章，章 → 读到第几段 / 第几张图，重进能回到原位。
+// 换「下一章」时是页内替换，和书库分栏里点下一章的行为一致。
+
+/// NAS 阅读进度的 key
+enum NASProgress {
+    static func bookKey(_ bookURL: URL) -> String { "nas.b:" + bookURL.absoluteString }
+    static func chapterKey(_ chapterURL: URL) -> String { "nas.c:" + chapterURL.absoluteString }
+}
 
 struct NASChapterReaderView: View {
     let route: NASRoute
+    /// 进入的这一章；之后由 current 接管（章末「下一章」页内替换）
+    let chapter: NASChapterRef
+    /// 同一本书的兄弟章节：「下一章 / 下一集」与「已是最后一章」靠它判断
+    let siblings: [NASChapterRef]
 
     @EnvironmentObject private var prefs: Preferences
     @ObservedObject private var store = NASStore.shared
     @ObservedObject private var chrome = ReadingChrome.shared
 
+    /// 当前正在读的章节
+    @State private var current: NASChapterRef
     /// 切好的段落：只在这一章加载后算一次，滚动时不再重复切分整章正文
     @State private var paragraphs: [String] = []
     @State private var images: [RemoteEntry] = []
@@ -315,8 +347,34 @@ struct NASChapterReaderView: View {
     @State private var isLoading = true
     @State private var errorMessage: String?
     @State private var galleryIndex: Int?
+    /// 关闭全屏大图后要滚回的锚点
+    @State private var pendingAnchor: String?
+
+    init(route: NASRoute, chapter: NASChapterRef, siblings: [NASChapterRef]) {
+        self.route = route
+        self.chapter = chapter
+        self.siblings = siblings
+        _current = State(initialValue: chapter)
+    }
 
     private var account: WebDAVAccount { store.account(for: route.connection) }
+    private var progressKey: String { NASProgress.chapterKey(current.url) }
+    private var category: BookCategory { route.category ?? .organized }
+
+    /// 章 / 话 / 集：章节列表、章末导航、空态都用同一个词
+    private var unitText: String {
+        switch category {
+        case .comic:      return "话"
+        case .shortDrama: return "集"
+        default:          return "章"
+        }
+    }
+
+    private var nextChapter: NASChapterRef? {
+        guard let index = siblings.firstIndex(where: { $0.id == current.id }),
+              index + 1 < siblings.count else { return nil }
+        return siblings[index + 1]
+    }
 
     var body: some View {
         Group {
@@ -330,77 +388,179 @@ struct NASChapterReaderView: View {
                 scrollBody
             }
         }
-        .navigationTitle(route.title)
+        .navigationTitle(current.name)
         .navigationBarTitleDisplayMode(.inline)
-        .onAppear { chrome.enter() }
-        .onDisappear { chrome.leave() }
-        .task { await load() }
+        .onAppear {
+            chrome.enter()
+            noteLastChapter()
+        }
+        .onDisappear {
+            chrome.leave()
+            ProgressStore.shared.flushAnchors()
+        }
+        .task(id: current.id) { await load() }
         .fullScreenCover(item: Binding(
             get: { galleryIndex.map(RemoteGalleryTarget.init(index:)) },
             set: { galleryIndex = $0?.index }
         )) { target in
             RemoteGalleryView(entries: images, startIndex: target.index,
-                              account: account, title: route.title)
+                              account: account, title: current.name) { closed in
+                // 关掉大图后滚回刚看的那一张（与书库同一体验）
+                if images.indices.contains(closed) { pendingAnchor = "blk-i\(closed)" }
+            }
         }
     }
 
+    private func noteLastChapter() {
+        ProgressStore.shared.setLastChapter(progressKey, for: NASProgress.bookKey(route.url))
+    }
+
     private var scrollBody: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: usesComicLayout ? 0 : prefs.lineSpacing) {
-                if let errorMessage {
-                    ContentUnavailableView {
-                        Label("读取失败", systemImage: "wifi.exclamationmark")
-                    } description: {
-                        Text(errorMessage)
-                    } actions: {
-                        Button("重试") { Task { await load() } }
-                    }
-                    .padding(.top, 40)
-                } else if isEmptyContent {
-                    ContentUnavailableView {
-                        Label("这一章没有可显示的内容", systemImage: "doc.questionmark")
-                    } description: {
-                        Text("该目录里没有 txt / 图片 / 音视频；也可能是文件还在同步。")
-                    }
-                    .padding(.top, 40)
-                } else {
-                    ForEach(paragraphs.indices, id: \.self) { index in
-                        Text(paragraphs[index])
-                            .font(.system(size: prefs.fontSize))
-                            .lineSpacing(prefs.lineSpacing)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: usesComicLayout ? 0 : prefs.lineSpacing) {
+                    if let errorMessage {
+                        ContentUnavailableView {
+                            Label("读取失败", systemImage: "wifi.exclamationmark")
+                        } description: {
+                            Text(errorMessage)
+                        } actions: {
+                            Button("重试") { Task { await load() } }
+                        }
+                        .padding(.top, 40)
+                    } else if isEmptyContent {
+                        ContentUnavailableView {
+                            Label("这一章没有可显示的内容", systemImage: "doc.questionmark")
+                        } description: {
+                            Text("该目录里没有 txt / 图片 / 音视频；也可能是文件还在同步。")
+                        }
+                        .padding(.top, 40)
+                    } else {
+                        ForEach(paragraphs.indices, id: \.self) { index in
+                            Text(paragraphs[index])
+                                .font(.system(size: prefs.fontSize))
+                                .lineSpacing(prefs.lineSpacing)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .id("blk-p\(index)")
+                                .onAppear { note("blk-p\(index)") }
+                        }
 
-                    if !images.isEmpty && !usesComicLayout {
-                        sectionLabel("插图 · \(images.count)")
-                    }
-                    ForEach(images.indices, id: \.self) { index in
-                        RemoteImage(url: images[index].url,
-                                    account: account,
-                                    cornerRadius: usesComicLayout ? 0 : 10)
-                            .padding(.vertical, usesComicLayout ? 0 : 4)
-                            .contentShape(Rectangle())
-                            .onTapGesture { galleryIndex = index }
-                            .onAppear { prefetch(around: index) }
-                    }
+                        if !images.isEmpty && !usesComicLayout {
+                            sectionLabel("插图 · \(images.count)")
+                        }
+                        ForEach(images.indices, id: \.self) { index in
+                            RemoteImage(url: images[index].url,
+                                        account: account,
+                                        cornerRadius: usesComicLayout ? 0 : 10)
+                                .padding(.vertical, usesComicLayout ? 0 : 4)
+                                .contentShape(Rectangle())
+                                .onTapGesture { galleryIndex = index }
+                                .onAppear {
+                                    note("blk-i\(index)")
+                                    prefetch(around: index)
+                                }
+                                .id("blk-i\(index)")
+                        }
 
-                    if showsMediaLabel {
-                        sectionLabel(category == .shortDrama ? "本集视频" : "章末媒体")
-                    }
-                    ForEach(mediaItems) { item in
-                        MediaAttachmentView(item: item,
-                                            chapterId: "nas:\(item.url.absoluteString)",
-                                            boostRate: prefs.longPressRate,
-                                            headers: WebDAVClient.headers(account: account))
-                            .padding(.horizontal, usesComicLayout ? 16 : 0)
-                            .padding(.top, usesComicLayout ? 16 : 0)
-                    }
+                        if showsMediaLabel {
+                            sectionLabel(category == .shortDrama ? "本集视频" : "章末媒体")
+                        }
+                        ForEach(mediaItems) { item in
+                            MediaAttachmentView(item: item,
+                                                chapterId: progressKey,
+                                                boostRate: prefs.longPressRate,
+                                                headers: WebDAVClient.headers(account: account))
+                                .padding(.horizontal, usesComicLayout ? 16 : 0)
+                                .padding(.top, usesComicLayout ? 16 : 0)
+                        }
 
-                    Color.clear.frame(height: 30)
+                        chapterFooter
+
+                        Color.clear.frame(height: 30)
+                    }
+                }
+                .padding(.horizontal, usesComicLayout ? 0 : 20)
+                .padding(.vertical, 16)
+            }
+            .onAppear { restoreAnchor(proxy) }
+            // 切章时重建滚动视图：位置回到这一章记住的锚点，而不是停在上一章的底部
+            .id(current.id)
+            .onChange(of: pendingAnchor) { _, anchor in
+                guard let anchor else { return }
+                // 等全屏大图收起动画结束再定位，避免滚动被覆盖视图吞掉
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                    withAnimation(.easeInOut(duration: 0.25)) {
+                        proxy.scrollTo(anchor, anchor: .center)
+                    }
+                    ProgressStore.shared.noteAnchor(anchor, for: progressKey)
+                    pendingAnchor = nil
                 }
             }
-            .padding(.horizontal, usesComicLayout ? 0 : 20)
-            .padding(.vertical, 16)
+        }
+    }
+
+    /// 章末：下一章 / 下一集；没有下一章时说清楚「已是最后一章」
+    private var chapterFooter: some View {
+        Group {
+            if let next = nextChapter {
+                Button {
+                    open(next)
+                } label: {
+                    HStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("下一\(unitText)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text(next.displayName)
+                                .font(.body.weight(.medium))
+                                .lineLimit(2)
+                                .multilineTextAlignment(.leading)
+                        }
+                        Spacer(minLength: 8)
+                        Image(systemName: "chevron.right")
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 12))
+                    .contentShape(RoundedRectangle(cornerRadius: 12))
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, usesComicLayout ? 20 : 0)
+                .padding(.top, 28)
+            } else {
+                VStack(spacing: 6) {
+                    Image(systemName: "checkmark.circle")
+                        .font(.title3)
+                    Text("已是最后一\(unitText)")
+                        .font(.footnote.weight(.medium))
+                }
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity)
+                .padding(.top, 28)
+            }
+        }
+    }
+
+    /// 页内切到下一章：与书库分栏里点「下一章」同一效果，返回仍回到章节列表
+    private func open(_ next: NASChapterRef) {
+        ProgressStore.shared.flushAnchors()
+        pendingAnchor = nil
+        current = next
+        noteLastChapter()
+        // 内容由 .task(id: current.id) 自动重载，这里不再手动触发避免重复请求
+    }
+
+    private func note(_ anchor: String) {
+        ProgressStore.shared.noteAnchor(anchor, for: progressKey)
+    }
+
+    private func restoreAnchor(_ proxy: ScrollViewProxy) {
+        guard let anchor = ProgressStore.shared.anchor(for: progressKey) else { return }
+        // LazyVStack 首屏布局需要一点时间，太早 scrollTo 会被忽略
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            proxy.scrollTo(anchor, anchor: .top)
         }
     }
 
@@ -409,8 +569,6 @@ struct NASChapterReaderView: View {
         guard category == .comic || category == .shortDrama else { return false }
         return !images.isEmpty && paragraphs.isEmpty && pdfLocalURL == nil
     }
-
-    private var category: BookCategory { route.category ?? .organized }
 
     /// 只有一段视频的集，播放器本身就是主体，不再顶一个「本集视频」小标题
     private var showsMediaLabel: Bool {
@@ -462,6 +620,7 @@ struct NASChapterReaderView: View {
     private func load() async {
         isLoading = true
         errorMessage = nil
+        pendingAnchor = nil
         paragraphs = []
         images = []
         videos = []
@@ -469,25 +628,25 @@ struct NASChapterReaderView: View {
         pdfLocalURL = nil
         defer { isLoading = false }
 
-        let fileLike = isFileLike(route.url)
+        let fileLike = isFileLike(current.url)
         // 1. 单文件章节（短剧的一集视频、漫画的单话 pdf、单独的 txt）
         if fileLike {
-            if MediaResolver.isPDF(route.url) {
-                do { pdfLocalURL = try await RemoteFileStore.localCopy(of: route.url, account: account) }
+            if MediaResolver.isPDF(current.url) {
+                do { pdfLocalURL = try await RemoteFileStore.localCopy(of: current.url, account: account) }
                 catch { errorMessage = error.localizedDescription }
                 return
             }
-            if MediaResolver.isVideoFile(route.url) {
-                videos = [RemoteEntry(name: route.title, url: route.url,
+            if MediaResolver.isVideoFile(current.url) {
+                videos = [RemoteEntry(name: current.name, url: current.url,
                                       isDirectory: false, byteCount: nil)]
                 return
             }
-            if MediaResolver.isAudioFile(route.url) {
-                audios = [RemoteEntry(name: route.title, url: route.url,
+            if MediaResolver.isAudioFile(current.url) {
+                audios = [RemoteEntry(name: current.name, url: current.url,
                                       isDirectory: false, byteCount: nil)]
                 return
             }
-            if let value = await RemoteTextCache.shared.text(for: route.url, account: account) {
+            if let value = await RemoteTextCache.shared.text(for: current.url, account: account) {
                 paragraphs = TextLoader.paragraphs(value)
             } else {
                 errorMessage = "无法读取这个文件（编码不支持或已被移走）"
@@ -497,7 +656,7 @@ struct NASChapterReaderView: View {
 
         // 2. 目录章节：正文 → 图片 → 音视频 → pdf（与本地「整理」同一顺序）
         do {
-            let entries = try await WebDAVClient.list(dir: route.url, account: account)
+            let entries = try await WebDAVClient.list(dir: current.url, account: account)
             let files = entries.filter { !$0.isDirectory }
             let textFile = files
                 .filter { MediaResolver.isPlainText($0.url) || MediaResolver.isEpub($0.url) }
