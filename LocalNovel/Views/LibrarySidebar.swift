@@ -339,7 +339,11 @@ struct LibrarySidebar: View {
     }
 
     private func unit(for book: Book) -> String {
-        book.category == .comic ? "话" : "章"
+        switch book.category {
+        case .comic:      return "话"
+        case .shortDrama: return "集"
+        default:          return "章"
+        }
     }
 
     // MARK: - 底部状态（只显示进行中的任务与错误，不放常驻说明）
@@ -391,6 +395,9 @@ private extension BookCategory {
             return "每部漫画一个文件夹：漫画名 → 第1部 → 第1话 → 图片；也可以 漫画名 → 第5话.pdf。"
         case .organized:
             return "结构：作者名文件夹 → 章节名文件夹 → 正文.txt + 按序号命名的图片 + 章末音视频。"
+        case .shortDrama:
+            return "每部短剧一个文件夹：剧名 → 剧照（图片）/ 视频（mp4）两个包；"
+                + "只有视频也能识别，短剧根下直接放视频会当成单片。"
         }
     }
 }
@@ -423,7 +430,8 @@ private struct EmptyLibraryState: View {
                 Text("打开「文件」App → 我的 iPhone → 本地小说，你会看到：\n"
                    + "小说/    每个 txt / md / epub / pdf 就是一本；文件夹 = 一个系列\n"
                    + "漫画/    漫画名 → 第1部 → 第1话 → 图片，或直接用 pdf\n"
-                   + "整理/    作者名 → 章节名 → 正文.txt + 按序号图片 + 音视频")
+                   + "整理/    作者名 → 章节名 → 正文.txt + 按序号图片 + 音视频\n"
+                   + "短剧/    剧名 → 剧照（图片）/ 视频（mp4）；只有视频也可以")
                     .font(.body)
                     .fixedSize(horizontal: false, vertical: true)
 

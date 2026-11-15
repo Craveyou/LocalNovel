@@ -3,10 +3,17 @@ import SwiftUI
 // MARK: - 设置（书架首页 / 阅读器均可进入，所有偏好集中在这里）
 
 struct SettingsView: View {
+    /// 作为底部 Tab 时不需要「完成」按钮；从阅读器弹出时保留
+    var showsDoneButton: Bool = true
+
     @EnvironmentObject private var prefs: Preferences
     @EnvironmentObject private var library: LibraryStore
     @Environment(\.dismiss) private var dismiss
     @State private var showGuide = false
+
+    init(showsDoneButton: Bool = true) {
+        self.showsDoneButton = showsDoneButton
+    }
 
     /// 用显式 Binding 包装，避免依赖环境对象的 $ 投影（不同 SwiftUI 版本行为有差异）
     private func binding<T>(for keyPath: ReferenceWritableKeyPath<Preferences, T>) -> Binding<T> {
@@ -108,7 +115,7 @@ struct SettingsView: View {
                     Button {
                         showGuide = true
                     } label: {
-                        Label("漫画 / 小说 / 整理 的目录结构", systemImage: "questionmark.folder")
+                        Label("小说 / 漫画 / 整理 / 短剧 的目录结构", systemImage: "questionmark.folder")
                     }
                     Text("说明每层文件夹会被识别成什么：漫画名、卷、话，以及哪些文件会被忽略。")
                         .font(.footnote)
@@ -125,8 +132,10 @@ struct SettingsView: View {
             .navigationTitle("设置")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("完成") { dismiss() }
+                if showsDoneButton {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("完成") { dismiss() }
+                    }
                 }
             }
         }

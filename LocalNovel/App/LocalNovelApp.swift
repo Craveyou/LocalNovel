@@ -13,7 +13,7 @@ struct LocalNovelApp: App {
 
     var body: some Scene {
         WindowGroup {
-            RootView()
+            MainTabView()
                 .environmentObject(library)
                 .environmentObject(preferences)
         }

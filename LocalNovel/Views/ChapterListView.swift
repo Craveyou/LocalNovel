@@ -6,6 +6,7 @@ import SwiftUI
 //   * 多选批量删除：点右上「选择」进入，勾选后底部「删除」
 //   * 小说单文件：首次进入时在后台按「第X章」切分，切完自动刷新
 //   * 「上次读到哪一章」的记忆在换书 / 再次进入时可靠恢复
+//   * 短剧：每集一行，显示「大小 · 时长」；剧照包单独一段
 //
 // 注意：book 是 RootView 传下来的值快照，删除章节 / 分章完成后它不会自动更新。
 // 因此列表一律读 currentBook —— 每次渲染从 LibraryStore 的最新扫描结果里取。
@@ -25,6 +26,8 @@ struct ChapterListView: View {
     @Binding var selection: Chapter?
 
     @EnvironmentObject private var library: LibraryStore
+    /// 短剧每集的大小 / 时长（按需加载，行滚到才读）
+    @ObservedObject private var videoMeta = VideoMetaStore.shared
 
     @State private var pendingDelete: Chapter?
     @State private var resultMessage: String?
@@ -197,6 +200,18 @@ struct ChapterListView: View {
             Text(chapter.title)
                 .font(.body)
                 .padding(.vertical, 1)
+            if let line = videoLine(for: chapter) {
+                Text(line)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+        }
+        .task(id: chapter.id) {
+            // 只有视频才读元信息；图片 / 正文行直接返回
+            if isVideoChapter(chapter) {
+                await VideoMetaStore.shared.load(chapter.folderURL)
+            }
         }
         .tag(chapter)
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
@@ -263,7 +278,23 @@ struct ChapterListView: View {
     }
 
     private var unit: String {
-        currentBook?.category == .comic ? "话" : "章"
+        switch currentBook?.category {
+        case .comic:      return "话"
+        case .shortDrama: return "集"
+        default:          return "章"
+        }
+    }
+
+    /// 单文件视频章节（短剧的每一集）
+    private func isVideoChapter(_ chapter: Chapter) -> Bool {
+        chapter.kind == .file
+            && MediaResolver.videoExtensions.contains(
+                MediaResolver.fileExtension(chapter.folderURL.lastPathComponent))
+    }
+
+    private func videoLine(for chapter: Chapter) -> String? {
+        guard isVideoChapter(chapter) else { return nil }
+        return VideoMetaFormat.line(videoMeta.info(for: chapter.folderURL))
     }
 
     private func deleteHint(for chapter: Chapter) -> String {

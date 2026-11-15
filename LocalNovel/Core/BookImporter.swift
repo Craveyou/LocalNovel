@@ -129,8 +129,8 @@ enum BookImporter {
             var found: [URL] = []
             collectNovelFiles(in: source, depth: 0, into: &found, fm: fm)
             return found
-        case .comic:
-            // 整个文件夹就是一部漫画，保持层级原样
+        case .comic, .shortDrama:
+            // 整个文件夹就是一部（漫画 / 短剧），保持层级原样
             return [source]
         case .organized:
             return try organizedItems(at: source, fm: fm)

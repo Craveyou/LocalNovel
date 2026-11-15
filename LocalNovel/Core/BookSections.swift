@@ -5,11 +5,13 @@ import Foundation
 // 小说/ 每个电子书文件 = 一本书；章节在首次打开时从正文里切（见 BookScanner.makeSliceChapters）
 // 漫画/ 每个文件夹 = 一部漫画；「部 → 话」任意层，图片目录与 pdf 单话混排
 // 整理/ 原有格式：作者文件夹 → 章节文件夹 → 正文 + 插图 + 音视频
+// 短剧/ 每个文件夹 = 一部剧；剧照（图片包，按漫画方式看）+ 视频（每集一个文件）
 
 enum LibrarySection: String, CaseIterable, Identifiable {
     case novel
     case comic
     case organized
+    case shortDrama
 
     var id: String { rawValue }
 
@@ -18,6 +20,7 @@ enum LibrarySection: String, CaseIterable, Identifiable {
         case .novel: return .novel
         case .comic: return .comic
         case .organized: return .organized
+        case .shortDrama: return .shortDrama
         }
     }
 
@@ -38,6 +41,8 @@ enum LibrarySection: String, CaseIterable, Identifiable {
                                                   fileManager: fileManager)
         case .organized: return OrganizedScanner.scan(rootURL: rootURL, cleanTitles: cleanTitles,
                                                       fileManager: fileManager)
+        case .shortDrama: return ShortDramaScanner.scan(rootURL: rootURL, cleanTitles: cleanTitles,
+                                                        fileManager: fileManager)
         }
     }
 
@@ -50,6 +55,9 @@ enum LibrarySection: String, CaseIterable, Identifiable {
                 + "或 漫画名 → 第几话.pdf；同一部书也可以按格式分成「PDF包」「图片包」两个包。"
         case .organized:
             return "「整理」里还没有书。结构：作者名 → 章节名 → 正文.txt / 按序号命名的图片 / 音视频。"
+        case .shortDrama:
+            return "「短剧」里还没有剧。结构：剧名 → 剧照（图片）/ 视频（mp4）两个包，或只放视频；"
+                + "短剧根下直接放视频会当成一部单片。"
         }
     }
 }
@@ -214,6 +222,118 @@ enum ComicScanner {
                                 fileManager: fileManager)
         }
         return chapters
+    }
+}
+
+// MARK: - 短剧：每个文件夹 = 一部剧（剧照包 + 视频包）
+
+/// 结构（两个包都在剧名文件夹里，包名就是分组名）：
+///
+/// 短剧/逆光而行/剧照/001.jpg …        剧照包：点进去按漫画方式满宽连排
+/// 短剧/逆光而行/视频/第01集.mp4 …     视频包：点进去是目录，每行显示大小 + 时长
+/// 短剧/只有视频的一部/第01集.mp4      没有剧照也能识别（用视频首帧当封面）
+/// 短剧/散装短片.mp4                   短剧根下直接放视频 = 一部单片
+///
+/// 不做合并、不改名：包名原样进 groupName，章节列表按包分段。
+enum ShortDramaScanner {
+    /// 剧名 → 包 → 集，三层足够；再深就当同一集里的附属内容
+    private static let maxDepth = 3
+
+    static func scan(rootURL: URL, cleanTitles: Bool,
+                     fileManager: FileManager = .default) -> [Book] {
+        let listing = (try? BookScanner.listDirectory(at: rootURL, fileManager: fileManager))
+            ?? BookScanner.DirectoryListing(all: [], dirs: [])
+        var books: [Book] = []
+
+        for folder in listing.dirs {
+            let chapters = collect(in: folder, root: folder, depth: 0, group: [],
+                                   cleanTitles: cleanTitles, fileManager: fileManager)
+            guard !chapters.isEmpty else { continue }
+            let raw = folder.lastPathComponent
+            books.append(Book(folderURL: folder,
+                              title: cleanTitles ? ChapterTitleCleaner.clean(raw) : raw,
+                              category: .shortDrama,
+                              chapters: sort(chapters)))
+        }
+
+        // 短剧根目录里直接放视频：每个视频单独成一部（单片）
+        let looseVideos = listing.all.filter {
+            !BookScanner.isDirectory($0, fileManager: fileManager) && isVideo($0)
+        }
+        for video in looseVideos {
+            let raw = video.deletingPathExtension().lastPathComponent
+            let title = cleanTitles ? ChapterTitleCleaner.clean(raw) : raw
+            let chapter = Chapter(folderURL: video,
+                                  rawName: video.lastPathComponent,
+                                  title: title,
+                                  kind: .file)
+            books.append(Book(folderURL: video, title: title,
+                              category: .shortDrama, chapters: [chapter]))
+        }
+        return NaturalSort.sorted(books) { $0.title }
+    }
+
+    private static func isVideo(_ url: URL) -> Bool {
+        MediaResolver.videoExtensions.contains(MediaResolver.fileExtension(url.lastPathComponent))
+    }
+
+    private static func collect(in dir: URL, root: URL, depth: Int, group: [String],
+                                cleanTitles: Bool, fileManager: FileManager) -> [Chapter] {
+        let listing = (try? BookScanner.listDirectory(at: dir, fileManager: fileManager))
+            ?? BookScanner.DirectoryListing(all: [], dirs: [])
+        let files = listing.all.filter { !BookScanner.isDirectory($0, fileManager: fileManager) }
+        let images = files.filter { MediaResolver.isImageFile($0) }
+        let videos = files.filter { isVideo($0) }
+        let isRoot = dir.path == root.path
+
+        var chapters: [Chapter] = []
+
+        // 1) 这一层有图片 = 一个剧照包（整包一"章"，阅读时按漫画连排）
+        if !images.isEmpty {
+            let name = dir.lastPathComponent
+            let title = isRoot
+                ? "剧照"
+                : (cleanTitles ? ChapterTitleCleaner.clean(name) : name)
+            chapters.append(Chapter(folderURL: dir,
+                                    rawName: name,
+                                    title: title,
+                                    kind: .folder,
+                                    groupName: isRoot ? nil : group.joined(separator: " · ")))
+        }
+
+        // 2) 这一层的每个视频 = 一集
+        let videoGroup = isRoot ? nil : group.joined(separator: " · ")
+        for video in videos {
+            let raw = video.deletingPathExtension().lastPathComponent
+            chapters.append(Chapter(folderURL: video,
+                                    rawName: video.lastPathComponent,
+                                    title: cleanTitles ? ChapterTitleCleaner.clean(raw) : raw,
+                                    kind: .file,
+                                    groupName: videoGroup))
+        }
+
+        guard depth < maxDepth else { return chapters }
+        let nextGroup = isRoot ? group : group + [dir.lastPathComponent]
+        for sub in listing.dirs {
+            chapters += collect(in: sub, root: root, depth: depth + 1, group: nextGroup,
+                                cleanTitles: cleanTitles, fileManager: fileManager)
+        }
+        return chapters
+    }
+
+    /// 剧照排在最前（一部剧先看剧照），其余按「包名 → 集名」自然排序
+    private static func sort(_ chapters: [Chapter]) -> [Chapter] {
+        chapters.sorted { a, b in
+            let aImages = a.kind == .folder, bImages = b.kind == .folder
+            if aImages != bImages { return aImages }
+            let ga = a.groupName ?? "", gb = b.groupName ?? ""
+            if ga.isEmpty != gb.isEmpty { return !ga.isEmpty }
+            if NaturalSort.less(ga, gb) { return true }
+            if NaturalSort.less(gb, ga) { return false }
+            if NaturalSort.less(a.title, b.title) { return true }
+            if NaturalSort.less(b.title, a.title) { return false }
+            return a.id < b.id
+        }
     }
 }
 

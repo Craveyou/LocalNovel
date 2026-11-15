@@ -107,6 +107,7 @@ enum BookCategory: String, Codable, CaseIterable, Identifiable, Hashable {
     case novel
     case comic
     case organized
+    case shortDrama
 
     var id: String { rawValue }
 
@@ -115,6 +116,7 @@ enum BookCategory: String, Codable, CaseIterable, Identifiable, Hashable {
         case .novel: return "小说"
         case .comic: return "漫画"
         case .organized: return "整理"
+        case .shortDrama: return "短剧"
         }
     }
 
@@ -126,6 +128,7 @@ enum BookCategory: String, Codable, CaseIterable, Identifiable, Hashable {
         case .novel: return "text.book.closed"
         case .comic: return "photo.on.rectangle.angled"
         case .organized: return "folder"
+        case .shortDrama: return "play.rectangle.on.rectangle"
         }
     }
 
@@ -134,6 +137,7 @@ enum BookCategory: String, Codable, CaseIterable, Identifiable, Hashable {
         case .novel: return "每本一个文件；一个文件夹 = 一个系列"
         case .comic: return "每部一个文件夹，按「部 → 话」分层，图片或 pdf；也能按格式包分（PDF 包 / 图片包）"
         case .organized: return "作者文件夹 → 章节文件夹 → 正文 + 插图 + 音视频"
+        case .shortDrama: return "剧名文件夹：一个剧照包 + 一个视频包（也可只有视频）"
         }
     }
 
@@ -146,6 +150,8 @@ enum BookCategory: String, Codable, CaseIterable, Identifiable, Hashable {
             return "漫画/漫画名/第1部/第1话/001.jpg\n漫画/漫画名/第5话.pdf\n漫画/漫画名/PDF包/第01话.pdf + 图片包/第01话/001.jpg"
         case .organized:
             return "整理/作者名/第01章/正文.txt + 1.jpg"
+        case .shortDrama:
+            return "短剧/剧名/剧照/001.jpg\n短剧/剧名/视频/第01集.mp4"
         }
     }
 }

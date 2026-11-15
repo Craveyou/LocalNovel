@@ -6,6 +6,7 @@ import SwiftUI
 //   · 小说（上下滚动，可在设置里切换）：正文 → 图片 → 章末音视频 → 下一章
 //   · 整理（始终上下滚动）：图文混排，插图与音视频跟在正文后面
 //   · 漫画（图片章节 / pdf 单话）：满宽逐页连排，点击进全屏
+//   · 短剧（剧照包）：与漫画同一套满宽连排；视频集则走整理那套内联播放器
 //
 // 翻页只属于「小说」：漫画要连排、整理是图文混排，两者都固定滚动，不受设置影响。
 //
@@ -44,6 +45,21 @@ struct ReaderView: View {
 
     private var isComic: Bool { category == .comic }
 
+    /// 漫画的图片章节、短剧的剧照包，都用「满宽连排」这一套
+    private var usesComicLayout: Bool {
+        if category == .comic { return true }
+        return category == .shortDrama && !content.images.isEmpty
+    }
+
+    /// 章末文案：漫画说「话」、短剧说「集」、其余说「章」
+    private var lastUnitText: String {
+        switch category {
+        case .comic:      return "已是最后一话"
+        case .shortDrama: return "已是最后一集"
+        default:          return "已是最后一章"
+        }
+    }
+
     private var content: ChapterContent { library.content(for: chapter) }
     private var paragraphs: [String] { library.paragraphs(for: chapter) }
     private var ignoredHint: String? { library.ignoredHint(for: chapter) }
@@ -52,7 +68,7 @@ struct ReaderView: View {
         Group {
             if let pdf = content.pdfURL {
                 PdfChapterView(url: pdf)
-            } else if isComic {
+            } else if usesComicLayout {
                 comicBody(content)
             } else if usePaging {
                 pagedBody(content)
@@ -173,7 +189,7 @@ struct ReaderView: View {
                         }
 
                         VStack(spacing: 8) {
-                            Text("\(content.images.count) 页")
+                            Text("\(content.images.count) \(category == .shortDrama ? "张" : "页")")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                             chapterFooter
@@ -290,7 +306,7 @@ struct ReaderView: View {
                 VStack(spacing: 6) {
                     Image(systemName: "checkmark.circle")
                         .font(.title3)
-                    Text(isComic ? "已是最后一话" : "已是最后一章")
+                    Text(lastUnitText)
                         .font(.footnote.weight(.medium))
                 }
                 .foregroundStyle(.secondary)

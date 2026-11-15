@@ -153,10 +153,15 @@ def main():
 
     print("\n== D. 离线 / 无后台能力 ==")
     combined = "\n".join(all_text.values())
-    hits = [p for p in NETWORK_PATTERNS if p in combined]
-    check("Swift 源码无网络调用", not hits, str(hits))
+    # 本轮起允许连自己的 NAS：网络调用只许出现在 WebDAV 客户端与远端图片缓存里
+    network_files = {p.name for p in all_text if "URLSession" in all_text[p]}
+    check("网络调用只出现在 NAS 客户端（其余仍是纯本地）",
+          network_files <= {"WebDAVClient.swift", "RemoteImageCache.swift"}, str(network_files))
+    check("没有引入任何第三方网络库",
+          not any(k in combined for k in ["Alamofire", "WebSocket", "Network.framework"]))
     plist = (APP / "Info.plist").read_text(encoding="utf-8")
-    check("Info.plist 无 ATS 例外", "NSAppTransportSecurity" not in plist)
+    check("ATS 只为你自填的 NAS http 地址放开，并声明本地网络用途",
+          "NSAllowsArbitraryLoads" in plist and "NSLocalNetworkUsageDescription" in plist)
     check("Info.plist 无后台模式", "UIBackgroundModes" not in plist)
     check("Info.plist 声明 iPad 多窗口", "UIApplicationSupportsMultipleScenes" in plist)
     check("Info.plist 含 UISceneConfigurations（避免黑屏）", "UISceneConfigurations" in plist)
@@ -326,8 +331,9 @@ def main():
     check("长按倍速档位可在设置中调整",
           "longPressRate" in code_only and 'Picker("长按倍速"' in combined)
     check("音频面板也支持长按倍速", "AudioSurfaceView" in code_only)
-    check("未申请任何新系统能力（仍零权限）",
-          "UIBackgroundModes" not in plist and "NSAppTransportSecurity" not in plist)
+    check("仍无后台播放等常驻能力，只新增本地网络权限",
+          "UIBackgroundModes" not in plist and "NSLocalNetworkUsageDescription" in plist
+          and "NSCameraUsageDescription" not in plist and "NSPhotoLibraryUsageDescription" not in plist)
 
     print("\n== G. 文件 App 目录可见 / App 图标 ==")
     bootstrap = (APP / "Core" / "DocumentsBootstrap.swift").read_text(encoding="utf-8")
@@ -343,8 +349,8 @@ def main():
           and "DocumentsBootstrap.guideFileName" in resolver)
     check("切回前台补写说明文件", "DocumentsBootstrap.ensureVisibleInFilesApp()" in store)
     check("版本号提升以刷新系统元数据",
-          "<string>2.0</string>" in plist and "CURRENT_PROJECT_VERSION = 1" in pbx
-          and "MARKETING_VERSION = 2.0" in pbx)
+          "<string>2.1</string>" in plist and "CURRENT_PROJECT_VERSION = 1" in pbx
+          and "MARKETING_VERSION = 2.1" in pbx)
     check("UI 给出「文件 App 搜索本地小说」兜底路径",
           "搜索框搜「本地小说」" in welcome and "搜索「本地小说」" in store)
     check("AppIcon asset catalog（1024 + Contents.json）",
@@ -577,9 +583,10 @@ def main():
           "struct ComicPageView" in (APP / "Views" / "ComicPageView.swift").read_text(encoding="utf-8")
           and "isComic" in reader and "comicBody" in reader
           and "LazyVStack(spacing: 0)" in reader)
-    check("漫画章节单位显示为「话」，小说 / 整理为「章」",
-          "book.category == .comic ? \"话\" : \"章\"" in sidebar
-          and "currentBook?.category == .comic ? \"话\" : \"章\"" in chapters)
+    check("章节单位：漫画「话」、短剧「集」、其余「章」",
+          "case .comic:      return \"话\"" in sidebar
+          and "case .shortDrama: return \"集\"" in sidebar
+          and "case .comic:      return \"话\"" in chapters)
     check("整本切片章节只能隐藏，不误删原文件",
           "var canDeleteFromDisk: Bool" in models
           and "整本文件里切出来的一章" in chapters
@@ -690,8 +697,60 @@ def main():
     check("文档正文含双格式包一节",
           "### 5. 同一部书按格式分成两个包（PDF 包 + 图片包）"
           in (ROOT / "Docs" / "漫画目录结构说明.md").read_text(encoding="utf-8"))
-    check("版本升到 2.0 / build 1",
-          "<string>2.0</string>" in plist and "<key>CFBundleVersion</key>\n\t<string>1</string>" in plist)
+    check("版本升到 2.1 / build 1",
+          "<string>2.1</string>" in plist and "<key>CFBundleVersion</key>\n\t<string>1</string>" in plist)
+
+
+    print("\n== N. 本轮：底部三页 / 短剧 / NAS 连接 ==")
+    tab = (APP / "Views" / "MainTabView.swift").read_text(encoding="utf-8")
+    nas_views = (APP / "Views" / "NASViews.swift").read_text(encoding="utf-8")
+    dav = (APP / "Core" / "WebDAVClient.swift").read_text(encoding="utf-8")
+    nas_store = (APP / "Core" / "NASModels.swift").read_text(encoding="utf-8")
+    short = (APP / "Core" / "BookSections.swift").read_text(encoding="utf-8")
+    app_entry = (APP / "App" / "LocalNovelApp.swift").read_text(encoding="utf-8")
+
+    check("底部三页顺序：书库 → NAS → 设置，默认停在书库",
+          "case library" in tab and "case nas" in tab and "case settings" in tab
+          and "@State private var selection: Tab = .library" in tab
+          and tab.index("Label(\"书库\"") < tab.index("Label(\"NAS\"")
+          and tab.index("Label(\"NAS\"") < tab.index("Label(\"设置\""))
+    check("App 入口改为三页容器",
+          "MainTabView()" in app_entry and "RootView()" not in app_entry)
+    check("设置页可作 Tab（不再强制「完成」按钮）",
+          "showsDoneButton" in settings and "SettingsView(showsDoneButton: false)" in tab)
+    check("短剧分类独立成类，书库与 NAS 都有",
+          "case shortDrama" in models and "case shortDrama" in sections
+          and "static let categories: [BookCategory] = [.comic, .organized, .shortDrama]" in nas_store)
+    check("短剧扫描：剧照包 + 视频包 + 单片",
+          "enum ShortDramaScanner" in short and "剧照" in short and "isRoot" in short
+          and "case .shortDrama: return ShortDramaScanner.scan" in short)
+    check("短剧剧照用漫画那套满宽连排",
+          "category == .shortDrama && !content.images.isEmpty" in reader
+          and "usesComicLayout" in reader)
+    check("剧集行显示大小与时长",
+          "VideoMetaFormat.line" in chapters and "VideoMetaStore" in chapters
+          and "AVURLAsset" in (APP / "Media" / "VideoMetadata.swift").read_text(encoding="utf-8"))
+    check("NAS 页右下角 ➕ 新建连接",
+          "NASConnectionEditor" in nas_views and "systemName: \"plus\"" in nas_views
+          and "accessibilityLabel(\"新建网络连接\")" in nas_views)
+    check("连接填内网 + 外网地址，先探内网再探外网",
+          "lanAddress" in nas_store and "wanAddress" in nas_store
+          and "for (raw, isLAN) in [(connection.lanAddress, true), (connection.wanAddress, false)]" in nas_store)
+    check("连接分类固定访问飞牛目录，且可自定义",
+          "func categoryURL(" in nas_store and "categoryPaths" in nas_store
+          and "defaultCategoryPaths" in nas_store)
+    check("WebDAV 客户端只用 URLSession + XMLParser",
+          "PROPFIND" in dav and "XMLParser" in dav and "Authorization" in dav
+          and "URLSession" in dav)
+    check("密码只进钥匙串，不进 UserDefaults",
+          "Keychain.setPassword" in nas_store and "password" not in nas_store.split("private func persist")[1])
+    media_views = (APP / "Views" / "RemoteMediaViews.swift").read_text(encoding="utf-8")
+    check("NAS 视频带认证头流式播放，不下载整部",
+          "AVURLAssetHTTPHeaderFieldsKey" in media_views
+          and "VideoPlayer(player:" in media_views
+          and "RemoteVideoView" in nas_views)
+    check("结构说明覆盖短剧",
+          "短剧" in guide and "剧照" in guide)
 
     print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")
     if FAIL:

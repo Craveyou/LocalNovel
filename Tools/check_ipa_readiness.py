@@ -70,8 +70,10 @@ def main():
           str([k for k in need_keys if k not in plist]))
     check("Bundle ID 由构建设置注入", plist.get("CFBundleIdentifier") == "$(PRODUCT_BUNDLE_IDENTIFIER)")
     check("声明 arm64", "arm64" in plist.get("UIRequiredDeviceCapabilities", []))
-    check("无网络/后台/画中画权限",
-          all(k not in plist for k in ["NSAppTransportSecurity", "UIBackgroundModes"]))
+    check("无后台/画中画权限，只加 NAS 需要的本地网络权限",
+          "UIBackgroundModes" not in plist
+          and plist.get("NSLocalNetworkUsageDescription") is not None
+          and plist.get("NSAppTransportSecurity", {}).get("NSAllowsArbitraryLoads") is True)
     check("声明 iPad 多窗口", plist.get("UIApplicationSceneManifest", {})
           .get("UIApplicationSupportsMultipleScenes") is True)
     check("含 UISceneConfigurations（避免启动黑屏）",
@@ -84,7 +86,7 @@ def main():
     check("Documents 说明文件引导（Apple 要求目录里至少一个文件）",
           (APP / "Core" / "DocumentsBootstrap.swift").is_file())
     check("版本号提升以刷新系统元数据",
-          plist.get("CFBundleVersion") == "1" and plist.get("CFBundleShortVersionString") == "2.0")
+          plist.get("CFBundleVersion") == "1" and plist.get("CFBundleShortVersionString") == "2.1")
     check("CFBundleIcons 声明图标文件",
           "CFBundleIconFiles" in plist.get("CFBundleIcons", {})
           .get("CFBundlePrimaryIcon", {}))

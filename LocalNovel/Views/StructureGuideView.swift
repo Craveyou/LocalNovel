@@ -13,6 +13,7 @@ struct StructureGuideView: View {
                 VStack(alignment: .leading, spacing: 22) {
                     intro
                     comicSection
+                    shortDramaSection
                     novelSection
                     organizedSection
                     ignoredSection
@@ -34,8 +35,9 @@ struct StructureGuideView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("书放在「文件」App → 我的 iPhone → 本地小说 里")
                 .font(.headline)
-            Text("三个文件夹就是三个分区，放哪个文件夹就归哪一类，App 不再按内容猜。"
-                 + "下面的规则是实时的：你在文件 App 里改名、挪位置，回到 App 就按新结构重新识别。")
+            Text("四个文件夹就是四个分区，放哪个文件夹就归哪一类，App 不再按内容猜。"
+                 + "下面的规则是实时的：你在文件 App 里改名、挪位置，回到 App 就按新结构重新识别。"
+                 + "NAS 上的目录用同一套规则，只是分类少一个「小说」。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
@@ -91,6 +93,42 @@ struct StructureGuideView: View {
 
             Tip(text: "每话的图片按文件名排序：纯数字名（1.jpg / 002.png）按数值，其余按自然字符序。"
                  + "jpg / jpeg / png / webp / heic / heif / bmp / tiff / gif / apng 都支持。")
+        }
+    }
+
+    // MARK: 短剧
+
+    private var shortDramaSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            blockTitle("短剧", systemImage: "play.rectangle.on.rectangle")
+
+            Text("一部剧一个文件夹：剧照一个包、视频一个包；两个包都进了章节列表，"
+                 + "剧照包点进去按漫画方式连排，视频包点进去是每集一行。")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+
+            tree("""
+            短剧/
+            ├─ 逆光而行/                 ← 文件夹名 = 剧名（列表里的一部）
+            │  ├─ 剧照/                  ← 剧照包：图片
+            │  │     001.jpg 002.jpg …
+            │  └─ 视频/                  ← 视频包：每集一个文件
+            │        第01集.mp4
+            │        第02集.mp4
+            ├─ 只有视频的一部/           ← 没有剧照也能识别
+            │  └─ 全集.mp4
+            └─ 散装短片.mp4              ← 根目录单个视频 = 一部单片
+            """)
+
+            ruleTable([
+                ("剧名文件夹", "一部短剧，书库列表里的一部"),
+                ("剧照包（放图片的文件夹）", "一个「剧照」条目；打开按漫画方式满宽连排，点图看大图"),
+                ("视频包 / 剧名层的视频", "每个视频一集；目录上显示 大小 · 时长"),
+                ("只有视频", "没有剧照也能识别，列表用视频首帧当封面"),
+                ("根目录散装视频", "每个视频单独成一部（单片）"),
+                ("播放", "与「整理」里的视频完全一致：内联播放、可全屏、长按倍速"),
+                ("阅读方式", "始终上下滚动，不受翻页设置影响")
+            ])
         }
     }
 
