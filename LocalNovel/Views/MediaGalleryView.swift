@@ -136,7 +136,7 @@ struct MediaGalleryView: View {
         .background(Color.black.opacity(0.55))
     }
 
-    // MARK: 手势：上滑关闭 / 末页右滑关闭
+    // MARK: 手势：上滑关闭 / 末页继续左滑关闭
 
     private var closeGesture: some Gesture {
         DragGesture(minimumDistance: 20)

@@ -349,8 +349,8 @@ def main():
           and "DocumentsBootstrap.guideFileName" in resolver)
     check("切回前台补写说明文件", "DocumentsBootstrap.ensureVisibleInFilesApp()" in store)
     check("版本号提升以刷新系统元数据",
-          "<string>2.5</string>" in plist and "CURRENT_PROJECT_VERSION = 1" in pbx
-          and "MARKETING_VERSION = 2.5" in pbx)
+          "<string>2.6</string>" in plist and "CURRENT_PROJECT_VERSION = 1" in pbx
+          and "MARKETING_VERSION = 2.6" in pbx)
     check("UI 给出「文件 App 搜索本地小说」兜底路径",
           "搜索框搜「本地小说」" in welcome and "搜索「本地小说」" in store)
     check("AppIcon asset catalog（1024 + Contents.json）",
@@ -697,8 +697,8 @@ def main():
     check("文档正文含双格式包一节",
           "### 5. 同一部书按格式分成两个包（PDF 包 + 图片包）"
           in (ROOT / "Docs" / "漫画目录结构说明.md").read_text(encoding="utf-8"))
-    check("版本升到 2.5 / build 1",
-          "<string>2.5</string>" in plist and "<key>CFBundleVersion</key>\n\t<string>1</string>" in plist)
+    check("版本升到 2.6 / build 1",
+          "<string>2.6</string>" in plist and "<key>CFBundleVersion</key>\n\t<string>1</string>" in plist)
 
 
     print("\n== N. 本轮：底部三页 / 短剧 / NAS 连接 ==")
@@ -892,6 +892,12 @@ def main():
           "scrollTargetBehavior(.paging)" in media_views
           and "ZoomableImageView(image: image" in media_views
           and "max(dy * 0.9, -260)" in media_views)
+    check("远端画廊与本地图纸同一套关闭手势（末页左滑 + 放大让位）",
+          "swipedPastEnd" in media_views
+          and "edgePull = (isLastPage && dx < 0)" in media_views
+          and "guard zoomedId == nil else" in media_views
+          and "onZoomChanged: onZoomChanged" in media_views
+          and "settleBack()" in media_views)
 
     check("NAS 三层：书名 → 章节 → 阅读",
           "struct NASBookListView" in nas_lib_views
@@ -928,8 +934,8 @@ def main():
     check("NAS 书目录里直接放文件时仍当作一本书",
           "把目录本身当成一本书" in nas_lib_views
           and "hasMedia ? 1 : nil" in nas_lib)
-    check("版本升到 2.5 / build 1",
-          "<string>2.5</string>" in plist
+    check("版本升到 2.6 / build 1",
+          "<string>2.6</string>" in plist
           and "<key>CFBundleVersion</key>\n\t<string>1</string>" in plist)
 
     print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")

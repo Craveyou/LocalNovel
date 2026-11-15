@@ -125,7 +125,11 @@ struct RemoteImageSequenceView: View {
 
 // MARK: - 远端图片全屏画廊
 //
-// 与本地 MediaGalleryView 同一套交互：左右整页吸附、双击放大、单击显隐遮罩、上滑关闭。
+// 与本地 MediaGalleryView 严格同一套交互（两边改动的必须同步改这里）：
+//   * 单击：显隐顶部遮罩（关闭 / 页码 / 文件名），遮罩隐藏时连状态栏一起隐藏
+//   * 上滑：关闭（跟手位移，松手判定）
+//   * 最后一张继续左滑：关闭（左滑本就是「下一张」，到底了就顺势退出）
+//   * 图片放大时：以上关闭手势全部让位，只平移看局部，避免误关
 // 区别只在图片来源：这里带认证头走 RemoteImageCache，拿到 UIImage 后复用 ZoomableImageView。
 
 struct RemoteGalleryTarget: Identifiable {
@@ -144,7 +148,12 @@ struct RemoteGalleryView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var selection: String?
     @State private var chromeVisible = true
+    /// 上滑跟手位移（负值 = 向上）
     @State private var verticalDrag: CGFloat = 0
+    /// 最后一页继续左滑的跟手位移（负值 = 向左）
+    @State private var edgePull: CGFloat = 0
+    /// 当前被放大的图片 id；非 nil 时让出关闭手势
+    @State private var zoomedId: String?
 
     init(entries: [RemoteEntry], startIndex: Int,
          account: WebDAVAccount, title: String = "",
@@ -164,6 +173,10 @@ struct RemoteGalleryView: View {
         return index
     }
 
+    private var isLastPage: Bool {
+        !entries.isEmpty && currentIndex == entries.count - 1
+    }
+
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
@@ -173,7 +186,14 @@ struct RemoteGalleryView: View {
                     ForEach(entries) { entry in
                         RemoteGalleryPage(entry: entry,
                                           account: account,
-                                          onSingleTap: { toggleChrome() })
+                                          onSingleTap: { toggleChrome() },
+                                          onZoomChanged: { zoomed in
+                                              if zoomed {
+                                                  zoomedId = entry.id
+                                              } else if zoomedId == entry.id {
+                                                  zoomedId = nil
+                                              }
+                                          })
                             .containerRelativeFrame([.horizontal, .vertical])
                             .id(entry.id)
                     }
@@ -184,6 +204,7 @@ struct RemoteGalleryView: View {
             .scrollPosition(id: $selection)
             .ignoresSafeArea()
             .offset(y: verticalDrag)
+            .offset(x: edgePull)
             .scaleEffect(verticalDrag < 0 ? max(0.86, 1 + verticalDrag / 1200) : 1)
         }
         .simultaneousGesture(closeGesture)
@@ -230,22 +251,43 @@ struct RemoteGalleryView: View {
     private var closeGesture: some Gesture {
         DragGesture(minimumDistance: 20)
             .onChanged { value in
-                let dy = value.translation.height
+                guard zoomedId == nil else { return }
                 let dx = value.translation.width
-                guard abs(dy) >= abs(dx) else { return }
-                verticalDrag = dy < 0 ? max(dy * 0.9, -260) : 0
-            }
-            .onEnded { value in
                 let dy = value.translation.height
-                let dx = value.translation.width
-                if dy < -90, abs(dy) > abs(dx) {
-                    close()
+
+                if abs(dy) >= abs(dx) {
+                    // 只跟随上滑；下滑不跟手，避免和翻页回弹打架
+                    verticalDrag = dy < 0 ? max(dy * 0.9, -260) : 0
+                    edgePull = 0
                 } else {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.86)) {
-                        verticalDrag = 0
-                    }
+                    verticalDrag = 0
+                    // 只有最后一页的「继续左滑」才跟手，作为关闭的预备动作
+                    edgePull = (isLastPage && dx < 0) ? max(dx * 0.3, -130) : 0
                 }
             }
+            .onEnded { value in
+                guard zoomedId == nil else {
+                    settleBack()
+                    return
+                }
+                let dx = value.translation.width
+                let dy = value.translation.height
+                let swipedUp = dy < -90 && abs(dy) > abs(dx)
+                let swipedPastEnd = isLastPage && dx < -90 && abs(dx) > abs(dy)
+
+                if swipedUp || swipedPastEnd {
+                    close()
+                } else {
+                    settleBack()
+                }
+            }
+    }
+
+    private func settleBack() {
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.86)) {
+            verticalDrag = 0
+            edgePull = 0
+        }
     }
 
     private func toggleChrome() {
@@ -263,6 +305,8 @@ private struct RemoteGalleryPage: View {
     let entry: RemoteEntry
     let account: WebDAVAccount
     let onSingleTap: () -> Void
+    /// 缩放状态上报：放大时上层让出关闭手势
+    let onZoomChanged: (Bool) -> Void
 
     @State private var image: UIImage?
     @State private var failed = false
@@ -271,7 +315,9 @@ private struct RemoteGalleryPage: View {
         ZStack {
             Color.black
             if let image {
-                ZoomableImageView(image: image, onSingleTap: onSingleTap)
+                ZoomableImageView(image: image,
+                                  onSingleTap: onSingleTap,
+                                  onZoomChanged: onZoomChanged)
             } else if failed {
                 Button {
                     Task { await load(force: true) }
