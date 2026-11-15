@@ -19,7 +19,7 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("阅读方式") {
+                Section("阅读方式（仅小说）") {
                     Picker("翻页", selection: binding(for: \.pageTurn)) {
                         ForEach(PageTurnMode.allCases) { mode in
                             Text(mode.label).tag(mode)
@@ -29,6 +29,9 @@ struct SettingsView: View {
                     Text(prefs.pageTurn == .page
                          ? "左右翻页：仿真翻页动画，点屏幕左 / 右侧翻页，底部显示页码。含插图的章节里，插图与音视频各占一页。"
                          : "上下滚动：传统连续滚动，段落流畅衔接。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Text("这一项只影响「小说」分区。「整理」是图文混排、「漫画」是满宽连排，两者始终上下滚动。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }

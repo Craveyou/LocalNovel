@@ -343,7 +343,8 @@ def main():
           and "DocumentsBootstrap.guideFileName" in resolver)
     check("切回前台补写说明文件", "DocumentsBootstrap.ensureVisibleInFilesApp()" in store)
     check("版本号提升以刷新系统元数据",
-          "<string>11</string>" in plist and "CURRENT_PROJECT_VERSION = 11" in pbx)
+          "<string>2.0</string>" in plist and "CURRENT_PROJECT_VERSION = 1" in pbx
+          and "MARKETING_VERSION = 2.0" in pbx)
     check("UI 给出「文件 App 搜索本地小说」兜底路径",
           "搜索框搜「本地小说」" in welcome and "搜索「本地小说」" in store)
     check("AppIcon asset catalog（1024 + Contents.json）",
@@ -654,6 +655,43 @@ def main():
     check("放书说明.txt 同步漫画识别规则",
           "识别规则" in bootstrap and "漫画名文件夹 = 一部" in bootstrap
           and "中间文件夹 = 卷名" in bootstrap)
+
+    print("\n== M. 本轮：翻页只给小说 / 漫画双格式包 ==")
+    root_view = (APP / "Views" / "RootView.swift").read_text(encoding="utf-8")
+
+    check("ReaderView 接收分区（不再是布尔 isComic）",
+          "let category: BookCategory" in reader
+          and "private var isComic: Bool { category == .comic }" in reader
+          and "category: latestBook()?.category ?? .novel" in root_view)
+    check("翻页只对「小说」生效，整理 / 漫画恒滚动",
+          "category == .novel\n            && prefs.pageTurn == .page" in reader
+          and "&& prefs.pageTurn == .page" in reader)
+    check("设置页标明阅读方式仅影响小说",
+          "Section(\"阅读方式（仅小说）\")" in settings
+          and "「整理」是图文混排" in settings and "始终上下滚动" in settings)
+    check("结构说明写清各分区阅读方式",
+          "只有小说用左右翻页" in guide and "翻页设置不影响这里" in guide)
+    check("漫画排序先分组再话名（同组相邻才分得成段）",
+          "if ga.isEmpty != gb.isEmpty { return !ga.isEmpty }" in sections
+          and 'let ga = a.groupName ?? "", gb = b.groupName ?? ""' in sections)
+    check("章节列表按分组分段，包下列出章节",
+          "private func chapterGroups(of book: Book)" in chapters
+          and "Section {" in chapters and "chapterRow(chapter, showsGroup: false)" in chapters)
+    check("没有被分组的书仍是一张平铺列表",
+          "if groups.count <= 1 {" in chapters
+          and "List(book.chapters, id: \\.id, selection: $selection)" in chapters)
+    check("一个分组时不再重复显示组名",
+          "if showsGroup, let group = chapter.groupName" in chapters)
+    check("结构说明覆盖双格式包（PDF包 / 图片包）",
+          "格式包（PDF / 图片）" in guide and "PDF包/" in guide and "图片包/" in guide)
+    check("放书说明.txt 与分区提示同步双格式包",
+          "格式包（PDF包 / 图片包）" in bootstrap and "格式包" in models
+          and "PDF包" in sections)
+    check("文档正文含双格式包一节",
+          "### 5. 同一部书按格式分成两个包（PDF 包 + 图片包）"
+          in (ROOT / "Docs" / "漫画目录结构说明.md").read_text(encoding="utf-8"))
+    check("版本升到 2.0 / build 1",
+          "<string>2.0</string>" in plist and "<key>CFBundleVersion</key>\n\t<string>1</string>" in plist)
 
     print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")
     if FAIL:

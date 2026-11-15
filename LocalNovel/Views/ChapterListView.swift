@@ -9,6 +9,16 @@ import SwiftUI
 //
 // 注意：book 是 RootView 传下来的值快照，删除章节 / 分章完成后它不会自动更新。
 // 因此列表一律读 currentBook —— 每次渲染从 LibraryStore 的最新扫描结果里取。
+//
+// 分组：漫画的章节带 groupName（卷名 / 格式包名）。同一部漫画若按格式分成
+// 「PDF 包」和「图片包」，列表就分成两段，包下面再列各包的章节。
+
+/// 章节列表里的一段（一个卷 / 一个格式包）
+private struct ChapterGroup: Identifiable {
+    let id: String
+    let title: String?
+    let chapters: [Chapter]
+}
 
 struct ChapterListView: View {
     let book: Book?
@@ -131,15 +141,55 @@ struct ChapterListView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            List(book.chapters, id: \.id, selection: $selection) { chapter in
-                chapterRow(chapter)
+            let groups = chapterGroups(of: book)
+            if groups.count <= 1 {
+                List(book.chapters, id: \.id, selection: $selection) { chapter in
+                    chapterRow(chapter)
+                }
+            } else {
+                // 有分组（卷名 / 格式包名）时按段列：同一部漫画的「PDF 包」「图片包」
+                // 各自成一段，包下面再列该包的章节，不合并、不丢任何一种格式。
+                List(selection: $selection) {
+                    ForEach(groups) { group in
+                        Section {
+                            ForEach(group.chapters) { chapter in
+                                chapterRow(chapter, showsGroup: false)
+                            }
+                        } header: {
+                            if let title = group.title {
+                                Text(title)
+                                    .font(.footnote.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                    .textCase(nil)
+                            }
+                        }
+                    }
+                }
             }
         }
     }
 
-    private func chapterRow(_ chapter: Chapter) -> some View {
+    /// 章节分组：按 groupName（卷名 / 格式包名）聚合，保持扫描结果的组顺序
+    private func chapterGroups(of book: Book) -> [ChapterGroup] {
+        var order: [String] = []
+        var buckets: [String: [Chapter]] = [:]
+        for chapter in book.chapters {
+            let key = chapter.groupName ?? ""
+            if buckets[key] == nil { order.append(key) }
+            buckets[key, default: []].append(chapter)
+        }
+        let hasNamedGroup = order.contains { !$0.isEmpty }
+        return order.map { key in
+            let title: String? = key.isEmpty
+                ? (hasNamedGroup ? "未分组" : nil)
+                : key
+            return ChapterGroup(id: key, title: title, chapters: buckets[key] ?? [])
+        }
+    }
+
+    private func chapterRow(_ chapter: Chapter, showsGroup: Bool = true) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            if let group = chapter.groupName, !group.isEmpty {
+            if showsGroup, let group = chapter.groupName, !group.isEmpty {
                 Text(group)
                     .font(.caption2)
                     .foregroundStyle(.secondary)

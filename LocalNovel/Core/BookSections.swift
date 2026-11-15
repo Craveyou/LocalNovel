@@ -47,7 +47,7 @@ enum LibrarySection: String, CaseIterable, Identifiable {
             return "「小说」里还没有书。每个 txt / md / epub / pdf 文件就是一本，直接放进来即可。"
         case .comic:
             return "「漫画」里还没有书。每部漫画一个文件夹：漫画名 → 第几部 → 第几话 → 图片，"
-                + "或 漫画名 → 第几话.pdf。"
+                + "或 漫画名 → 第几话.pdf；同一部书也可以按格式分成「PDF包」「图片包」两个包。"
         case .organized:
             return "「整理」里还没有书。结构：作者名 → 章节名 → 正文.txt / 按序号命名的图片 / 音视频。"
         }
@@ -147,16 +147,30 @@ enum ComicScanner {
         return books
     }
 
-    /// 同一部漫画里「图片话」和「pdf 话」是混着扫出来的，统一按展示名自然排序，
-    /// 保证 第1部 第1话 → 第1部 第2话 → 第5话 的顺序。
+    /// 排序：先按分组（卷名 / 格式包名）自然排序，再按话名自然排序。
+    /// 同一部漫画里「图片话」和「pdf 话」是混着扫出来的；分组相同的排在相邻位置，
+    /// 章节列表才能把「PDF 包」「图片包」各自归成一段，顺序是 第1部 第1话 → 第1部 第2话 → 第5话。
+    /// 没有分组的散话（漫画名层直接放的 pdf）垫底，不打断卷内的顺序。
     private static func sortChapters(_ chapters: [Chapter]) -> [Chapter] {
-        NaturalSort.sorted(chapters) { $0.displayTitle }
+        chapters.sorted { a, b in
+            let ga = a.groupName ?? "", gb = b.groupName ?? ""
+            if ga.isEmpty != gb.isEmpty { return !ga.isEmpty }
+            if NaturalSort.less(ga, gb) { return true }
+            if NaturalSort.less(gb, ga) { return false }
+            if NaturalSort.less(a.title, b.title) { return true }
+            if NaturalSort.less(b.title, a.title) { return false }
+            return a.id < b.id
+        }
     }
 
     /// 递归收集「话」：
     /// · 目录里直接有图片 → 这个目录就是一话
     /// · 目录里有 pdf → 每个 pdf 是一话
-    /// · 其余子目录继续下钻，路径上的中间层记为卷名（第几部 / 单行本 …）
+    /// · 其余子目录继续下钻，路径上的中间层记为卷名（第几部 / 单行本 / PDF包 / 图片包 …）
+    ///
+    /// 同一部漫画常按格式分成两个包（「PDF 包」只放 pdf，「图片包」放图片话），
+    /// 这里不做合并去重：包名照原样进 groupName，章节列表按分组分段显示，
+    /// 用户想读哪一版都点得到（合并会让人以为另一种格式丢了）。
     private static func collect(in dir: URL, bookRoot: URL, depth: Int,
                                 group: [String], cleanTitles: Bool,
                                 fileManager: FileManager) -> [Chapter] {

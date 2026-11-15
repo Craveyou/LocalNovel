@@ -247,6 +247,7 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
 .reader-inner.comic{max-width:none;padding:0 0 30px}
 .reader h1{font-size:22px;margin:0 0 22px}
 .reader .grouptag{font-size:12px;color:var(--sub);margin:-16px 0 18px}
+.chead{font-size:11px;font-weight:600;color:var(--sub);letter-spacing:.04em;margin:14px 0 6px;padding:0 4px}
 p.body{font-size:var(--fs);line-height:var(--lh);margin:0 0 1em;white-space:pre-wrap}
 .sec{font-size:12px;font-weight:600;color:var(--sub);margin:26px 0 12px;letter-spacing:.05em}
 figure{margin:0 0 18px}
@@ -328,13 +329,13 @@ table.rules td:last-child{color:var(--sub)}
 </style>
 </head>
 <body>
-<div class="banner">交互原型（非 iOS 应用）· 小说左右翻页（点左右边缘）· 漫画满宽连排 · 点图进全屏 · 「结构说明」看目录规则</div>
+<div class="banner">交互原型（非 iOS 应用）· 只有小说左右翻页（点左右边缘）· 漫画 / 整理始终滚动 · 漫画双格式包分段 · 「结构说明」看目录规则</div>
 <div class="toolbar">
   <button class="back" id="back">← 返回</button>
   <label>字号 <input type="range" id="fs" min="14" max="28" value="18"></label>
   <label>行距 <input type="range" id="lh" min="14" max="26" value="19"></label>
   <label><input type="checkbox" id="dark"> 夜间</label>
-  <label>阅读方式 <select id="turn"><option value="page" selected>左右翻页</option><option value="scroll">上下滚动</option></select></label>
+  <label>阅读方式（仅小说） <select id="turn"><option value="page" selected>左右翻页</option><option value="scroll">上下滚动</option></select></label>
   <label>长按倍速 <select id="rate"><option value="1.5">1.5×</option><option value="2" selected>2×</option><option value="3">3×</option></select></label>
   <button id="guide" style="border:0;background:transparent;color:var(--accent);font-size:13px;cursor:pointer">结构说明</button>
   <span style="color:var(--sub)" id="tip">书库 → 分区 → 章节</span>
@@ -359,22 +360,26 @@ table.rules td:last-child{color:var(--sub)}
 ├─ 深海食堂/
 │  ├─ 第01话/001.jpg
 │  └─ 第02话.pdf        ← 一个 pdf = 一话
+├─ 夜行列车/            ← 同一部书按格式分成两个包
+│  ├─ PDF包/第01话.pdf
+│  └─ 图片包/第01话/001.jpg
 └─ 短篇合集/单行本/第3话/…</pre>
       <table class="rules">
         <tr><td>漫画名文件夹</td><td>一部漫画，列表里的一本</td></tr>
         <tr><td>中间文件夹</td><td>卷名；多层用「 · 」连接，如「第1部 · 第2话」</td></tr>
         <tr><td>有图片的文件夹</td><td>一话；只看该层自己的图片，不含子文件夹里的</td></tr>
         <tr><td>每个 pdf</td><td>一话，按页渲染，滑到哪页生成哪页</td></tr>
+        <tr><td>格式包（PDF包 / 图片包）</td><td>包名就是分组名，章节列表按包分段，两包各自列出</td></tr>
         <tr><td>漫画名层散图</td><td>整部只有一话，标题用漫画名</td></tr>
-        <tr><td>排序</td><td>自然排序：第2话 排在第10话 前面</td></tr>
+        <tr><td>排序</td><td>先按分组、再按话名自然排序：第2话 排在第10话 前面</td></tr>
       </table>
-      <p><b>小说</b>：一个文件一本（txt / md / epub / pdf）；子文件夹 = 一个系列，再嵌一层是「系列 · 子系列」。</p>
+      <p><b>小说</b>：一个文件一本（txt / md / epub / pdf）；子文件夹 = 一个系列，再嵌一层是「系列 · 子系列」。只有小说用左右翻页，设置里可改滚动。</p>
       <pre class="tree">小说/
 ├─ 风起长安.txt
 └─ 银河旧事/            ← 系列
    ├─ 第一部 启程.txt
    └─ 前传/前传.txt      ← 「银河旧事 · 前传」</pre>
-      <p><b>整理</b>：作者名/章节名/正文.txt + 按序号图片 + 音视频。</p>
+      <p><b>整理</b>：作者名/章节名/正文.txt + 按序号图片 + 音视频，始终上下滚动。</p>
       <p style="color:var(--sub)">隐藏文件、Thumbs.db、desktop.ini、放书说明.txt 不参与扫描；不认识的扩展名会在阅读页提示「已忽略」。</p>
     </div>
   </div>
@@ -483,12 +488,24 @@ function renderChapters(){
   if(!sec){ $('chapters').innerHTML = '<div class="empty">先在左栏选一个文件夹</div>'; return; }
   const bk = currentBooks()[b];
   if(!bk){ $('chapters').innerHTML = '<div class="empty">这个分区还没有书</div>'; return; }
-  $('chapters').innerHTML = bk.chapters.map((ch, i) => {
-    const meta = ch.images.length ? `${ch.images.length} 页`
-      : (ch.pdfPages && ch.pdfPages.length ? `${ch.pdfPages.length} 页 pdf`
-      : `${ch.paragraphs.length} 段`);
-    const g = ch.group ? esc(ch.group) + ' · ' : '';
-    return `<button class="item ${i === c ? 'active' : ''}" data-c="${i}">${g}${esc(ch.title)}<small>${meta}</small></button>`;
+  // 分组：漫画的「PDF包」「图片包」「第1部」各自一段，包下面再列章节
+  const groups = [];
+  bk.chapters.forEach((ch, i) => {
+    const key = ch.group || '';
+    let g = groups.find(x => x.key === key);
+    if(!g){ g = {key, items: []}; groups.push(g); }
+    g.items.push([i, ch]);
+  });
+  const sectioned = groups.filter(g => g.key).length > 0 && groups.length > 1;
+  $('chapters').innerHTML = groups.map(g => {
+    const head = sectioned ? `<div class="chead">${esc(g.key || '未分组')}</div>` : '';
+    return head + g.items.map(([i, ch]) => {
+      const meta = ch.images.length ? `${ch.images.length} 页`
+        : (ch.pdfPages && ch.pdfPages.length ? `${ch.pdfPages.length} 页 pdf`
+        : `${ch.paragraphs.length} 段`);
+      const prefix = (!sectioned && ch.group) ? esc(ch.group) + ' · ' : '';
+      return `<button class="item ${i === c ? 'active' : ''}" data-c="${i}">${prefix}${esc(ch.title)}<small>${meta}</small></button>`;
+    }).join('');
   }).join('');
   $('chapters').querySelectorAll('[data-c]').forEach(el => el.onclick = () => {
     c = +el.dataset.c; pageIdx = 0; renderChapters(); renderReader(); show('reader'); $('reader').scrollTop = 0;
@@ -558,7 +575,7 @@ function renderReader(){
   const ch = bk.chapters[c];
   if(!ch){ $('content').innerHTML = '<div class="empty">选择一章开始阅读</div>'; return; }
   const isComic = sec === 'comic';
-  if(!isComic && PAGE_TURN && !(ch.pdfPages && ch.pdfPages.length) && ch.paragraphs.length){
+  if(sec === 'novel' && PAGE_TURN && !(ch.pdfPages && ch.pdfPages.length) && ch.paragraphs.length){
     renderPaged(ch, bk);
     return;
   }
@@ -625,10 +642,10 @@ function renderReader(){
 }
 
 // ---- 沉浸式全屏灯箱：翻页 / 缩放 / 单击切遮罩 / 上滑或末页左滑关闭 ----
-let zi = 0, lbScale = 1, RATE = 2.0, chrome = true;
+let zi = 0, lbScale = 1, RATE = 2.0, lbChrome = true;  // 不能叫 chrome：浏览器已有同名全局属性
 function openLB(i, list){
   if(!list || !list.length) return;
-  lbList = list; zi = (i + list.length) % list.length; lbScale = 1; chrome = true;
+  lbList = list; zi = (i + list.length) % list.length; lbScale = 1; lbChrome = true;
   applyLB(); $('overlay').style.display = 'flex'; syncChrome();
 }
 function applyLB(){
@@ -637,7 +654,7 @@ function applyLB(){
   $('lbCount').textContent = `${zi + 1} / ${lbList.length}`;
   $('lbName').textContent = im.label || '';
 }
-function syncChrome(){ $('lbBar').classList.toggle('hide', !chrome); }
+function syncChrome(){ $('lbBar').classList.toggle('hide', !lbChrome); }
 function closeLB(){ $('overlay').style.display = 'none'; $('zoom').src = ''; lbScale = 1; }
 function stepLB(d){ openLB(zi + d, lbList); }
 $('turn').onchange = e => { PAGE_TURN = e.target.value === 'page'; pageIdx = 0; renderReader(); };
@@ -654,7 +671,7 @@ document.addEventListener('keydown', e => {
 $('lbClose').onclick = e => { e.stopPropagation(); closeLB(); };
 $('lbPrev').onclick = e => { e.stopPropagation(); stepLB(-1); };
 $('lbNext').onclick = e => { e.stopPropagation(); stepLB(1); };
-$('zoom').onclick = e => { e.stopPropagation(); chrome = !chrome; syncChrome(); };
+$('zoom').onclick = e => { e.stopPropagation(); lbChrome = !lbChrome; syncChrome(); };
 $('overlay').onclick = e => { if(e.target.id === 'overlay') closeLB(); };
 $('zoom').ondblclick = e => { e.stopPropagation(); lbScale = lbScale > 1 ? 1 : 2.5; applyLB(); };
 $('zoom').onwheel = e => { e.preventDefault(); lbScale = Math.min(5, Math.max(1, lbScale + (e.deltaY < 0 ? .25 : -.25))); applyLB(); };

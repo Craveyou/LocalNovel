@@ -132,7 +132,7 @@ enum BookCategory: String, Codable, CaseIterable, Identifiable, Hashable {
     var hint: String {
         switch self {
         case .novel: return "每本一个文件；一个文件夹 = 一个系列"
-        case .comic: return "每部一个文件夹，按「部 → 话」分层，图片或 pdf"
+        case .comic: return "每部一个文件夹，按「部 → 话」分层，图片或 pdf；也能按格式包分（PDF 包 / 图片包）"
         case .organized: return "作者文件夹 → 章节文件夹 → 正文 + 插图 + 音视频"
         }
     }
@@ -143,7 +143,7 @@ enum BookCategory: String, Codable, CaseIterable, Identifiable, Hashable {
         case .novel:
             return "小说/书名.txt（也支持 .md / .epub / .pdf）\n小说/系列名/第1部.txt（文件夹 = 系列）"
         case .comic:
-            return "漫画/漫画名/第1部/第1话/001.jpg\n漫画/漫画名/第5话.pdf"
+            return "漫画/漫画名/第1部/第1话/001.jpg\n漫画/漫画名/第5话.pdf\n漫画/漫画名/PDF包/第01话.pdf + 图片包/第01话/001.jpg"
         case .organized:
             return "整理/作者名/第01章/正文.txt + 1.jpg"
         }

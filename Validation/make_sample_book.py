@@ -174,6 +174,17 @@ def main():
     for i in range(1, 3):
         png(s1 / f"{i}.png", f"单行本 第1话 p{i}", (90, 90, 160), (600, 900))
 
+    # 同一部书按格式分成两个包：PDF 包 + 图片包（章节列表按包分段显示）
+    dual = ROOT / "漫画" / "夜行列车"
+    (dual / "PDF包").mkdir(parents=True)
+    make_pdf(dual / "PDF包" / "第01话.pdf", ["第01话 p1", "第01话 p2"])
+    make_pdf(dual / "PDF包" / "第02话.pdf", ["第02话 p1", "第02话 p2"])
+    for no, color in [(1, (60, 100, 160)), (2, (140, 80, 120))]:
+        folder = dual / "图片包" / f"第0{no}话"
+        folder.mkdir(parents=True)
+        for i in range(1, 4):
+            png(folder / f"{i:03d}.jpg", f"第0{no}话 p{i}", color, (600, 900))
+
     # ---------------- 整理 ----------------
     b1 = ROOT / "整理" / "墨青山"
 

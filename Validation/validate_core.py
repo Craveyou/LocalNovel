@@ -280,13 +280,20 @@ def collect_comic(dir_path: Path, book_root: Path, depth: int, group: list[str])
     return chapters
 
 
+def sort_comic_chapters(chapters: list[Chapter]):
+    """先按分组（卷名 / 格式包名）、再按话名自然排序，等价于 Swift ComicScanner.sortChapters。"""
+    out = natural_sorted(chapters, key=lambda c: str(c.url))
+    out = natural_sorted(out, key=lambda c: c.title)
+    named = natural_sorted([c for c in out if c.group], key=lambda c: c.group or "")
+    return named + [c for c in out if not c.group]
+
+
 def scan_comic(root: Path):
     books: list[Book] = []
     for folder in subdirectories(root):
         chapters = collect_comic(folder, folder, 0, [])
         if chapters:
-            books.append(Book(folder, folder.name, "comic",
-                              natural_sorted(chapters, key=lambda c: c.display_title)))
+            books.append(Book(folder, folder.name, "comic", sort_comic_chapters(chapters)))
     if not books and root.is_dir():
         has_media = any(ext(p.name) in IMAGE_EXT or ext(p.name) == "pdf"
                         for p in files_in(root))
@@ -570,8 +577,8 @@ def main():
     check("小说 8 本（根目录 5 本 + 系列里 3 本）",
           len([b for b in books if b.category == "novel"]) == 8,
           str([b.title for b in books if b.category == "novel"]))
-    check("漫画 2 部",
-          len([b for b in books if b.category == "comic"]) == 2,
+    check("漫画 3 部",
+          len([b for b in books if b.category == "comic"]) == 3,
           str([b.title for b in books if b.category == "comic"]))
     check("整理 2 本",
           len([b for b in books if b.category == "organized"]) == 2,
@@ -645,6 +652,25 @@ def main():
         check("pdf 单话装配为 pdf 章节", pc.pdf_url is not None and pc.text_url is None)
         check("pdf 单话无卷名（在漫画根下）", pdf_chapter.group == "",
               repr(pdf_chapter.group))
+
+    dual = comic_books.get("夜行列车")
+    check("双格式包：同一部书两个包都收进同一本", dual is not None, str(list(comic_books)))
+    if dual:
+        check("两个包各自列为一组",
+              [c.group for c in dual.chapters] == ["PDF包", "PDF包", "图片包", "图片包"],
+              str([(c.group, c.title, c.kind) for c in dual.chapters]))
+        check("PDF 包是 pdf 单话",
+              [c.kind for c in dual.chapters if c.group == "PDF包"] == ["file", "file"],
+              str([c.kind for c in dual.chapters]))
+        check("图片包是图片话",
+              [c.kind for c in dual.chapters if c.group == "图片包"] == ["folder", "folder"],
+              str([c.kind for c in dual.chapters]))
+        check("包内按话名自然排序，不丢任何一版",
+              [c.title for c in dual.chapters] == ["第01话", "第02话", "第01话", "第02话"],
+              str([c.title for c in dual.chapters]))
+        check("分组顺序稳定（同组相邻）",
+              dual.chapters[0].group == dual.chapters[1].group
+              and dual.chapters[2].group == dual.chapters[3].group)
 
     short = comic_books.get("短篇集")
     if short:
@@ -794,9 +820,19 @@ def main():
         # 6) 排序：第2话 vs 第10话
         touch(root / "排序测试" / "第2话", ["1.jpg"])
         touch(root / "排序测试" / "第10话", ["1.jpg"])
+        # 7) 同一部书按格式分成两个包（PDF 包 + 图片包）
+        touch(root / "双格式" / "PDF包", [])
+        (root / "双格式" / "PDF包" / "第01话.pdf").write_bytes(b"x")
+        (root / "双格式" / "PDF包" / "第02话.pdf").write_bytes(b"x")
+        touch(root / "双格式" / "图片包" / "第01话", ["1.jpg", "2.jpg"])
+        touch(root / "双格式" / "图片包" / "第02话", ["1.jpg"])
+        # 8) 包名不叫 PDF / 图片也能分组（包名即分组名）
+        touch(root / "别名包" / "pdf版", [])
+        (root / "别名包" / "pdf版" / "第03话.pdf").write_bytes(b"x")
+        touch(root / "别名包" / "图片版" / "第03话", ["1.jpg"])
 
         found = {b.title: b for b in scan_comic(root)}
-        check("漫画名文件夹各成一部（5 部）", len(found) == 5, str(sorted(found)))
+        check("漫画名文件夹各成一部（7 部）", len(found) == 7, str(sorted(found)))
         check("没有「部」时话直接成章",
               [c.title for c in found["短篇漫画"].chapters] == ["第01话", "第02话"],
               str([c.title for c in found["短篇漫画"].chapters]))
@@ -817,6 +853,15 @@ def main():
         check("自然排序：第2话 在第10话 前",
               [c.title for c in found["排序测试"].chapters] == ["第2话", "第10话"],
               str([c.title for c in found["排序测试"].chapters]))
+        check("双格式包：两个包分别成组、章节都在",
+              [c.group for c in found["双格式"].chapters] == ["PDF包", "PDF包", "图片包", "图片包"],
+              str([(c.group, c.title) for c in found["双格式"].chapters]))
+        check("双格式包：包内话名自然排序",
+              [c.title for c in found["双格式"].chapters] == ["第01话", "第02话", "第01话", "第02话"],
+              str([c.title for c in found["双格式"].chapters]))
+        check("包名自定义也按包名分组",
+              [c.group for c in found["别名包"].chapters] == ["pdf版", "图片版"],
+              str([(c.group, c.title) for c in found["别名包"].chapters]))
         check("说明文本里的示例结构能被识别",
               all(t in found for t in ["星海旅人", "短篇漫画", "深嵌套"]))
 

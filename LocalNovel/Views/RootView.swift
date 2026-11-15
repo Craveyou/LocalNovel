@@ -24,7 +24,7 @@ struct RootView: View {
             if let chapter = selectedChapter {
                 ReaderView(chapter: chapter,
                            nextChapter: nextChapter(after: chapter),
-                           isComic: latestBook()?.category == .comic,
+                           category: latestBook()?.category ?? .novel,
                            onOpenNext: { next in selectedChapter = next })
                     .id(chapter.id) // 切章时重建，重置滚动与播放器
             } else {
@@ -110,7 +110,8 @@ struct WelcomeView: View {
                        + "3. 漫画/ 放漫画名文件夹：第1部 → 第1话 → 图片，或直接用 第5话.pdf\n"
                        + "4. 整理/ 放作者文件夹 → 章节文件夹 → 正文.txt + 按序号图片 + 音视频\n\n"
                        + "回到本 App —— 书会自动出现，无需点任何按钮、无需授权。\n"
-                       + "小说默认左右翻页（点屏幕左右边缘翻页），可在「设置 → 阅读方式」改成上下滚动。\n"
+                       + "小说默认左右翻页（点屏幕左右边缘翻页），可在「设置 → 阅读方式」改成上下滚动；"
+                       + "「整理」与「漫画」始终上下滚动。\n"
                        + "看不到「本地小说」目录？在「文件」App 顶部搜索框搜「本地小说」即可找到；"
                        + "目录里有一份「放书说明.txt」，App 启动时会自动生成。")
                         .font(.subheadline)

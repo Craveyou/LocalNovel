@@ -51,7 +51,7 @@ final class Preferences: ObservableObject {
         didSet { if loaded { save() } }
     }
 
-    /// 小说 / 整理类纯文字章节的阅读方式，默认仿真翻页
+    /// 小说分区的阅读方式，默认仿真翻页；漫画与整理固定滚动，读这个值但不受它影响
     @Published var pageTurn: PageTurnMode = .page {
         didSet { if loaded { save() } }
     }

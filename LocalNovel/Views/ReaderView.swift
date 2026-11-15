@@ -2,10 +2,12 @@ import SwiftUI
 
 // MARK: - 第三栏：阅读器
 // 四种形态：
-//   · 小说 / 整理（上下滚动）：正文 → 按序号图片（含动图）→ 章末音视频 → 下一章
-//   · 小说 / 整理（左右翻页）：CoreText 分页 + 仿真翻页，页内点击左右边缘翻页
-//   · 漫画（图片章节）：满宽逐页连排，无圆角无间距，点击进全屏
-//   · 漫画（pdf 单话）：按页渲染，滑到哪页渲染哪页
+//   · 小说（左右翻页）：CoreText 分页 + 仿真翻页，页内点击左右边缘翻页
+//   · 小说（上下滚动，可在设置里切换）：正文 → 图片 → 章末音视频 → 下一章
+//   · 整理（始终上下滚动）：图文混排，插图与音视频跟在正文后面
+//   · 漫画（图片章节 / pdf 单话）：满宽逐页连排，点击进全屏
+//
+// 翻页只属于「小说」：漫画要连排、整理是图文混排，两者都固定滚动，不受设置影响。
 //
 // 需长期保留的三条约束：
 // 1) 不用 .task + @State content 的异步状态机。自动恢复「上次读的章节」时
@@ -18,7 +20,8 @@ import SwiftUI
 struct ReaderView: View {
     let chapter: Chapter
     let nextChapter: Chapter?
-    let isComic: Bool
+    /// 所在分区。翻页只给「小说」；漫画连排、整理图文混排，都必须滚动
+    let category: BookCategory
     let onOpenNext: (Chapter) -> Void
 
     @EnvironmentObject private var library: LibraryStore
@@ -31,13 +34,15 @@ struct ReaderView: View {
 
     init(chapter: Chapter,
          nextChapter: Chapter? = nil,
-         isComic: Bool = false,
+         category: BookCategory = .novel,
          onOpenNext: @escaping (Chapter) -> Void = { _ in }) {
         self.chapter = chapter
         self.nextChapter = nextChapter
-        self.isComic = isComic
+        self.category = category
         self.onOpenNext = onOpenNext
     }
+
+    private var isComic: Bool { category == .comic }
 
     private var content: ChapterContent { library.content(for: chapter) }
     private var paragraphs: [String] { library.paragraphs(for: chapter) }
@@ -191,7 +196,10 @@ struct ReaderView: View {
     // MARK: 翻页模式
 
     private var usePaging: Bool {
-        prefs.pageTurn == .page && !isComic && content.pdfURL == nil && !paragraphs.isEmpty
+        category == .novel
+            && prefs.pageTurn == .page
+            && content.pdfURL == nil
+            && !paragraphs.isEmpty
     }
 
     /// 阅读记忆存的是段落锚点（blk-pN），翻页按段落反查页码
