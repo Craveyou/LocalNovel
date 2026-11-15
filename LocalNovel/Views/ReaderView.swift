@@ -75,6 +75,34 @@ struct ReaderView: View {
     private var paragraphs: [String] { library.paragraphs(for: chapter) }
     private var ignoredHint: String? { library.ignoredHint(for: chapter) }
 
+    /// 只有读文字的章节才需要编码开关；pdf 按页渲染、漫画/短剧没有正文
+    private var showsEncodingMenu: Bool {
+        content.pdfURL == nil && content.textURL != nil
+    }
+
+    /// 文本编码：自动识别判错时手动指定，按书记忆
+    private var encodingMenu: some View {
+        Menu {
+            Section {
+                ForEach(TextEncodingOption.allCases) { option in
+                    Button {
+                        library.setTextEncoding(option, for: chapter)
+                    } label: {
+                        if option == library.textEncoding(for: chapter) {
+                            Label(option.label, systemImage: "checkmark")
+                        } else {
+                            Text(option.label)
+                        }
+                    }
+                }
+            } header: {
+                Text("文本编码 · 当前 \(library.textEncoding(for: chapter).label)")
+            }
+        } label: {
+            Label("文本编码", systemImage: "textformat")
+        }
+    }
+
     var body: some View {
         Group {
             if let pdf = content.pdfURL {
@@ -93,6 +121,12 @@ struct ReaderView: View {
         .navigationTitle(chapter.title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            // 只有「读文字」的章节才需要编码开关
+            if showsEncodingMenu {
+                ToolbarItem(placement: .primaryAction) {
+                    encodingMenu
+                }
+            }
             ToolbarItem(placement: .primaryAction) {
                 Button { showSettings = true } label: {
                     Label("设置", systemImage: "gearshape")

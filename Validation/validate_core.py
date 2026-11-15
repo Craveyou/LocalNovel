@@ -626,6 +626,109 @@ def paginate(paragraphs, chars_per_line=20, lines_per_page=12):
     return pages, starts
 
 
+# ---------------------------------------------------------------- 文本编码探测（对齐 TextLoader.decodeAutomatically）
+
+_COMMON_RAW = """的一是了我不人在他有这上们来到时大地为子中你说生国年着就那和要她出也得里后自以会家可下而过天去能对小多然于心学么之都好看起发当没成只如事把还用第样道想作种开美总从无情己面最女但现前些所同日手又行意动方期它头经长儿回位分爱老因很给名法间斯知世什两次使身者被高已亲其进此话常与活正感见明问力理尔点文几定本公特做外孩相西果走将月十实向声车全信重三机工物气每并别真打太新比才便夫再书部水像眼等体却加电主界门利海受听表德少克代员许先口由死安写性马光白或住难望教命花结乐色更拉东神记处让母父应直字场平报友关放至张认接告入笑内英军候民岁往何度山觉路带万男边风解叫任金快原吃妈变通师立象数四失满战远格士音轻目条呢病始达深完今提求清王化空业思切怎非找片钱吗语元喜曾离飞科言干流欢约各即指合反题必该论交终林请医晚制球决传画保读运及则房早院量苦火布品近坐产答星精视五连司奇管类未朋且台夜青北队久乎越观落尽形影红爸百令周吧识步希术留市半热送兴造谈容极随演收首根讲整式取照办强石古华拿计您装似足双转诉米称丽客南领节衣站黑刻统断福城故历惊脸选包紧争另建维绝树系伤示愿持千史谁准联妇纪基买志静诗独复痛消社算义竟确酒需单治卡幸念举仅钟怕共毛句息功官待究跟穿室易游程号居考突皮哪费倒价图具刚脑永歌响商礼细专黄块脚味灵改据般破引食仍存众注笔甚某沉血备习校默务土微娘须试怀料调广苏显赛查密议底列富梦错座参八除跑亮假印设线温虽掉京初养香停际致阳纸李纳验助激够严证帝饭忘趣支春集丈木研班普导顿睡展跳获艺六波察群皇段急庭创区奥器谢弟店否害草排背止组州朝封睛板角况曲馆育忙质河续哥呼若推境遇雨标姐充围案伦护冷警贝雪索剧船险烟依斗值帮汉慢佛肯闻唱沙局伯族低玩资屋击速顾泪洲团圣旁堂兵七露园牛哭旅街劳型烈姑陈莫鱼异抱宝权鲁简态级票怪寻杀律胜份汽右洋范床舞秘午登楼贵吸责例追较职属渐左录丝牙党继托赶章智冲叶胡吉卖坚喝肉遗救修松临藏担戏善卫药悲敢靠村戴词森耳差短祖云规窗散迷油旧适乡架恩投弹铁博雷府压超负勒杂醒洗采毫嘴毕九冰既状乱景席珍童顶派素脱农疑练野按犯拍征坏骨余承置彩灯巨琴免环暗换技翻束增忍餐缺忆判欧层付阵批岛项狗休懂武革良恶恋委拥妙探呀营退摇弄桌熟宣银势奖宫忽套康供优课鸟喊降夏困罪亡鞋健模败伴守挥鲜财孤枪禁恐伙杰迹妹遍盖副坦牌江顺秋菜划授归浪凡预奶雄升编典袋含盛济蒙棋端腿招释介烧误"""
+COMMON_HANZI = {c for c in _COMMON_RAW if not c.isspace()}
+
+
+def text_readability(s: str) -> float:
+    total = 0
+    good = 0.0
+    bad = 0.0
+    for ch in s:
+        if total >= 4000:
+            break
+        total += 1
+        v = ord(ch)
+        if v in (0x09, 0x0A, 0x0D, 0x20):
+            good += 1.0
+        elif 0x21 <= v <= 0x7E:
+            good += 0.9
+        elif 0x4E00 <= v <= 0x9FFF:
+            good += 1.5 if ch in COMMON_HANZI else 0.7
+        elif 0x3000 <= v <= 0x303F or 0xFF01 <= v <= 0xFF65:
+            good += 1.6
+        elif 0x2000 <= v <= 0x206F:
+            good += 1.2
+        elif 0x3040 <= v <= 0x30FF or 0xAC00 <= v <= 0xD7AF:
+            good += 1.0
+        elif 0x3400 <= v <= 0x4DBF or 0x20000 <= v <= 0x2FA1F:
+            bad += 1.0
+        elif v == 0xFFFD:
+            bad += 4.0
+        elif 0xE000 <= v <= 0xF8FF:
+            bad += 4.0
+        else:
+            if v < 0x20:
+                bad += 3.0
+            else:
+                good += 0.5
+    return (good - bad) / total if total else 0.0
+
+
+def text_is_garbled(s: str) -> bool:
+    if any(tag in s for tag in ("锟斤拷", "烫烫烫", "屯屯屯")):
+        return True
+    total = 0
+    bad = 0
+    for ch in s:
+        if total >= 4000:
+            break
+        total += 1
+        v = ord(ch)
+        if v == 0xFFFD or 0xE000 <= v <= 0xF8FF:
+            bad += 1
+    return total > 0 and bad / total > 0.005
+
+
+def looks_like_bomless_utf16(data: bytes) -> bool:
+    if len(data) < 8 or len(data) % 2:
+        return False
+    sample = min(len(data), 512)
+    pairs = sample // 2
+    if not pairs:
+        return False
+    zero_even = sum(1 for i in range(0, sample, 2) if data[i] == 0)
+    zero_odd = sum(1 for i in range(1, sample, 2) if data[i] == 0)
+    return zero_odd / pairs > 0.3 or zero_even / pairs > 0.3
+
+
+def detect_text_encoding(data: bytes) -> str:
+    """复刻 TextLoader.decodeAutomatically 的顺序，返回实际会选用的编码名。"""
+    if data.startswith(b"\xef\xbb\xbf"):
+        return "utf-8"
+    if data.startswith(b"\xff\xfe") or data.startswith(b"\xfe\xff"):
+        return "utf-16"
+    try:
+        s = data.decode("utf-8")
+        if not text_is_garbled(s):
+            return "utf-8"
+    except UnicodeDecodeError:
+        pass
+    if looks_like_bomless_utf16(data):
+        try:
+            s = data.decode("utf-16")
+            if not text_is_garbled(s):
+                return "utf-16"
+        except UnicodeDecodeError:
+            pass
+    best_name, best_score = None, float("-inf")
+    for name in ("gb18030", "big5"):
+        try:
+            s = data.decode(name)
+        except UnicodeDecodeError:
+            continue
+        if text_is_garbled(s):
+            continue
+        score = text_readability(s)
+        if score > best_score:
+            best_name, best_score = name, score
+    if best_name and best_score >= 0.35:
+        return best_name
+    return best_name or "unknown"
+
+
 def main():
     if not SAMPLE.is_dir():
         print("缺少示例书，请先运行 make_sample_book.py", file=sys.stderr)
@@ -1052,6 +1155,28 @@ def main():
               plan == [("剧照", "images", None),
                        ("第01集", "video", "视频"),
                        ("第02集", "video", "视频")], str(plan))
+
+    print("\n== R. 本轮：txt 编码探测（GBK / Big5 / UTF-16 误判） ==")
+    gb_text = ("第一章　风起\n\n"
+               "　　他站在山门口，想起三年前那个下雨的夜晚。师父说：“你若真想学剑，就得先学会等。”\n\n"
+               "　　等什么呢？他当时不懂。现在似乎懂了一点——等风来，等雨停，等一个人回头。\n") * 3
+    b5_text = ("第一章　風起\n\n"
+               "　　他站在山門口，想起三年前那個下雨的夜晚。師父說：「你若真想學劍，就得先學會等。」\n\n"
+               "　　等什麼呢？他當時不懂。現在似乎懂了一點——等風來，等雨停，等一個人回頭。\n") * 3
+
+    check("UTF-8 文件识别为 UTF-8",
+          detect_text_encoding(gb_text.encode("utf-8")) == "utf-8")
+    check("GBK 文件识别为 GB18030（不再被 UTF-16 抢走）",
+          detect_text_encoding(gb_text.encode("gb18030")) == "gb18030")
+    check("Big5 文件识别为 Big5",
+          detect_text_encoding(b5_text.encode("big5")) == "big5")
+    check("UTF-16（带 BOM）识别为 UTF-16",
+          detect_text_encoding(gb_text.encode("utf-16")) == "utf-16")
+    check("GBK 字节按 UTF-16 硬解会被判为不可读（这就是原来的乱码）",
+          text_readability(gb_text.encode("gb18030").decode("utf-16-le", errors="replace")) < 0.6)
+    check("解错的候选不会压过解对的候选",
+          text_readability(gb_text.encode("gb18030").decode("gb18030"))
+          > text_readability(gb_text.encode("gb18030").decode("big5", errors="replace")))
 
     print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")
     if FAIL:

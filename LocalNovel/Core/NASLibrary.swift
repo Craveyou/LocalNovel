@@ -259,7 +259,9 @@ final class RemoteTextCache {
     private init() { cache.countLimit = 12 }
 
     func text(for url: URL, account: WebDAVAccount) async -> String? {
-        let key = url.absoluteString
+        // 编码按文件记忆：用户手动指定过就照那个解，否则自动识别
+        let preferred = TextEncodingStore.option(for: TextEncodingStore.bookKey(forURL: url))
+        let key = url.absoluteString + "|" + preferred.rawValue
         if let hit = cache.object(forKey: key as NSString) { return hit as String }
 
         lock.lock()
@@ -270,7 +272,7 @@ final class RemoteTextCache {
         let task = Task<String?, Never> { [weak self] in
             guard let self else { return nil }
             guard let data = try? await WebDAVClient.data(url, account: account, timeout: 30),
-                  let text = TextLoader.text(from: data) else { return nil }
+                  let text = TextLoader.text(from: data, preferred: preferred) else { return nil }
             self.cache.setObject(text as NSString, forKey: key as NSString)
             return text
         }
@@ -280,6 +282,11 @@ final class RemoteTextCache {
         let value = await task.value
         lock.lock(); inFlight[key] = nil; lock.unlock()
         return value
+    }
+
+    /// 改了编码要把这份缓存清掉，否则重新打开还是旧结果
+    func invalidate() {
+        cache.removeAllObjects()
     }
 }
 

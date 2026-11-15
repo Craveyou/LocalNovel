@@ -361,6 +361,16 @@ struct NASChapterReaderView: View {
     private var progressKey: String { NASProgress.chapterKey(current.url) }
     private var category: BookCategory { route.category ?? .organized }
 
+    private var encodingKey: String { TextEncodingStore.bookKey(forURL: current.url) }
+    private var encoding: TextEncodingOption { TextEncodingStore.option(for: encodingKey) }
+
+    /// 只有读到文字时才需要编码开关
+    private var showsEncodingMenu: Bool {
+        MediaResolver.isPlainText(current.url)
+            || MediaResolver.isEpub(current.url)
+            || !paragraphs.isEmpty
+    }
+
     /// 章 / 话 / 集：章节列表、章末导航、空态都用同一个词
     private var unitText: String {
         switch category {
@@ -390,6 +400,33 @@ struct NASChapterReaderView: View {
         }
         .navigationTitle(current.name)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if showsEncodingMenu {
+                ToolbarItem(placement: .primaryAction) {
+                    Menu {
+                        Section {
+                            ForEach(TextEncodingOption.allCases) { option in
+                                Button {
+                                    TextEncodingStore.set(option, for: encodingKey)
+                                    RemoteTextCache.shared.invalidate()
+                                    Task { await load() }
+                                } label: {
+                                    if option == encoding {
+                                        Label(option.label, systemImage: "checkmark")
+                                    } else {
+                                        Text(option.label)
+                                    }
+                                }
+                            }
+                        } header: {
+                            Text("文本编码 · 当前 \(encoding.label)")
+                        }
+                    } label: {
+                        Label("文本编码", systemImage: "textformat")
+                    }
+                }
+            }
+        }
         .onAppear {
             chrome.enter()
             noteLastChapter()

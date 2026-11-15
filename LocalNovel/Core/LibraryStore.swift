@@ -443,11 +443,30 @@ final class LibraryStore: ObservableObject {
         return value
     }
 
+    /// 这本书当前用的编码（用户没选过就是 .auto）
+    func textEncoding(for chapter: Chapter) -> TextEncodingOption {
+        TextEncodingStore.option(for: TextEncodingStore.bookKey(for: chapter))
+    }
+
+    /// 用户手动改编码：记住选择并清掉这本书的正文缓存，让阅读器按新编码重读
+    func setTextEncoding(_ option: TextEncodingOption, for chapter: Chapter) {
+        TextEncodingStore.set(option, for: TextEncodingStore.bookKey(for: chapter))
+        let prefix = chapter.kind == .folder
+            ? chapter.folderURL.deletingLastPathComponent().path
+            : chapter.folderURL.path
+        let keepText = textCache.filter { !$0.key.hasPrefix(prefix) }
+        let keepParagraphs = paragraphCache.filter { !$0.key.hasPrefix(prefix) }
+        textCache = keepText
+        paragraphCache = keepParagraphs
+        objectWillChange.send()
+    }
+
     private func loadText(for chapter: Chapter) -> String {
+        let preferred = textEncoding(for: chapter)
         // 小说切片：整本读一次（TextLoader 内部缓存），再按区间取
         if chapter.kind == .slice, let range = chapter.range {
             do {
-                let full = try TextLoader.loadDocument(chapter.folderURL)
+                let full = try TextLoader.loadDocument(chapter.folderURL, preferred: preferred)
                 let part = TextLoader.substring(full, range: range)
                 return part.isEmpty ? "（本章没有内容）" : part
             } catch {
@@ -461,9 +480,9 @@ final class LibraryStore: ObservableObject {
         }
         do {
             if chapter.kind == .folder {
-                return try TextLoader.load(url)
+                return try TextLoader.load(url, preferred: preferred)
             }
-            return try TextLoader.loadDocument(url)
+            return try TextLoader.loadDocument(url, preferred: preferred)
         } catch {
             return "（\(error.localizedDescription)）"
         }

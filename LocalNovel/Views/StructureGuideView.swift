@@ -15,6 +15,7 @@ struct StructureGuideView: View {
                     comicSection
                     shortDramaSection
                     novelSection
+                    encodingSection
                     organizedSection
                     ignoredSection
                 }
@@ -158,7 +159,31 @@ struct StructureGuideView: View {
                 ("系列", "小说目录下的子文件夹；再多一层是「系列 · 子系列」"),
                 ("阅读方式", "只有小说用左右翻页；「设置 → 阅读方式」可改成上下滚动"),
                 ("epub", "只取文字，不含样式与内嵌插图"),
-                ("pdf", "抽取文字层；扫描版没有文字时会提示改放「漫画」按页看")
+                ("pdf", "抽取文字层；扫描版没有文字时会提示改放「漫画」按页看"),
+                ("文本编码", "自动识别 UTF-8 / GBK / Big5 / UTF-16；判错时右上角「文本编码」手动指定，按书记住")
+            ])
+        }
+    }
+
+    // MARK: 文本编码
+
+    private var encodingSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            blockTitle("txt 乱码怎么办", systemImage: "textformat")
+
+            Text("txt 只是一串字节，编码写在文件外面，没有统一的标记。"
+                 + "同一段字节按错编码解，不会报错，只会变成一屏看不懂的字——这就是乱码。"
+                 + "App 的顺序是：BOM → UTF-8 严格校验 → GB18030 / Big5 按「常用字 + 中文标点」打分。"
+                 + "仍判错时，打开这本书，点右上角「文本编码」手动选一次，这本书以后都按这个来；"
+                 + "NAS 上的书同样有这个菜单。")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+
+            ruleTable([
+                ("UTF-8", "最常见，网络上下的书大多是"),
+                ("简体（GBK / GB18030）", "Windows 记事本、老网站下载"),
+                ("繁体（Big5）", "港台来源的繁体书"),
+                ("UTF-16", "记事本「另存为 → Unicode」")
             ])
         }
     }

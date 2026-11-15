@@ -349,8 +349,8 @@ def main():
           and "DocumentsBootstrap.guideFileName" in resolver)
     check("切回前台补写说明文件", "DocumentsBootstrap.ensureVisibleInFilesApp()" in store)
     check("版本号提升以刷新系统元数据",
-          "<string>2.7</string>" in plist and "CURRENT_PROJECT_VERSION = 1" in pbx
-          and "MARKETING_VERSION = 2.7" in pbx)
+          "<string>2.8</string>" in plist and "CURRENT_PROJECT_VERSION = 1" in pbx
+          and "MARKETING_VERSION = 2.8" in pbx)
     check("UI 给出「文件 App 搜索本地小说」兜底路径",
           "搜索框搜「本地小说」" in welcome and "搜索「本地小说」" in store)
     check("AppIcon asset catalog（1024 + Contents.json）",
@@ -700,8 +700,8 @@ def main():
     check("文档正文含双格式包一节",
           "### 5. 同一部书按格式分成两个包（PDF 包 + 图片包）"
           in (ROOT / "Docs" / "漫画目录结构说明.md").read_text(encoding="utf-8"))
-    check("版本升到 2.7 / build 1",
-          "<string>2.7</string>" in plist and "<key>CFBundleVersion</key>\n\t<string>1</string>" in plist)
+    check("版本升到 2.8 / build 1",
+          "<string>2.8</string>" in plist and "<key>CFBundleVersion</key>\n\t<string>1</string>" in plist)
 
 
     print("\n== N. 本轮：底部三页 / 短剧 / NAS 连接 ==")
@@ -942,9 +942,45 @@ def main():
     check("NAS 书目录里直接放文件时仍当作一本书",
           "把目录本身当成一本书" in nas_lib_views
           and "hasMedia ? 1 : nil" in nas_lib)
-    check("版本升到 2.7 / build 1",
-          "<string>2.7</string>" in plist
+    check("版本升到 2.8 / build 1",
+          "<string>2.8</string>" in plist
           and "<key>CFBundleVersion</key>\n\t<string>1</string>" in plist)
+
+    print("\n== S. 本轮：txt 乱码（UTF-16 误判 / GBK / Big5） ==")
+    encoding_src = (APP / "Core" / "TextEncoding.swift").read_text(encoding="utf-8")
+    loader_src = (APP / "Core" / "TextLoader.swift").read_text(encoding="utf-8")
+
+    check("编码选项含自动 / UTF-8 / GBK / Big5 / UTF-16",
+          all(c in encoding_src for c in ("case auto", "case utf8", "case gb18030",
+                                          "case big5", "case utf16")))
+    check("按书记忆编码（目录取父目录，单文件取自身）",
+          "static func bookKey(for chapter: Chapter)" in encoding_src
+          and "deletingLastPathComponent().standardizedFileURL.path" in encoding_src
+          and "static func set(_ option: TextEncodingOption" in encoding_src)
+    check("乱码根因已修：UTF-16 必须先有 BOM 或 NUL 特征才尝试",
+          "looksLikeBOMLessUTF16" in loader_src
+          and "if looksLikeBOMLessUTF16(data)," in loader_src)
+    check("BOM 优先（UTF-8 / UTF-16 LE / BE）",
+          "0xEF" in loader_src and "utf16LittleEndian" in loader_src
+          and "utf16BigEndian" in loader_src)
+    check("GB18030 与 Big5 打分取最优（常用字 + 全角标点 + 扩展区惩罚）",
+          "commonHanzi" in loader_src and "readability(" in loader_src
+          and "best?.score ?? -Double.infinity" in loader_src
+          and "0x3000...0x303F, 0xFF01...0xFF65" in loader_src)
+    check("替换符 / 私用区 / 锟斤拷 判为乱码",
+          "锟斤拷" in loader_src and "0xE000...0xF8FF" in loader_src
+          and "0xFFFD" in loader_src)
+    check("手动编码会清掉这本书的正文缓存",
+          "func setTextEncoding" in store_src
+          and "textCache = keepText" in store_src
+          and "objectWillChange.send()" in store_src)
+    check("阅读器有「文本编码」菜单，只在读文字时出现",
+          "private var encodingMenu" in reader
+          and "if showsEncodingMenu" in reader
+          and "content.pdfURL == nil && content.textURL != nil" in reader)
+    check("NAS 阅读页同样能换编码",
+          "TextEncodingStore.bookKey(forURL:" in nas_lib_views
+          and "RemoteTextCache.shared.invalidate()" in nas_lib_views)
 
     print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")
     if FAIL:
