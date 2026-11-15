@@ -287,9 +287,7 @@ struct ChapterListView: View {
 
     /// 单文件视频章节（短剧的每一集）
     private func isVideoChapter(_ chapter: Chapter) -> Bool {
-        chapter.kind == .file
-            && MediaResolver.videoExtensions.contains(
-                MediaResolver.fileExtension(chapter.folderURL.lastPathComponent))
+        chapter.kind == .file && MediaResolver.isVideoFile(chapter.folderURL)
     }
 
     private func videoLine(for chapter: Chapter) -> String? {

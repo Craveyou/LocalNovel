@@ -349,8 +349,8 @@ def main():
           and "DocumentsBootstrap.guideFileName" in resolver)
     check("切回前台补写说明文件", "DocumentsBootstrap.ensureVisibleInFilesApp()" in store)
     check("版本号提升以刷新系统元数据",
-          "<string>2.3</string>" in plist and "CURRENT_PROJECT_VERSION = 1" in pbx
-          and "MARKETING_VERSION = 2.3" in pbx)
+          "<string>2.4</string>" in plist and "CURRENT_PROJECT_VERSION = 1" in pbx
+          and "MARKETING_VERSION = 2.4" in pbx)
     check("UI 给出「文件 App 搜索本地小说」兜底路径",
           "搜索框搜「本地小说」" in welcome and "搜索「本地小说」" in store)
     check("AppIcon asset catalog（1024 + Contents.json）",
@@ -697,8 +697,8 @@ def main():
     check("文档正文含双格式包一节",
           "### 5. 同一部书按格式分成两个包（PDF 包 + 图片包）"
           in (ROOT / "Docs" / "漫画目录结构说明.md").read_text(encoding="utf-8"))
-    check("版本升到 2.3 / build 1",
-          "<string>2.3</string>" in plist and "<key>CFBundleVersion</key>\n\t<string>1</string>" in plist)
+    check("版本升到 2.4 / build 1",
+          "<string>2.4</string>" in plist and "<key>CFBundleVersion</key>\n\t<string>1</string>" in plist)
 
 
     print("\n== N. 本轮：底部三页 / 短剧 / NAS 连接 ==")
@@ -745,9 +745,11 @@ def main():
     check("密码只进钥匙串，不进 UserDefaults",
           "Keychain.setPassword" in nas_store and "password" not in nas_store.split("private func persist")[1])
     media_views = (APP / "Views" / "RemoteMediaViews.swift").read_text(encoding="utf-8")
+    player_src = (APP / "Media" / "LocalMediaPlayer.swift").read_text(encoding="utf-8")
     check("NAS 视频带认证头流式播放，不下载整部",
-          "AVURLAssetHTTPHeaderFieldsKey" in media_views
-          and "VideoPlayer(player:" in media_views
+          "AVURLAssetHTTPHeaderFieldsKey" in player_src
+          and "MediaAttachmentView(item:" in media_views
+          and "headers: WebDAVClient.headers(account: account)" in media_views
           and "RemoteVideoView" in nas_views)
     check("结构说明覆盖短剧",
           "短剧" in guide and "剧照" in guide)
@@ -839,6 +841,81 @@ def main():
           and "networkProtocolName" in dav
           and "HTTP/2（多路复用）" in dav
           and "ProtocolProbe.shared.displayName" in nas_views)
+
+
+    print("\n== R. 本轮：短剧格式分流 / 视频全屏旋转倍速 / NAS 书库三层 ==")
+    resolver = (APP / "Core" / "MediaResolver.swift").read_text(encoding="utf-8")
+    reader = (APP / "Views" / "ReaderView.swift").read_text(encoding="utf-8")
+    store_src = (APP / "Core" / "LibraryStore.swift").read_text(encoding="utf-8")
+    nas_lib = (APP / "Core" / "NASLibrary.swift").read_text(encoding="utf-8")
+    nas_lib_views = (APP / "Views" / "NASLibraryViews.swift").read_text(encoding="utf-8")
+    attachment = (APP / "Views" / "MediaAttachmentView.swift").read_text(encoding="utf-8")
+    fullscreen = (APP / "Media" / "FullscreenVideoView.swift").read_text(encoding="utf-8")
+
+    check("单文件章节按扩展名分流，视频/图片不再当正文",
+          "resolveSingleFile" in resolver
+          and "if imageExtensions.contains(ext)" in resolver
+          and "if looseVideoExtensions.contains(ext)" in resolver
+          and "avMedia: [MediaItem(url: url, kind: .video" in resolver)
+    check("短剧常见容器都算「一集」（mkv/avi/wmv…）",
+          "static let looseVideoExtensions" in resolver
+          and '"mkv"' in resolver and '"rmvb"' in resolver and '"ts"' in resolver)
+    check("没有正文的章节返回空串，不再塞「没有正文文件」",
+          "纯媒体章节（短剧某一集视频、单张剧照）本来就没有正文" in store_src
+          and "（本章没有正文文件）" not in store_src)
+    check("纯媒体章节（短剧每集）直接进播放器布局",
+          "isMediaOnly" in reader
+          and "mediaOnlyBody" in reader
+          and "MediaAttachmentView(item: item," in reader)
+    check("阅读器空章节给出明确空态",
+          "isEmptyChapter" in reader and "这一章没有可显示的内容" in reader)
+
+    check("视频播放：全屏入口",
+          'accessibilityLabel("全屏播放")' in attachment
+          and "FullscreenVideoView(controller: controller" in attachment)
+    check("视频播放：全屏内可旋转画面",
+          'accessibilityLabel("旋转画面")' in fullscreen
+          and "rotation = (rotation + 90) % 360" in fullscreen)
+    check("视频播放：长按临时倍速，松手还原",
+          "PlayerLayerView(player: controller.player) { active in boost(active) }" in attachment
+          and "RateBoostGesture.attach(to: view, coordinator: context.coordinator)" in player_src
+          and "func setBoost(_ active: Bool, rate: Double)" in player_src
+          and "RateBoostGesture.attach(to: controller.view" in fullscreen)
+    check("播放器支持远端认证头（NAS 视频复用同一套能力）",
+          "headers: [String: String] = [:]" in attachment
+          and "AVURLAssetHTTPHeaderFieldsKey" in (APP / "Media" / "LocalMediaPlayer.swift").read_text(encoding="utf-8"))
+
+    check("远端剧照连排可点看大图",
+          "galleryIndex = index" in media_views
+          and "RemoteGalleryView" in media_views)
+    check("远端画廊：分页吸附 + 缩放 + 上滑关闭",
+          "scrollTargetBehavior(.paging)" in media_views
+          and "ZoomableImageView(image: image" in media_views
+          and "max(dy * 0.9, -260)" in media_views)
+
+    check("NAS 三层：书名 → 章节 → 阅读",
+          "struct NASBookListView" in nas_lib_views
+          and "struct NASChapterListView" in nas_lib_views
+          and "struct NASChapterReaderView" in nas_lib_views)
+    check("NAS 章节识别与本地扫描同一规则",
+          "private static func organizedChapters" in nas_lib
+          and "private static func comicChapters" in nas_lib
+          and "private static func dramaChapters" in nas_lib)
+    check("NAS 分类入口直接进书名层（与书库同一层级）",
+          "level: .books" in nas_views
+          and "case .books:" in nas_views
+          and "case .chapters:" in nas_views
+          and "case .reader:" in nas_views)
+    check("NAS 阅读页顺序与整理一致：正文 → 插图 → 章末媒体",
+          "sectionLabel(\"插图 · \(images.count)\")" in nas_lib_views
+          and "MediaAttachmentView(item: item," in nas_lib_views
+          and "RemoteTextCache.shared.text" in nas_lib_views)
+    check("NAS 书目录里直接放文件时仍当作一本书",
+          "把目录本身当成一本书" in nas_lib_views
+          and "hasMedia ? 1 : nil" in nas_lib)
+    check("版本升到 2.4 / build 1",
+          "<string>2.4</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>1</string>" in plist)
 
     print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")
     if FAIL:

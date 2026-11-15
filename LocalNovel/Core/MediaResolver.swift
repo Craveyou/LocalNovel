@@ -9,8 +9,25 @@ enum MediaResolver {
 
     static let textExtensions: Set<String>   = ["txt", "text", "md", "markdown"]
     static let imageExtensions: Set<String>  = ["jpg", "jpeg", "png", "gif", "webp", "heic", "heif", "bmp", "tiff", "tif", "apng"]
+    /// AVPlayer 能直接解码的容器
     static let videoExtensions: Set<String>  = ["mp4", "mov", "m4v"]
-    static let audioExtensions: Set<String>  = ["mp3", "m4a", "aac", "wav", "aiff", "aif", "flac", "caf"]
+    /// 识别用宽集合：短剧 / 整理里常见的其它容器也算「视频集」，
+    /// 不再被当成正文去读（此前 mp4 以外的文件会显示「不支持的格式」）。
+    /// 播放不了时由播放器给出「建议转成 mp4」的提示，而不是伪装成文本错误。
+    static let looseVideoExtensions: Set<String> = videoExtensions.union([
+        "avi", "mkv", "wmv", "flv", "webm", "ts", "m2ts", "mts",
+        "rmvb", "rm", "3gp", "mpg", "mpeg", "vob", "ogv", "asf", "divx",
+    ])
+    static let audioExtensions: Set<String>  = ["mp3", "m4a", "aac", "wav", "aiff", "aif", "flac", "caf", "ogg", "opus"]
+
+    /// 宽松判定：短剧的「一集」、整理的章末视频都按这个识别
+    static func isVideoFile(_ url: URL) -> Bool {
+        looseVideoExtensions.contains(fileExtension(url.lastPathComponent))
+    }
+
+    static func isAudioFile(_ url: URL) -> Bool {
+        audioExtensions.contains(fileExtension(url.lastPathComponent))
+    }
     static let animatedExtensions: Set<String> = ["gif", "apng"]
 
     /// 漫画单话 / 小说整本都可能是 pdf
@@ -36,7 +53,7 @@ enum MediaResolver {
         let e = fileExtension(name)
         if textExtensions.contains(e)  { return .text }
         if imageExtensions.contains(e)  { return .image }
-        if videoExtensions.contains(e)  { return .video }
+        if looseVideoExtensions.contains(e) { return .video }
         if audioExtensions.contains(e)  { return .audio }
         return nil
     }
@@ -69,6 +86,46 @@ enum MediaResolver {
         animatedExtensions.contains(fileExtension(url.lastPathComponent))
     }
 
+    /// 单文件章节按扩展名分流。
+    ///
+    /// 这里曾是「短剧显示不支持的格式」的根因：所有非 pdf 的单文件都被当成正文，
+    /// 于是 mp4 被交给 TextLoader，最终抛出 unsupported("mp4") 显示成一行红字。
+    /// 现在图片 / 视频 / 音频各自归位，只有真正的文档才走文本读取。
+    private static func resolveSingleFile(
+        _ chapter: Chapter,
+        animatedDetector: (URL) -> Bool
+    ) -> ChapterContent {
+        let url = chapter.folderURL
+        let ext = fileExtension(url.lastPathComponent)
+
+        if ext == pdfExtension {
+            return ChapterContent(chapter: chapter, textURL: nil, images: [], avMedia: [],
+                                  ignoredFiles: [], pdfURL: url)
+        }
+        if imageExtensions.contains(ext) {
+            let animated = animatedDetector(url)
+            let item = MediaItem(url: url,
+                                 kind: animated ? .animatedImage : .image,
+                                 sequence: imageSequence(url.lastPathComponent),
+                                 isAnimated: animated)
+            return ChapterContent(chapter: chapter, textURL: nil, images: [item], avMedia: [],
+                                  ignoredFiles: [], pdfURL: nil)
+        }
+        if looseVideoExtensions.contains(ext) {
+            return ChapterContent(chapter: chapter, textURL: nil, images: [],
+                                  avMedia: [MediaItem(url: url, kind: .video, sequence: nil)],
+                                  ignoredFiles: [], pdfURL: nil)
+        }
+        if audioExtensions.contains(ext) {
+            return ChapterContent(chapter: chapter, textURL: nil, images: [],
+                                  avMedia: [MediaItem(url: url, kind: .audio, sequence: nil)],
+                                  ignoredFiles: [], pdfURL: nil)
+        }
+        // txt / md / epub 以及其它未知文档类型：交给 TextLoader 报明确错误
+        return ChapterContent(chapter: chapter, textURL: url, images: [], avMedia: [],
+                              ignoredFiles: [], pdfURL: nil)
+    }
+
     /// 装配一章内容
     /// - Parameters:
     ///   - chapter: 章节（文件夹 / 单文件 / 小说整本切片）
@@ -82,20 +139,7 @@ enum MediaResolver {
 
         // 单文件章节 / 小说切片：不再列目录
         if chapter.kind != .folder {
-            if isPDF(folder) {
-                return ChapterContent(chapter: chapter,
-                                      textURL: nil,
-                                      images: [],
-                                      avMedia: [],
-                                      ignoredFiles: [],
-                                      pdfURL: folder)
-            }
-            return ChapterContent(chapter: chapter,
-                                  textURL: folder,
-                                  images: [],
-                                  avMedia: [],
-                                  ignoredFiles: [],
-                                  pdfURL: nil)
+            return resolveSingleFile(chapter, animatedDetector: animatedDetector)
         }
 
         let names: [String]

@@ -45,6 +45,17 @@ struct ReaderView: View {
 
     private var isComic: Bool { category == .comic }
 
+    /// 这一章只有媒体、没有正文（短剧的每一集视频 / 单集音频）
+    private var isMediaOnly: Bool {
+        content.textURL == nil && paragraphs.isEmpty && !content.avMedia.isEmpty
+    }
+
+    /// 章节目录里什么都没有（结构不对或文件被移走）
+    private var isEmptyChapter: Bool {
+        content.pdfURL == nil && content.textURL == nil
+            && content.images.isEmpty && content.avMedia.isEmpty
+    }
+
     /// 漫画的图片章节、短剧的剧照包，都用「满宽连排」这一套
     private var usesComicLayout: Bool {
         if category == .comic { return true }
@@ -70,6 +81,9 @@ struct ReaderView: View {
                 PdfChapterView(url: pdf)
             } else if usesComicLayout {
                 comicBody(content)
+            } else if isMediaOnly {
+                // 短剧的每一集就是一段视频：不进「正文」流程，直接给播放器
+                mediaOnlyBody(content)
             } else if usePaging {
                 pagedBody(content)
             } else {
@@ -107,6 +121,16 @@ struct ReaderView: View {
         return ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: prefs.lineSpacing) {
+                    if isEmptyChapter {
+                        ContentUnavailableView {
+                            Label("这一章没有可显示的内容", systemImage: "doc.questionmark")
+                        } description: {
+                            Text("检查该文件夹里是否有 txt / md 正文、按序号命名的图片"
+                                 + "或 mp4 等音视频；也可以在「文件」App 里重新整理后回到本 App。")
+                        }
+                        .padding(.top, 40)
+                    }
+
                     // 1. 正文（逐段懒加载）
                     ForEach(paragraphs.indices, id: \.self) { index in
                         Text(paragraphs[index])
@@ -136,7 +160,7 @@ struct ReaderView: View {
 
                     // 3. 章末音视频（点击播放；无则不显示）
                     if !content.avMedia.isEmpty {
-                        sectionLabel("章末媒体")
+                        sectionLabel(category == .shortDrama ? "本集视频" : "章末媒体")
                         ForEach(content.avMedia) { item in
                             MediaAttachmentView(item: item,
                                                 chapterId: chapter.id,
@@ -163,6 +187,36 @@ struct ReaderView: View {
             .onChange(of: pendingAnchor) { _, anchor in
                 scrollToPendingAnchor(anchor, proxy: proxy)
             }
+        }
+    }
+
+    // MARK: 纯媒体章节（短剧的每一集）
+    //
+    // 视频直接走 MediaAttachmentView：内联画面 → 全屏（FullscreenVideoView 内可旋转画面）
+    // → 长按临时倍速，三条能力与「整理」章末视频完全同一套实现。
+
+    private func mediaOnlyBody(_ content: ChapterContent) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                ForEach(content.avMedia) { item in
+                    MediaAttachmentView(item: item,
+                                        chapterId: chapter.id,
+                                        boostRate: prefs.longPressRate)
+                }
+
+                if content.avMedia.contains(where: { $0.kind == .video }) {
+                    Label("点右上角全屏 → 全屏里右上角旋转画面；长按画面临时倍速，松手还原",
+                          systemImage: "hand.tap")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                chapterFooter
+                Color.clear.frame(height: 30)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 16)
         }
     }
 

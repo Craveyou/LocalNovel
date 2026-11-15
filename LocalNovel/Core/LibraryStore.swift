@@ -455,7 +455,9 @@ final class LibraryStore: ObservableObject {
             }
         }
         guard let url = content(for: chapter).textURL else {
-            return "（本章没有正文文件）"
+            // 纯媒体章节（短剧某一集视频、单张剧照）本来就没有正文，
+            // 返回空串让阅读器只渲染媒体，不再塞一句「没有正文文件」。
+            return ""
         }
         do {
             if chapter.kind == .folder {

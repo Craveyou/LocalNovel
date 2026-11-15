@@ -2,13 +2,29 @@ import SwiftUI
 
 // MARK: - NAS 页（底部 Tab 第二个）
 //
-// 层级：连接列表 → 分类入口（漫画 / 整理 / 短剧，固定访问飞牛目录）→ 目录 → 图片 / 视频。
+// 层级：连接列表 → 分类入口（漫画 / 整理 / 短剧，固定访问飞牛目录）
+//       → 书名 → 章节 → 阅读（与本地书库完全同样的三层）
 // 右下角 ➕ 新建连接：内网地址 + 外网地址，连接时自动判断走哪条。
+
+/// 目录在「书库式层级」里的位置
+enum NASLevel: String, Hashable {
+    /// 原始目录浏览（旧行为，结构不规范时的兜底）
+    case browse
+    /// 分类根：书名列表
+    case books
+    /// 一本书：章节列表
+    case chapters
+    /// 一章：正文 / 图片 / 音视频
+    case reader
+}
 
 struct NASRoute: Hashable {
     let connection: NASConnection
     let url: URL
     let title: String
+    /// 所在分类；决定书名 / 章节的识别规则与阅读页的措辞
+    var category: BookCategory? = nil
+    var level: NASLevel = .browse
 }
 
 struct RemoteImagesRoute: Hashable {
@@ -109,7 +125,16 @@ struct NASRootView: View {
                 NASSectionView(connection: connection)
             }
             .navigationDestination(for: NASRoute.self) { route in
-                NASBrowserView(route: route)
+                switch route.level {
+                case .browse:
+                    NASBrowserView(route: route)
+                case .books:
+                    NASBookListView(route: route)
+                case .chapters:
+                    NASChapterListView(route: route)
+                case .reader:
+                    NASChapterReaderView(route: route)
+                }
             }
             .navigationDestination(for: RemoteImagesRoute.self) { route in
                 RemoteImageSequenceView(title: route.title,
@@ -244,7 +269,9 @@ struct NASSectionView: View {
                                                url: store.categoryURL(category,
                                                                       connection: current,
                                                                       endpoint: endpoint),
-                                               title: category.label)) {
+                                               title: category.label,
+                                               category: category,
+                                               level: .books)) {
                     CategoryCard(symbol: category.symbol,
                                  title: category.label,
                                  subtitle: current.path(for: category),

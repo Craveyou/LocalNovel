@@ -48,6 +48,12 @@ enum TextLoader {
         throw TextError.undecodable(url)
     }
 
+    /// 已下载到内存的正文（NAS 远端章节用）：编码检测与本地文件同一套规则
+    static func text(from data: Data) -> String? {
+        guard let decoded = decode(data) else { return nil }
+        return normalize(decoded)
+    }
+
     /// 按扩展名读取「一本书的全文」：txt / md / epub / pdf
     static func loadDocument(_ url: URL) throws -> String {
         let key = cacheKey(url)

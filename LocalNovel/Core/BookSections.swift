@@ -274,7 +274,7 @@ enum ShortDramaScanner {
     }
 
     private static func isVideo(_ url: URL) -> Bool {
-        MediaResolver.videoExtensions.contains(MediaResolver.fileExtension(url.lastPathComponent))
+        MediaResolver.isVideoFile(url)
     }
 
     private static func collect(in dir: URL, root: URL, depth: Int, group: [String],

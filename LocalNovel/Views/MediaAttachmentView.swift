@@ -10,16 +10,22 @@ struct MediaAttachmentView: View {
     let item: MediaItem
     let chapterId: String
     let boostRate: Double
+    /// NAS 远端视频的认证头；本地文件为空
+    let headers: [String: String]
 
     @StateObject private var controller: LocalMediaPlayer
     @State private var isFullscreen = false
     @Environment(\.scenePhase) private var scenePhase
 
-    init(item: MediaItem, chapterId: String, boostRate: Double) {
+    init(item: MediaItem, chapterId: String, boostRate: Double,
+         headers: [String: String] = [:]) {
         self.item = item
         self.chapterId = chapterId
         self.boostRate = boostRate
-        _controller = StateObject(wrappedValue: LocalMediaPlayer(url: item.url, chapterId: chapterId))
+        self.headers = headers
+        _controller = StateObject(wrappedValue: LocalMediaPlayer(url: item.url,
+                                                                 chapterId: chapterId,
+                                                                 headers: headers))
     }
 
     private func boost(_ active: Bool) {
@@ -75,7 +81,8 @@ struct MediaAttachmentView: View {
             .padding(10)
             .accessibilityLabel("全屏播放")
         }
-        .aspectRatio(16.0 / 9.0, contentMode: .fit)
+        // 跟随视频真实比例：竖屏短剧按 9:16 竖着显示，不再被压成 16:9
+        .aspectRatio(controller.videoAspect ?? 16.0 / 9.0, contentMode: .fit)
         .background(Color.black)
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay(alignment: .bottomLeading) { boostTag }

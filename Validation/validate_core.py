@@ -32,6 +32,38 @@ AUDIO_EXT = {"mp3", "m4a", "aac", "wav", "aiff", "aif", "flac", "caf"}
 ANIMATED_EXT = {"gif", "apng"}
 NOVEL_EXT = {"txt", "text", "md", "markdown", "epub", "pdf"}
 SECTIONS = {"novel": "小说", "comic": "漫画", "organized": "整理", "shortDrama": "短剧"}
+LOOSE_VIDEO_EXT = VIDEO_EXT | {"avi", "mkv", "wmv", "flv", "webm", "ts", "m2ts", "mts",
+                               "rmvb", "rm", "3gp", "mpg", "mpeg", "vob", "ogv", "asf", "divx"}
+
+# ---------------------------------------------------------------- 单文件章节分流（对齐 MediaResolver.resolveSingleFile）
+
+def resolve_single(path: Path):
+    """返回 (kind, text, images, av)：短剧的一集视频不再被当成正文。"""
+    ext = path.suffix.lower().lstrip(".")
+    if ext == "pdf":
+        return ("pdf", None, [], [])
+    if ext in IMAGE_EXT:
+        return ("image", None, [path.name], [])
+    if ext in VIDEO_EXT or ext in LOOSE_VIDEO_EXT:
+        return ("video", None, [], [path.name])
+    if ext in AUDIO_EXT:
+        return ("audio", None, [], [path.name])
+    return ("text", path.name, [], [])
+
+
+def nas_drama_chapters(book: Path):
+    """对齐 NASPlanner.dramaChapters 的一层：图片目录 = 剧照包，视频 = 每集。"""
+    out = []
+    for sub in [d for d in book.iterdir() if d.is_dir()]:
+        files = [f for f in sub.iterdir() if f.is_file()]
+        images = [f for f in files if f.suffix.lower().lstrip(".") in IMAGE_EXT]
+        videos = [f for f in files if f.suffix.lower().lstrip(".") in VIDEO_EXT]
+        if images:
+            out.append((sub.name, "images", None))
+        for v in sorted(videos, key=lambda f: f.name):
+            out.append((v.stem, "video", sub.name))
+    return out
+
 
 
 def normalize(s: str) -> str:
@@ -989,6 +1021,37 @@ def main():
 
         total4, count4 = cache_trim(folder, 1)
         check("上限极小时清到只剩 1 条以内", count4 <= 1, f"{total4} {count4}")
+
+    print("\n== Q. 本轮：单文件章节分流 / NAS 短剧层级 ==")
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        cases = {
+            "第01集.mp4": ("video", 0, 1),
+            "第02集.mkv": ("video", 0, 1),
+            "001.jpg": ("image", 1, 0),
+            "正文.txt": ("text", 0, 0),
+            "第1话.pdf": ("pdf", 0, 0),
+            "片尾.mp3": ("audio", 0, 1),
+        }
+        for name, (want, n_img, n_av) in cases.items():
+            f = root / name
+            f.write_bytes(b"x")
+            kind, text, images, av = resolve_single(f)
+            check(f"{name} → {want}（不当作正文）",
+                  kind == want and len(images) == n_img and len(av) == n_av,
+                  f"{kind} {len(images)} {len(av)}")
+
+        drama = root / "逆光而行"
+        (drama / "剧照").mkdir(parents=True)
+        (drama / "剧照" / "001.jpg").write_bytes(b"x")
+        (drama / "视频").mkdir()
+        (drama / "视频" / "第01集.mp4").write_bytes(b"x")
+        (drama / "视频" / "第02集.mp4").write_bytes(b"x")
+        plan = nas_drama_chapters(drama)
+        check("NAS 短剧：剧照包在前，视频集按包分组",
+              plan == [("剧照", "images", None),
+                       ("第01集", "video", "视频"),
+                       ("第02集", "video", "视频")], str(plan))
 
     print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")
     if FAIL:

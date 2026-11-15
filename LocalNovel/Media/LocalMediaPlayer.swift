@@ -12,6 +12,8 @@ final class LocalMediaPlayer: ObservableObject {
     @Published private(set) var currentTime: Double = 0
     @Published private(set) var duration: Double = 0
     @Published private(set) var isBoosting = false
+    /// 画面宽高比（竖屏短剧 ≈ 0.56，横屏 ≈ 1.78）；读不到时按 16:9 兜底
+    @Published private(set) var videoAspect: CGFloat?
 
     let player: AVPlayer
     private let chapterId: String
@@ -19,14 +21,20 @@ final class LocalMediaPlayer: ObservableObject {
     /// 长按开始前是否在播放，用于松手后精确还原状态
     private var resumeAfterBoost = false
 
-    init(url: URL, chapterId: String) {
+    init(url: URL, chapterId: String, headers: [String: String] = [:]) {
         self.chapterId = chapterId
-        let item = AVPlayerItem(url: url) // 本地 file://，按需加载，不预缓冲整章
+        // 远端（NAS / WebDAV）视频要带认证头；本地 file:// 时 headers 为空
+        let asset = headers.isEmpty
+            ? AVURLAsset(url: url)
+            : AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
+        let item = AVPlayerItem(asset: asset) // 按需加载，不预缓冲整章
         let p = AVPlayer(playerItem: item)
         p.actionAtItemEnd = .pause
         self.player = p
 
-        let assetDuration = CMTimeGetSeconds(item.asset.duration)
+        // 远端 asset 的 duration 要等网络，不能在主线程同步读；先给 0，
+        // 由下面的时间观察器在元数据到位后回填。
+        let assetDuration = headers.isEmpty ? CMTimeGetSeconds(item.asset.duration) : 0
         if assetDuration.isFinite, assetDuration > 0 { duration = assetDuration }
 
         let saved = ProgressStore.shared.mediaTime(for: chapterId)
@@ -46,6 +54,20 @@ final class LocalMediaPlayer: ObservableObject {
                 let d = CMTimeGetSeconds(item.duration)
                 if d.isFinite, d > 0 { self.duration = d }
             }
+        }
+
+        // 画面比例：竖屏短剧不能被硬压成 16:9（那样上下大片黑边、人像被缩小）
+        Task { [weak self] in
+            guard let self else { return }
+            let tracks = (try? await asset.loadTracks(withMediaType: .video)) ?? []
+            guard let track = tracks.first,
+                  let size = try? await track.load(.naturalSize),
+                  let transform = try? await track.load(.preferredTransform) else { return }
+            let applied = size.applying(transform)
+            let width = abs(applied.width), height = abs(applied.height)
+            guard width > 1, height > 1 else { return }
+            let aspect = width / height
+            await MainActor.run { self.videoAspect = aspect }
         }
     }
 
