@@ -80,7 +80,7 @@ struct RemoteImageSequenceView: View {
                             .frame(width: geo.size.width)
                             // 滑到这张就顺手把前后各两张拉进缓存（共 4 个并发，见 RemoteImageCache）
                             .onAppear { prefetch(around: index) }
-                            // 点图看大图：可捏合放大、左右翻、上滑关闭
+                            // 点图看大图：可捏合放大、左右翻、下滑关闭（末页从右边缘左滑也关）
                             .contentShape(Rectangle())
                             .onTapGesture { galleryIndex = index }
                     }
@@ -127,8 +127,9 @@ struct RemoteImageSequenceView: View {
 //
 // 与本地 MediaGalleryView 严格同一套交互（两边改动的必须同步改这里）：
 //   * 单击：显隐顶部遮罩（关闭 / 页码 / 文件名），遮罩隐藏时连状态栏一起隐藏
-//   * 上滑：关闭（跟手位移，松手判定）
-//   * 最后一张继续左滑：关闭（左滑本就是「下一张」，到底了就顺势退出）
+//   * 下滑：关闭（向下拖跟手、图片略缩，松手过阈就退出）
+//   * 最后一张从右边缘继续左滑：关闭（左滑本就是「下一张」，到底了顺势退出；
+//     只在右边缘起手才认，中间左滑只回弹，不会误关）
 //   * 图片放大时：以上关闭手势全部让位，只平移看局部，避免误关
 // 区别只在图片来源：这里带认证头走 RemoteImageCache，拿到 UIImage 后复用 ZoomableImageView。
 
@@ -148,9 +149,9 @@ struct RemoteGalleryView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var selection: String?
     @State private var chromeVisible = true
-    /// 上滑跟手位移（负值 = 向上）
+    /// 下滑跟手位移（正值 = 向下）
     @State private var verticalDrag: CGFloat = 0
-    /// 最后一页继续左滑的跟手位移（负值 = 向左）
+    /// 最后一页从右边缘左滑的跟手位移（负值 = 向左）
     @State private var edgePull: CGFloat = 0
     /// 当前被放大的图片 id；非 nil 时让出关闭手势
     @State private var zoomedId: String?
@@ -178,36 +179,40 @@ struct RemoteGalleryView: View {
     }
 
     var body: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
+        // 手势要判「是否从右边缘起手」，需要当前视图宽度
+        GeometryReader { geo in
+            ZStack {
+                Color.black.ignoresSafeArea()
 
-            ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: 0) {
-                    ForEach(entries) { entry in
-                        RemoteGalleryPage(entry: entry,
-                                          account: account,
-                                          onSingleTap: { toggleChrome() },
-                                          onZoomChanged: { zoomed in
-                                              if zoomed {
-                                                  zoomedId = entry.id
-                                              } else if zoomedId == entry.id {
-                                                  zoomedId = nil
-                                              }
-                                          })
-                            .containerRelativeFrame([.horizontal, .vertical])
-                            .id(entry.id)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    LazyHStack(spacing: 0) {
+                        ForEach(entries) { entry in
+                            RemoteGalleryPage(entry: entry,
+                                              account: account,
+                                              onSingleTap: { toggleChrome() },
+                                              onZoomChanged: { zoomed in
+                                                  if zoomed {
+                                                      zoomedId = entry.id
+                                                  } else if zoomedId == entry.id {
+                                                      zoomedId = nil
+                                                  }
+                                              })
+                                .containerRelativeFrame([.horizontal, .vertical])
+                                .id(entry.id)
+                        }
                     }
+                    .scrollTargetLayout()
                 }
-                .scrollTargetLayout()
+                .scrollTargetBehavior(.paging)
+                .scrollPosition(id: $selection)
+                .ignoresSafeArea()
+                .offset(y: verticalDrag)
+                .offset(x: edgePull)
+                .scaleEffect(1 - min(verticalDrag, 300) / 1600)
             }
-            .scrollTargetBehavior(.paging)
-            .scrollPosition(id: $selection)
-            .ignoresSafeArea()
-            .offset(y: verticalDrag)
-            .offset(x: edgePull)
-            .scaleEffect(verticalDrag < 0 ? max(0.86, 1 + verticalDrag / 1200) : 1)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .simultaneousGesture(closeGesture(width: geo.size.width))
         }
-        .simultaneousGesture(closeGesture)
         .overlay(alignment: .top) { if chromeVisible { topBar } }
         .animation(.easeInOut(duration: 0.2), value: chromeVisible)
         .statusBarHidden(!chromeVisible)
@@ -248,7 +253,7 @@ struct RemoteGalleryView: View {
         .background(Color.black.opacity(0.55))
     }
 
-    private var closeGesture: some Gesture {
+    private func closeGesture(width: CGFloat) -> some Gesture {
         DragGesture(minimumDistance: 20)
             .onChanged { value in
                 guard zoomedId == nil else { return }
@@ -256,13 +261,14 @@ struct RemoteGalleryView: View {
                 let dy = value.translation.height
 
                 if abs(dy) >= abs(dx) {
-                    // 只跟随上滑；下滑不跟手，避免和翻页回弹打架
-                    verticalDrag = dy < 0 ? max(dy * 0.9, -260) : 0
+                    // 只跟随下滑；上滑不动，避免和翻页回弹打架
+                    verticalDrag = dy > 0 ? min(dy * 0.9, 300) : 0
                     edgePull = 0
                 } else {
                     verticalDrag = 0
-                    // 只有最后一页的「继续左滑」才跟手，作为关闭的预备动作
-                    edgePull = (isLastPage && dx < 0) ? max(dx * 0.3, -130) : 0
+                    // 只有最后一页、且从右边缘起手的「继续左滑」才跟手，作为关闭的预备动作
+                    edgePull = (isLastPage && dx < 0 && fromRightEdge(value, width: width))
+                        ? max(dx * 0.3, -130) : 0
                 }
             }
             .onEnded { value in
@@ -272,15 +278,22 @@ struct RemoteGalleryView: View {
                 }
                 let dx = value.translation.width
                 let dy = value.translation.height
-                let swipedUp = dy < -90 && abs(dy) > abs(dx)
-                let swipedPastEnd = isLastPage && dx < -90 && abs(dx) > abs(dy)
+                let swipedDown = dy > 110 && abs(dy) > abs(dx)
+                let swipedPastEnd = isLastPage
+                    && dx < -90 && abs(dx) > abs(dy)
+                    && fromRightEdge(value, width: width)
 
-                if swipedUp || swipedPastEnd {
+                if swipedDown || swipedPastEnd {
                     close()
                 } else {
                     settleBack()
                 }
             }
+    }
+
+    /// 起手点落在右侧边缘 44pt 内：只有这里才当作「想继续往后翻，但已经到底」
+    private func fromRightEdge(_ value: DragGesture.Value, width: CGFloat) -> Bool {
+        width > 0 && value.startLocation.x >= width - 44
     }
 
     private func settleBack() {

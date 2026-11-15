@@ -349,8 +349,8 @@ def main():
           and "DocumentsBootstrap.guideFileName" in resolver)
     check("切回前台补写说明文件", "DocumentsBootstrap.ensureVisibleInFilesApp()" in store)
     check("版本号提升以刷新系统元数据",
-          "<string>2.6</string>" in plist and "CURRENT_PROJECT_VERSION = 1" in pbx
-          and "MARKETING_VERSION = 2.6" in pbx)
+          "<string>2.7</string>" in plist and "CURRENT_PROJECT_VERSION = 1" in pbx
+          and "MARKETING_VERSION = 2.7" in pbx)
     check("UI 给出「文件 App 搜索本地小说」兜底路径",
           "搜索框搜「本地小说」" in welcome and "搜索「本地小说」" in store)
     check("AppIcon asset catalog（1024 + Contents.json）",
@@ -423,11 +423,14 @@ def main():
     check("单击切换顶部遮罩显隐（不再单击即关）",
           "chromeVisible" in gallery and "toggleChrome()" in gallery
           and "if chromeVisible" in gallery)
-    check("上滑关闭大图（跟手位移 + 松手阈值）",
-          "verticalDrag" in gallery and "swipedUp" in gallery and "dy < -90" in gallery)
-    check("最后一张继续左滑关闭",
+    check("下滑关闭大图（向下跟手 + 松手阈值）",
+          "verticalDrag" in gallery and "swipedDown" in gallery
+          and "dy > 110 && abs(dy) > abs(dx)" in gallery
+          and "min(dy * 0.9, 300)" in gallery)
+    check("最后一张从右边缘继续左滑关闭（中间左滑不误关）",
           "isLastPage" in gallery and "swipedPastEnd" in gallery
-          and "dx < -90" in gallery)
+          and "dx < -90" in gallery and "fromRightEdge" in gallery
+          and "value.startLocation.x >= width - 44" in gallery)
     check("遮罩隐藏时系统状态栏与 Home 指示条一并隐藏",
           ".statusBarHidden(!chromeVisible)" in gallery
           and "persistentSystemOverlays(chromeVisible ? .visible : .hidden)" in gallery)
@@ -697,8 +700,8 @@ def main():
     check("文档正文含双格式包一节",
           "### 5. 同一部书按格式分成两个包（PDF 包 + 图片包）"
           in (ROOT / "Docs" / "漫画目录结构说明.md").read_text(encoding="utf-8"))
-    check("版本升到 2.6 / build 1",
-          "<string>2.6</string>" in plist and "<key>CFBundleVersion</key>\n\t<string>1</string>" in plist)
+    check("版本升到 2.7 / build 1",
+          "<string>2.7</string>" in plist and "<key>CFBundleVersion</key>\n\t<string>1</string>" in plist)
 
 
     print("\n== N. 本轮：底部三页 / 短剧 / NAS 连接 ==")
@@ -888,16 +891,21 @@ def main():
     check("远端剧照连排可点看大图",
           "galleryIndex = index" in media_views
           and "RemoteGalleryView" in media_views)
-    check("远端画廊：分页吸附 + 缩放 + 上滑关闭",
+    check("远端画廊：分页吸附 + 缩放 + 下滑关闭",
           "scrollTargetBehavior(.paging)" in media_views
           and "ZoomableImageView(image: image" in media_views
-          and "max(dy * 0.9, -260)" in media_views)
-    check("远端画廊与本地图纸同一套关闭手势（末页左滑 + 放大让位）",
+          and "min(dy * 0.9, 300)" in media_views)
+    check("远端画廊与本地图纸同一套关闭手势（下滑 + 末页右边缘左滑 + 放大让位）",
           "swipedPastEnd" in media_views
-          and "edgePull = (isLastPage && dx < 0)" in media_views
+          and "swipedDown" in media_views
+          and "fromRightEdge" in media_views
+          and "value.startLocation.x >= width - 44" in media_views
           and "guard zoomedId == nil else" in media_views
           and "onZoomChanged: onZoomChanged" in media_views
           and "settleBack()" in media_views)
+    check("两处画廊手势阈值完全一致（不会一边好关、一边难关）",
+          all(t in gallery for t in ("dy > 110", "dx < -90", "width - 44"))
+          and all(t in media_views for t in ("dy > 110", "dx < -90", "width - 44")))
 
     check("NAS 三层：书名 → 章节 → 阅读",
           "struct NASBookListView" in nas_lib_views
@@ -934,8 +942,8 @@ def main():
     check("NAS 书目录里直接放文件时仍当作一本书",
           "把目录本身当成一本书" in nas_lib_views
           and "hasMedia ? 1 : nil" in nas_lib)
-    check("版本升到 2.6 / build 1",
-          "<string>2.6</string>" in plist
+    check("版本升到 2.7 / build 1",
+          "<string>2.7</string>" in plist
           and "<key>CFBundleVersion</key>\n\t<string>1</string>" in plist)
 
     print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")

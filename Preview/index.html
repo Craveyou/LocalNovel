@@ -388,7 +388,7 @@ function renderReader(){
     pages.forEach((p, i) => {
       html += `<img class="comic-page" src="${p.src}" alt="${esc(p.label)}" data-lb="${i}">`;
     });
-    html += `<div class="hint" style="padding:0 20px">共 ${pages.length} 页 · 点任意一页进入全屏（左右翻页 / 上滑关闭 / 末页继续左滑关闭）</div>`;
+    html += `<div class="hint" style="padding:0 20px">共 ${pages.length} 页 · 点任意一页进入全屏（左右翻页 / 下滑关闭 / 末页从右边缘左滑关闭）</div>`;
     html += `<div style="padding:8px 20px 30px" class="hint">${c + 1 < bk.chapters.length ? '↓ 下一话：' + esc(bk.chapters[c + 1].title) : '已是最后一话'}</div>`;
     $('content').innerHTML = html;
     $('content').querySelectorAll('[data-lb]').forEach(el => el.onclick = () => openLB(+el.dataset.lb, pages));
@@ -439,7 +439,7 @@ function renderReader(){
   bindMedia($('content'));
 }
 
-// ---- 沉浸式全屏灯箱：翻页 / 缩放 / 单击切遮罩 / 上滑或末页左滑关闭 ----
+// ---- 沉浸式全屏灯箱：翻页 / 缩放 / 单击切遮罩 / 下滑或末页右边缘左滑关闭 ----
 let zi = 0, lbScale = 1, RATE = 2.0, lbChrome = true;  // 不能叫 chrome：浏览器已有同名全局属性
 function openLB(i, list){
   if(!list || !list.length) return;
@@ -479,10 +479,13 @@ $('overlay').addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clien
 $('overlay').addEventListener('pointerup', e => {
   if(sx !== null && lbScale === 1){
     const dx = e.clientX - sx, dy = e.clientY - sy;
-    if(dy < -90) closeLB();
-    else if(Math.abs(dx) > 60){
+    // 下滑关闭（与 App 同阈值：110pt 起判，且以竖向为主）
+    if(dy > 110 && Math.abs(dy) > Math.abs(dx)) closeLB();
+    else if(Math.abs(dx) > 90 && Math.abs(dx) > Math.abs(dy)){
       const last = zi === lbList.length - 1, first = zi === 0;
-      if(dx < 0 && last) closeLB();          // 末页继续左滑 → 关闭
+      const fromRightEdge = sx >= window.innerWidth - 44;
+      // 末页 + 从右边缘起手：继续左滑 = 关闭；中间左滑只回弹，不误关
+      if(dx < 0 && last && fromRightEdge) closeLB();
       else if(!(dx > 0 && first)) stepLB(dx < 0 ? 1 : -1);
     }
   }

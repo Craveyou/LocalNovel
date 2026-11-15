@@ -9,7 +9,7 @@ import UIKit
 struct ZoomableImageView: UIViewRepresentable {
     let image: UIImage
     let onSingleTap: () -> Void
-    /// 缩放状态上报：放大时上层需让出「上滑 / 右滑关闭」手势，避免误关
+    /// 缩放状态上报：放大时上层需让出「下滑 / 末页左滑关闭」手势，避免误关
     var onZoomChanged: ((Bool) -> Void)? = nil
 
     func makeCoordinator() -> Coordinator {
