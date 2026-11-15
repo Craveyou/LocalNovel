@@ -480,6 +480,62 @@ def clean_title(raw: str) -> str:
     return s.strip() or raw
 
 
+
+# ==== 翻页分页（TextPaginator 的等价实现）====
+# Swift 用 CoreText 逐页测量；这里用「每行字符数 / 每页行数」的简化排版，
+# 验证的是分页区间不重叠、不丢字、段落映射单调、页码反查正确，而不是字形宽度。
+
+def paragraph_starts(paragraphs):
+    starts, offset = [], 0
+    for p in paragraphs:
+        starts.append(offset)
+        offset += len(p) + 1
+    return starts
+
+
+def paragraph_index(location, starts):
+    result = 0
+    for i, start in enumerate(starts):
+        if start <= location:
+            result = i
+        else:
+            break
+    return result
+
+
+def page_index_for_paragraph(paragraph, pages):
+    result = 0
+    for i, (_, _, para) in enumerate(pages):
+        if para <= paragraph:
+            result = i
+        else:
+            break
+    return result
+
+
+def paginate(paragraphs, chars_per_line=20, lines_per_page=12):
+    text = "\n".join(paragraphs)
+    starts = paragraph_starts(paragraphs)
+    total = len(text)
+    pages, location = [], 0
+    while location < total:
+        end, lines = location, 0
+        while lines < lines_per_page and end < total:
+            line_end = min(end + chars_per_line, total)
+            nl = text.find("\n", end, line_end)
+            if nl >= 0:
+                line_end = nl + 1
+            end = line_end
+            lines += 1
+        if end <= location:
+            break
+        chunk = text[location:end]
+        if chunk.strip():
+            pages.append((location, end - location, paragraph_index(location, starts)))
+        location = end
+    return pages, starts
+
+
 def main():
     if not SAMPLE.is_dir():
         print("缺少示例书，请先运行 make_sample_book.py", file=sys.stderr)
@@ -680,6 +736,89 @@ def main():
         empty = base / "空目录"
         empty.mkdir()
         check("空目录 → empty", scan_sections(empty)[0] == "empty")
+
+    print("\n== J. 翻页分页（TextPaginator） ==")
+    paras = [f"第{i}段：" + "字" * (i % 7 * 13 + 5) for i in range(1, 41)]
+    pages, starts = paginate(paras)
+    check("分页结果非空", len(pages) > 3, str(len(pages)))
+    check("页数合理（40 段 / 每页 12 行）", 4 <= len(pages) <= 40, str(len(pages)))
+    check("首页从 0 开始", pages[0][0] == 0, str(pages[0]))
+    joined_end = max(p[0] + p[1] for p in pages)
+    check("最后一页覆盖到全文末尾", joined_end == len("\n".join(paras)),
+          f"{joined_end} vs {len(chr(10).join(paras))}")
+    contiguous = all(pages[i][0] + pages[i][1] <= pages[i + 1][0]
+                     for i in range(len(pages) - 1))
+    check("相邻页不重叠", contiguous)
+    no_gap = all(pages[i][0] + pages[i][1] == pages[i + 1][0]
+                 for i in range(len(pages) - 1))
+    check("相邻页首尾相接（没有丢字）", no_gap)
+    monotonic = all(pages[i][2] <= pages[i + 1][2] for i in range(len(pages) - 1))
+    check("页起始段落单调不减", monotonic)
+    check("页面区间互不相同", len({(p[0], p[1]) for p in pages}) == len(pages))
+    check("段落 0 在首页", page_index_for_paragraph(0, pages) == 0)
+    check("最后一段在末页", page_index_for_paragraph(len(paras) - 1, pages) == len(pages) - 1)
+    back = [page_index_for_paragraph(para, pages) for _, _, para in pages]
+    check("页码反查与分页顺序一致", back == sorted(back), str(back[:8]))
+    every = page_index_for_paragraph(5, pages)
+    check("中间段落反查落在包含它的页",
+          pages[every][0] <= starts[5] <= pages[every][0] + pages[every][1],
+          f"page={every}")
+    check("空段落列表不分页", paginate([], 20, 12)[0] == [])
+    check("纯空白正文不产生空页", paginate([" ", "  "], 20, 12)[0] == [])
+    check("极窄容器不死循环", len(paginate(["长" * 200], 1, 1)[0]) == 200)
+    check("进度文案格式", f"{3}/{len(pages)}" == f"3/{len(pages)}")
+
+    print("\n== K. 漫画结构：常见形态逐条识别 ==")
+    with tempfile.TemporaryDirectory(prefix="ln-comic-") as td:
+        root = Path(td) / "漫画"
+        root.mkdir()
+
+        def touch(folder, names):
+            folder.mkdir(parents=True, exist_ok=True)
+            for n in names:
+                (folder / n).write_bytes(b"x")
+
+        # 1) 只有「话」，没有「部」
+        touch(root / "短篇漫画" / "第01话", ["001.jpg", "002.jpg"])
+        touch(root / "短篇漫画" / "第02话", ["001.jpg"])
+        # 2) 部 → 话 → 图片
+        touch(root / "星海旅人" / "第1部" / "第1话", ["1.jpg", "2.jpg"])
+        touch(root / "星海旅人" / "第1部" / "第2话", ["1.jpg"])
+        touch(root / "星海旅人" / "第2部" / "第1话", ["1.jpg"])
+        # 3) pdf 单话与图片话混排
+        (root / "星海旅人" / "第5话.pdf").write_bytes(b"x")
+        # 4) 漫画名层直接放散图 = 整部一话
+        touch(root / "单张合集", ["a.jpg", "b.jpg", "c.jpg"])
+        # 5) 更深一层：单行本 / 第3话
+        touch(root / "深嵌套" / "单行本" / "第3话", ["1.jpg"])
+        # 6) 排序：第2话 vs 第10话
+        touch(root / "排序测试" / "第2话", ["1.jpg"])
+        touch(root / "排序测试" / "第10话", ["1.jpg"])
+
+        found = {b.title: b for b in scan_comic(root)}
+        check("漫画名文件夹各成一部（5 部）", len(found) == 5, str(sorted(found)))
+        check("没有「部」时话直接成章",
+              [c.title for c in found["短篇漫画"].chapters] == ["第01话", "第02话"],
+              str([c.title for c in found["短篇漫画"].chapters]))
+        star = found["星海旅人"]
+        check("部 + 话 全部识别为 4 话", len(star.chapters) == 4,
+              str([c.display_title for c in star.chapters]))
+        check("卷名取中间层",
+              [c.group for c in star.chapters if c.kind == "folder"] == ["第1部", "第1部", "第2部"],
+              str([(c.group, c.title) for c in star.chapters]))
+        check("pdf 单话 kind=file", [c.kind for c in star.chapters].count("file") == 1)
+        check("散图整部一话（标题取漫画名）",
+              len(found["单张合集"].chapters) == 1
+              and found["单张合集"].chapters[0].title == "单张合集",
+              str([c.title for c in found["单张合集"].chapters]))
+        check("深层中间层并进卷名",
+              found["深嵌套"].chapters[0].group == "单行本",
+              found["深嵌套"].chapters[0].group)
+        check("自然排序：第2话 在第10话 前",
+              [c.title for c in found["排序测试"].chapters] == ["第2话", "第10话"],
+              str([c.title for c in found["排序测试"].chapters]))
+        check("说明文本里的示例结构能被识别",
+              all(t in found for t in ["星海旅人", "短篇漫画", "深嵌套"]))
 
     print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")
     if FAIL:

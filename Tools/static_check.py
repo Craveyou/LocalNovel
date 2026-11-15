@@ -343,7 +343,7 @@ def main():
           and "DocumentsBootstrap.guideFileName" in resolver)
     check("切回前台补写说明文件", "DocumentsBootstrap.ensureVisibleInFilesApp()" in store)
     check("版本号提升以刷新系统元数据",
-          "<string>9</string>" in plist and "CURRENT_PROJECT_VERSION = 9" in pbx)
+          "<string>10</string>" in plist and "CURRENT_PROJECT_VERSION = 10" in pbx)
     check("UI 给出「文件 App 搜索本地小说」兜底路径",
           "搜索框搜「本地小说」" in welcome and "搜索「本地小说」" in store)
     check("AppIcon asset catalog（1024 + Contents.json）",
@@ -583,6 +583,77 @@ def main():
           "var canDeleteFromDisk: Bool" in models
           and "整本文件里切出来的一章" in chapters
           and "chapter.canDeleteFromDisk" in store)
+
+    print("\n== L. 本轮：小说翻页 / 漫画长图 / 目录结构说明 ==")
+    paginator = (APP / "Core" / "TextPaginator.swift").read_text(encoding="utf-8")
+    paged = (APP / "Views" / "PagedReaderView.swift").read_text(encoding="utf-8")
+    comic_page = (APP / "Views" / "ComicPageView.swift").read_text(encoding="utf-8")
+    comic_store = (APP / "Media" / "ComicImageStore.swift").read_text(encoding="utf-8")
+    guide = (APP / "Views" / "StructureGuideView.swift").read_text(encoding="utf-8")
+    settings = (APP / "Views" / "SettingsView.swift").read_text(encoding="utf-8")
+
+    check("阅读方式两档可切换，默认左右翻页",
+          "enum PageTurnMode" in prefs_src and "case page = 1" in prefs_src
+          and "pageTurn = PageTurnMode(rawValue:" in prefs_src
+          and "@Published var pageTurn: PageTurnMode = .page" in prefs_src)
+    check("设置页提供阅读方式切换",
+          'Picker("翻页"' in settings and ".pickerStyle(.segmented)" in settings
+          and "showGuide = true" in settings)
+    check("CoreText 分页：按容器尺寸逐页量出区间",
+          "enum TextPaginator" in paginator
+          and "CTFramesetterCreateFrame" in paginator
+          and "CTFrameGetVisibleStringRange" in paginator)
+    check("空白页不单独成页（分页点落在段尾时不产生空页）",
+          "trimmingCharacters(in: .whitespacesAndNewlines).isEmpty" in paginator)
+    check("容器放不下一行时立即退出（不死循环）",
+          "guard visible.length > 0 else { break }" in paginator)
+    check("分页与绘制共用同一套排版参数",
+          "static func attributes(fontSize" in paginator
+          and "TextPaginator.attributed(" in paged)
+    check("翻页用 UIPageViewController 仿真翻页",
+          "transitionStyle: .pageCurl" in paged and "UIPageViewControllerDataSource" in paged)
+    check("文字页用 CoreText 绘制同一段区间",
+          "class CoreTextPageView" in paged and "CTFrameDraw(frame, context)" in paged
+          and "NSIntersectionRange(textRange, full)" in paged)
+    check("文字颜色随浅色 / 深色实时取，不固化在分页里",
+          "mutable.addAttribute(.foregroundColor, value: UIColor.label" in paged)
+    check("翻页记忆沿用段落锚点，与滚动模式互通",
+          'restoreParagraph' in paged and 'anchor.hasPrefix("blk-p")' in reader
+          and 'noteAnchor("blk-p\\(paragraph)"' in reader)
+    check("点屏幕左右边缘翻页（中间不误触）",
+          "width * 0.28" in paged and "width * 0.72" in paged
+          and "shouldReceive touch" in paged)
+    check("末页给「下一章 / 已是最后一章」",
+          "struct FooterPageView" in paged and "已是最后一章" in paged
+          and "下一章" in paged)
+    check("翻页模式下插图 / 音视频各占一页，内容不丢",
+          "case image(MediaItem)" in paged and "case av(MediaItem)" in paged
+          and "MediaAttachmentView(item: item" in paged)
+    check("漫画页高按真实宽高比算（消除滚动抖动）",
+          "ComicImageStore.shared.pixelSize(of:" in comic_page
+          and "pageWidth * aspect" in comic_page)
+    check("漫画不再用最长边 1800 降采样（长图糊的根因）",
+          "maxPixel: 1800" not in comic_page and "ImageLoader.load(url:" not in comic_page)
+    check("漫画长图用 CATiledLayer 分块绘制",
+          "override class var layerClass: AnyClass { CATiledLayer.self }" in comic_store
+          and "tiled.tileSize = CGSize(width: 1024, height: 1024)" in comic_store)
+    check("tile 像素密度按屏幕 scale（否则一定会糊）",
+          "contentsScale = scale" in comic_store
+          and "window?.screen.scale" in comic_store)
+    check("只有超大图才降采样兜底",
+          "maxPixels = 40_000_000" in comic_store and "maxPixelSide = 4096" in comic_store)
+    check("只读文件头取像素尺寸，不加载像素",
+          "CGImageSourceCopyPropertiesAtIndex" in comic_store
+          and "kCGImagePropertyPixelWidth" in comic_store)
+    check("漫画按容器宽度满宽连排",
+          "ComicPageView(item: item, width: geo.size.width)" in reader)
+    check("结构说明覆盖漫画三层判定与排序",
+          all(t in guide for t in ["漫画名文件夹", "中间文件夹", "直接有图片的文件夹",
+                                   "每个 pdf", "自然排序"])
+          and "漫画" in guide and "小说" in guide and "整理" in guide)
+    check("放书说明.txt 同步漫画识别规则",
+          "识别规则" in bootstrap and "漫画名文件夹 = 一部" in bootstrap
+          and "中间文件夹 = 卷名" in bootstrap)
 
     print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")
     if FAIL:

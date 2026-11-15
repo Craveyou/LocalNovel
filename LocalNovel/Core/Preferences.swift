@@ -20,6 +20,21 @@ enum AppearanceMode: Int, CaseIterable, Identifiable {
     }
 }
 
+/// 阅读方式：上下滚动 / 左右翻页（仿真翻页）
+enum PageTurnMode: Int, CaseIterable, Identifiable {
+    case scroll = 0
+    case page = 1
+
+    var id: Int { rawValue }
+
+    var label: String {
+        switch self {
+        case .scroll: return "上下滚动"
+        case .page:   return "左右翻页"
+        }
+    }
+}
+
 final class Preferences: ObservableObject {
     static let shared = Preferences()
 
@@ -33,6 +48,11 @@ final class Preferences: ObservableObject {
         didSet { if loaded { save() } }
     }
     @Published var appearance: AppearanceMode = .system {
+        didSet { if loaded { save() } }
+    }
+
+    /// 小说 / 整理类纯文字章节的阅读方式，默认仿真翻页
+    @Published var pageTurn: PageTurnMode = .page {
         didSet { if loaded { save() } }
     }
 
@@ -68,6 +88,7 @@ final class Preferences: ObservableObject {
         } else {
             appearance = .system
         }
+        pageTurn = PageTurnMode(rawValue: defaults.integer(forKey: Keys.pageTurn)) ?? .page
         cleanTitles = defaults.bool(forKey: Keys.cleanTitles)
         longPressRate = r > 0 ? r : 2.0
         loaded = true
@@ -80,6 +101,7 @@ final class Preferences: ObservableObject {
         static let dark = "LocalNovel.darkMode" // 旧键，仅用于迁移读取
         static let cleanTitles = "LocalNovel.cleanTitles"
         static let longPressRate = "LocalNovel.longPressRate"
+        static let pageTurn = "LocalNovel.pageTurn"
     }
 
     private func save() {
@@ -88,5 +110,6 @@ final class Preferences: ObservableObject {
         defaults.set(appearance.rawValue, forKey: Keys.appearance)
         defaults.set(cleanTitles, forKey: Keys.cleanTitles)
         defaults.set(longPressRate, forKey: Keys.longPressRate)
+        defaults.set(pageTurn.rawValue, forKey: Keys.pageTurn)
     }
 }

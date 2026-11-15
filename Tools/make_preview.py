@@ -284,6 +284,39 @@ audio{width:100%}
 .audio-pad{height:74px;border-radius:10px;background:var(--card);display:flex;align-items:center;
   justify-content:center;color:var(--sub);font-size:13px;touch-action:none;user-select:none;cursor:pointer}
 .back{display:none}
+/* 翻页模式 */
+.paged{position:relative;max-width:760px;margin:0 auto;padding:22px 26px 70px;min-height:62vh}
+.paged .page-body{font-size:var(--fs);line-height:var(--lh);transform-origin:left center}
+.paged .page-body p{margin:0 0 1em;white-space:pre-wrap}
+.paged h1{font-size:22px;margin:0 0 6px}
+.pagebar{position:absolute;left:0;right:0;bottom:14px;text-align:center;font-size:12px;color:var(--sub);
+  font-variant-numeric:tabular-nums}
+.pagezone{position:absolute;top:0;bottom:0;width:27%;border:0;background:transparent;cursor:pointer}
+.pagezone.left{left:0}
+.pagezone.right{right:0}
+.pagezone:hover{background:rgba(127,127,127,.05)}
+.flip-next{animation:flipNext .26s ease}
+.flip-prev{animation:flipPrev .26s ease}
+@keyframes flipNext{from{transform:perspective(1100px) rotateY(0);opacity:1}
+  to{transform:perspective(1100px) rotateY(-9deg);opacity:.45}}
+@keyframes flipPrev{from{transform:perspective(1100px) rotateY(0);opacity:1}
+  to{transform:perspective(1100px) rotateY(9deg);opacity:.45}}
+/* 结构说明弹层 */
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:center;
+  justify-content:center;z-index:60;padding:18px}
+.modal.show{display:flex}
+.modal-card{background:var(--panel);color:var(--text);border-radius:14px;max-width:680px;width:100%;
+  max-height:84vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,.3)}
+.modal-head{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;
+  border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--panel)}
+.modal-head button{border:0;background:transparent;color:var(--accent);font-size:14px;cursor:pointer}
+.modal-body{padding:14px 16px 20px;font-size:13px;line-height:1.7}
+pre.tree{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:1.55;
+  background:var(--card);padding:12px;border-radius:10px;overflow-x:auto;margin:10px 0}
+table.rules{width:100%;border-collapse:collapse;font-size:12px;margin:8px 0 14px}
+table.rules td{padding:7px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+table.rules td:first-child{width:118px;font-weight:600;white-space:nowrap}
+table.rules td:last-child{color:var(--sub)}
 @media(max-width:860px){
   .app{grid-template-columns:1fr}
   .pane{display:none;height:100%}
@@ -295,19 +328,56 @@ audio{width:100%}
 </style>
 </head>
 <body>
-<div class="banner">交互原型（非 iOS 应用）· 书库首页三个文件夹 · 漫画满宽连排 · 点图进全屏灯箱 · 长按视频/音轨临时倍速</div>
+<div class="banner">交互原型（非 iOS 应用）· 小说左右翻页（点左右边缘）· 漫画满宽连排 · 点图进全屏 · 「结构说明」看目录规则</div>
 <div class="toolbar">
   <button class="back" id="back">← 返回</button>
   <label>字号 <input type="range" id="fs" min="14" max="28" value="18"></label>
   <label>行距 <input type="range" id="lh" min="14" max="26" value="19"></label>
   <label><input type="checkbox" id="dark"> 夜间</label>
+  <label>阅读方式 <select id="turn"><option value="page" selected>左右翻页</option><option value="scroll">上下滚动</option></select></label>
   <label>长按倍速 <select id="rate"><option value="1.5">1.5×</option><option value="2" selected>2×</option><option value="3">3×</option></select></label>
+  <button id="guide" style="border:0;background:transparent;color:var(--accent);font-size:13px;cursor:pointer">结构说明</button>
   <span style="color:var(--sub)" id="tip">书库 → 分区 → 章节</span>
 </div>
 <div class="app">
   <div class="pane show" id="paneBooks"></div>
   <div class="pane" id="paneChapters"><h2>目录</h2><div id="chapters"></div></div>
   <div class="reader" id="reader"><div class="reader-inner" id="content"></div></div>
+</div>
+<div class="modal" id="guideModal">
+  <div class="modal-card">
+    <div class="modal-head"><b>漫画 / 小说 / 整理的目录结构</b><button id="guideClose">✕ 关闭</button></div>
+    <div class="modal-body">
+      <p><b>漫画</b>：文件夹名就是漫画名，可以只有「话」，也可以中间夹「部 / 单行本」当卷名。</p>
+      <pre class="tree">漫画/
+├─ 星海旅人/            ← 文件夹名 = 漫画名（一本）
+│  ├─ 第1部/            ← 中间层 = 卷名
+│  │  ├─ 第1话/         ← 放图片的文件夹 = 一话
+│  │  │    001.jpg 002.jpg …
+│  │  └─ 第2话/
+│  └─ 第3部/第1话/…
+├─ 深海食堂/
+│  ├─ 第01话/001.jpg
+│  └─ 第02话.pdf        ← 一个 pdf = 一话
+└─ 短篇合集/单行本/第3话/…</pre>
+      <table class="rules">
+        <tr><td>漫画名文件夹</td><td>一部漫画，列表里的一本</td></tr>
+        <tr><td>中间文件夹</td><td>卷名；多层用「 · 」连接，如「第1部 · 第2话」</td></tr>
+        <tr><td>有图片的文件夹</td><td>一话；只看该层自己的图片，不含子文件夹里的</td></tr>
+        <tr><td>每个 pdf</td><td>一话，按页渲染，滑到哪页生成哪页</td></tr>
+        <tr><td>漫画名层散图</td><td>整部只有一话，标题用漫画名</td></tr>
+        <tr><td>排序</td><td>自然排序：第2话 排在第10话 前面</td></tr>
+      </table>
+      <p><b>小说</b>：一个文件一本（txt / md / epub / pdf）；子文件夹 = 一个系列，再嵌一层是「系列 · 子系列」。</p>
+      <pre class="tree">小说/
+├─ 风起长安.txt
+└─ 银河旧事/            ← 系列
+   ├─ 第一部 启程.txt
+   └─ 前传/前传.txt      ← 「银河旧事 · 前传」</pre>
+      <p><b>整理</b>：作者名/章节名/正文.txt + 按序号图片 + 音视频。</p>
+      <p style="color:var(--sub)">隐藏文件、Thumbs.db、desktop.ini、放书说明.txt 不参与扫描；不认识的扩展名会在阅读页提示「已忽略」。</p>
+    </div>
+  </div>
 </div>
 <div id="overlay">
   <img id="zoom" src="" alt="">
@@ -319,6 +389,7 @@ audio{width:100%}
 <script>
 const DATA = __DATA__;
 let sec = null, openSeries = null, b = 0, c = 0, lbList = [];
+let PAGE_TURN = true, pageIdx = 0, pagePages = [];
 const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 const section = key => DATA.sections.find(s => s.key === key);
@@ -420,8 +491,64 @@ function renderChapters(){
     return `<button class="item ${i === c ? 'active' : ''}" data-c="${i}">${g}${esc(ch.title)}<small>${meta}</small></button>`;
   }).join('');
   $('chapters').querySelectorAll('[data-c]').forEach(el => el.onclick = () => {
-    c = +el.dataset.c; renderChapters(); renderReader(); show('reader'); $('reader').scrollTop = 0;
+    c = +el.dataset.c; pageIdx = 0; renderChapters(); renderReader(); show('reader'); $('reader').scrollTop = 0;
   });
+}
+
+// ---- 翻页模式：按字数切页，点左右边缘翻页（App 内是系统仿真翻页 page curl）----
+function splitPages(paras, per){
+  const out = [];
+  let cur = [], len = 0;
+  paras.forEach(p => {
+    const add = p.length + 8;
+    if(cur.length && len + add > per){ out.push(cur); cur = []; len = 0; }
+    cur.push(p); len += add;
+  });
+  if(cur.length) out.push(cur);
+  return out.length ? out : [[]];
+}
+
+function renderPaged(ch, bk){
+  // 原型按字数粗分页（App 内用 CoreText 按真实排版分页，一屏一页）
+  pagePages = splitPages(ch.paragraphs, 120);
+  if(pageIdx >= pagePages.length) pageIdx = 0;
+  $('content').className = 'reader-inner';
+  drawPage(ch, bk, 0);
+  $('tip').textContent = `${esc(ch.title)} · 左右翻页 ${pageIdx + 1}/${pagePages.length}`;
+}
+
+function drawPage(ch, bk, dir){
+  const page = pagePages[pageIdx] || [];
+  const head = pageIdx === 0
+    ? `<h1>${esc(ch.title)}</h1>` + (ch.group ? `<div class="grouptag">${esc(ch.group)}</div>` : '')
+    : '';
+  const body = page.map(p => `<p>${esc(p)}</p>`).join('');
+  $('content').innerHTML = `<div class="paged">
+      <div class="page-body ${dir > 0 ? 'flip-next' : dir < 0 ? 'flip-prev' : ''}" id="pageBody">${head}${body}</div>
+      <div class="pagebar">${pageIdx + 1} / ${pagePages.length}</div>
+      <button class="pagezone left" aria-label="上一页"></button>
+      <button class="pagezone right" aria-label="下一页"></button>
+    </div>`;
+  $('content').querySelector('.pagezone.left').onclick = () => turnPage(-1, ch, bk);
+  $('content').querySelector('.pagezone.right').onclick = () => turnPage(1, ch, bk);
+  $('reader').scrollTop = 0;
+}
+
+function turnPage(d, ch, bk){
+  const next = pageIdx + d;
+  if(next < 0) return;
+  if(next >= pagePages.length){
+    // 末页继续翻 → 下一章
+    if(c + 1 < bk.chapters.length){
+      c += 1; pageIdx = 0; renderChapters(); renderReader();
+    } else {
+      $('tip').textContent = '已是最后一章';
+    }
+    return;
+  }
+  pageIdx = next;
+  drawPage(ch, bk, d);
+  $('tip').textContent = `${esc(ch.title)} · 左右翻页 ${pageIdx + 1}/${pagePages.length}`;
 }
 
 function renderReader(){
@@ -431,6 +558,10 @@ function renderReader(){
   const ch = bk.chapters[c];
   if(!ch){ $('content').innerHTML = '<div class="empty">选择一章开始阅读</div>'; return; }
   const isComic = sec === 'comic';
+  if(!isComic && PAGE_TURN && !(ch.pdfPages && ch.pdfPages.length) && ch.paragraphs.length){
+    renderPaged(ch, bk);
+    return;
+  }
   const pages = (ch.images.length ? ch.images : (ch.pdfPages || []).map(src => ({src, label: ''})));
   $('content').className = 'reader-inner' + (isComic && pages.length ? ' comic' : '');
 
@@ -509,6 +640,17 @@ function applyLB(){
 function syncChrome(){ $('lbBar').classList.toggle('hide', !chrome); }
 function closeLB(){ $('overlay').style.display = 'none'; $('zoom').src = ''; lbScale = 1; }
 function stepLB(d){ openLB(zi + d, lbList); }
+$('turn').onchange = e => { PAGE_TURN = e.target.value === 'page'; pageIdx = 0; renderReader(); };
+$('guide').onclick = () => $('guideModal').classList.add('show');
+$('guideClose').onclick = () => $('guideModal').classList.remove('show');
+$('guideModal').onclick = e => { if(e.target.id === 'guideModal') $('guideModal').classList.remove('show'); };
+document.addEventListener('keydown', e => {
+  if(!PAGE_TURN || $('guideModal').classList.contains('show')) return;
+  const bk = currentBooks()[b]; if(!bk) return;
+  const ch = bk.chapters[c]; if(!ch) return;
+  if(e.key === 'ArrowRight') turnPage(1, ch, bk);
+  if(e.key === 'ArrowLeft') turnPage(-1, ch, bk);
+});
 $('lbClose').onclick = e => { e.stopPropagation(); closeLB(); };
 $('lbPrev').onclick = e => { e.stopPropagation(); stepLB(-1); };
 $('lbNext').onclick = e => { e.stopPropagation(); stepLB(1); };

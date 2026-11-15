@@ -208,7 +208,7 @@ def download_artifact_resumable(path, dest, rounds=100):
 # 只下载模式：编译已成功但下载失败时，不必重跑整轮编译
 if len(sys.argv) >= 3 and sys.argv[1] == "--download-only":
     _art = sys.argv[2]
-    _out = sys.argv[3] if len(sys.argv) > 3 else "/tmp/ln_artifact.zip"
+    _out = sys.argv[3] if len(sys.argv) > 3 else f"/tmp/ln_artifact-{_art}.zip"
     _code, _u, _ = call("GET", "/user")
     _owner = _u.get("login", "")
     _repo = os.environ.get("REPO_NAME", "LocalNovel")
@@ -410,12 +410,14 @@ print(f"   artifact: {alive[0].get('name')} (id={art_id})")
 
 # 带 token 的请求只用于换取签名地址；重定向后的下载不带任何凭据。
 # 大文件走断点续传：签名地址有效期短、对象存储读超时很常见。
-_resume_dest = Path(os.environ.get("LN_ARTIFACT_CACHE", "/tmp/ln_artifact.zip"))
+# 缓存文件必须按 artifact id 命名：跨 run 复用会把上一次的旧包当成新产物（曾把 1.7 当成 1.8 交付）
+_resume_dest = Path(os.environ.get(
+    "LN_ARTIFACT_CACHE", f"/tmp/ln_artifact-{art_id}.zip"))
 if not download_artifact_resumable(
         REPO + f"/actions/artifacts/{art_id}/zip", _resume_dest):
     print("❌ artifact 下载失败。编译产物仍在，可稍后续传：")
     print(f"   LN_GH_PAT_FILE=<pat> python3 Tools/upload_via_api.py "
-          f"--download-only {art_id} /tmp/ln_artifact.zip")
+          f"--download-only {art_id} {_resume_dest}")
     sys.exit(1)
 blob = _resume_dest.read_bytes()
 c = 200

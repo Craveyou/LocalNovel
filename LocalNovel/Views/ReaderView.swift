@@ -1,8 +1,9 @@
 import SwiftUI
 
 // MARK: - 第三栏：阅读器
-// 三种形态：
-//   · 小说 / 整理：正文 → 按序号图片（含动图）→ 章末音视频 → 下一章
+// 四种形态：
+//   · 小说 / 整理（上下滚动）：正文 → 按序号图片（含动图）→ 章末音视频 → 下一章
+//   · 小说 / 整理（左右翻页）：CoreText 分页 + 仿真翻页，页内点击左右边缘翻页
 //   · 漫画（图片章节）：满宽逐页连排，无圆角无间距，点击进全屏
 //   · 漫画（pdf 单话）：按页渲染，滑到哪页渲染哪页
 //
@@ -48,6 +49,8 @@ struct ReaderView: View {
                 PdfChapterView(url: pdf)
             } else if isComic {
                 comicBody(content)
+            } else if usePaging {
+                pagedBody(content)
             } else {
                 scrollBody(content)
             }
@@ -141,43 +144,86 @@ struct ReaderView: View {
     // MARK: 漫画：满宽逐页
 
     private func comicBody(_ content: ChapterContent) -> some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(spacing: 0) {
-                    ForEach(content.images.indices, id: \.self) { index in
-                        let item = content.images[index]
-                        ComicPageView(item: item) { galleryItem = item }
+        GeometryReader { geo in
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(content.images.indices, id: \.self) { index in
+                            let item = content.images[index]
+                            ComicPageView(item: item, width: geo.size.width) {
+                                galleryItem = item
+                            }
                             .id("blk-i\(index)")
                             .onAppear {
                                 ProgressStore.shared.noteAnchor("blk-i\(index)",
                                                                 for: chapter.id)
                             }
-                    }
+                        }
 
-                    if content.images.isEmpty {
-                        ContentUnavailableView("这一话没有图片",
-                                               systemImage: "photo",
-                                               description: Text("检查该文件夹里是否放进去了 jpg / png 等图片"))
-                            .padding(.top, 60)
-                    }
+                        if content.images.isEmpty {
+                            ContentUnavailableView("这一话没有图片",
+                                                   systemImage: "photo",
+                                                   description: Text("检查该文件夹里是否放进去了 jpg / png 等图片"))
+                                .padding(.top, 60)
+                        }
 
-                    VStack(spacing: 8) {
-                        Text("\(content.images.count) 页")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        chapterFooter
-                    }
-                    .padding(.horizontal, 20)
-                    .padding(.top, 16)
+                        VStack(spacing: 8) {
+                            Text("\(content.images.count) 页")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            chapterFooter
+                        }
+                        .padding(.horizontal, 20)
+                        .padding(.top, 16)
 
-                    Color.clear.frame(height: 40)
+                        Color.clear.frame(height: 40)
+                    }
+                }
+                .frame(width: geo.size.width)
+                .onAppear { restoreAnchor(proxy) }
+                .onChange(of: pendingAnchor) { _, anchor in
+                    scrollToPendingAnchor(anchor, proxy: proxy)
                 }
             }
-            .onAppear { restoreAnchor(proxy) }
-            .onChange(of: pendingAnchor) { _, anchor in
-                scrollToPendingAnchor(anchor, proxy: proxy)
-            }
         }
+    }
+
+    // MARK: 翻页模式
+
+    private var usePaging: Bool {
+        prefs.pageTurn == .page && !isComic && content.pdfURL == nil && !paragraphs.isEmpty
+    }
+
+    /// 阅读记忆存的是段落锚点（blk-pN），翻页按段落反查页码
+    private var restoreParagraph: Int {
+        guard let anchor = ProgressStore.shared.anchor(for: chapter.id),
+              anchor.hasPrefix("blk-p"),
+              let value = Int(anchor.dropFirst("blk-p".count)) else { return 0 }
+        return value
+    }
+
+    private func pagedBody(_ content: ChapterContent) -> some View {
+        PagedReaderView(
+            input: PagedReaderInput(chapterId: chapter.id,
+                                    paragraphs: paragraphs,
+                                    images: content.images,
+                                    avMedia: content.avMedia,
+                                    fontSize: prefs.fontSize,
+                                    lineSpacing: prefs.lineSpacing,
+                                    restoreParagraph: restoreParagraph,
+                                    hasNextChapter: nextChapter != nil,
+                                    nextTitle: nextChapter?.displayTitle ?? "",
+                                    isComic: isComic,
+                                    boostRate: prefs.longPressRate),
+            onProgress: { paragraph in
+                ProgressStore.shared.noteAnchor("blk-p\(paragraph)", for: chapter.id)
+            },
+            onTapMedia: { item in galleryItem = item },
+            onOpenNext: {
+                if let next = nextChapter { onOpenNext(next) }
+            }
+        )
+        .id("paged-\(prefs.pageTurn.rawValue)")
     }
 
     // MARK: 锚点

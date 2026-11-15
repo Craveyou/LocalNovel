@@ -6,6 +6,7 @@ struct SettingsView: View {
     @EnvironmentObject private var prefs: Preferences
     @EnvironmentObject private var library: LibraryStore
     @Environment(\.dismiss) private var dismiss
+    @State private var showGuide = false
 
     /// 用显式 Binding 包装，避免依赖环境对象的 $ 投影（不同 SwiftUI 版本行为有差异）
     private func binding<T>(for keyPath: ReferenceWritableKeyPath<Preferences, T>) -> Binding<T> {
@@ -18,6 +19,20 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
+                Section("阅读方式") {
+                    Picker("翻页", selection: binding(for: \.pageTurn)) {
+                        ForEach(PageTurnMode.allCases) { mode in
+                            Text(mode.label).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    Text(prefs.pageTurn == .page
+                         ? "左右翻页：仿真翻页动画，点屏幕左 / 右侧翻页，底部显示页码。含插图的章节里，插图与音视频各占一页。"
+                         : "上下滚动：传统连续滚动，段落流畅衔接。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
                 Section("排版") {
                     HStack {
                         Text("字号")
@@ -86,12 +101,24 @@ struct SettingsView: View {
                     }
                 }
 
+                Section("结构说明") {
+                    Button {
+                        showGuide = true
+                    } label: {
+                        Label("漫画 / 小说 / 整理 的目录结构", systemImage: "questionmark.folder")
+                    }
+                    Text("说明每层文件夹会被识别成什么：漫画名、卷、话，以及哪些文件会被忽略。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
                 Section {
                     Text("所有内容仅在本机读取，不联网、不上传、不修改原始文件。阅读进度与偏好保存在本机。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
             }
+            .sheet(isPresented: $showGuide) { StructureGuideView() }
             .navigationTitle("设置")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
