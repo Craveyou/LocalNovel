@@ -73,6 +73,13 @@ final class Preferences: ObservableObject {
     @Published var longPressRate: Double = 2.0 {
         didSet { if loaded { save() } }
     }
+    /// NAS 图片缓存上限（MB）；0 = 不限制。改小后立即按新上限裁一次。
+    @Published var networkImageCacheMB: Int = 512 {
+        didSet { if loaded { save() } }
+    }
+
+    /// 设置页可选的缓存上限（MB）
+    static let imageCacheOptions = [128, 256, 512, 1024, 2048, 0]
 
     private init() {
         let f = defaults.double(forKey: Keys.fontSize)
@@ -91,6 +98,10 @@ final class Preferences: ObservableObject {
         pageTurn = PageTurnMode(rawValue: defaults.integer(forKey: Keys.pageTurn)) ?? .page
         cleanTitles = defaults.bool(forKey: Keys.cleanTitles)
         longPressRate = r > 0 ? r : 2.0
+        // 默认 512 MB；用户显式选「不限制」时存的就是 0，要能区分「没设置过」
+        networkImageCacheMB = defaults.object(forKey: Keys.imageCacheMB) == nil
+            ? 512
+            : max(0, defaults.integer(forKey: Keys.imageCacheMB))
         loaded = true
     }
 
@@ -102,6 +113,7 @@ final class Preferences: ObservableObject {
         static let cleanTitles = "LocalNovel.cleanTitles"
         static let longPressRate = "LocalNovel.longPressRate"
         static let pageTurn = "LocalNovel.pageTurn"
+        static let imageCacheMB = "LocalNovel.imageCacheMB"
     }
 
     private func save() {
@@ -111,5 +123,6 @@ final class Preferences: ObservableObject {
         defaults.set(cleanTitles, forKey: Keys.cleanTitles)
         defaults.set(longPressRate, forKey: Keys.longPressRate)
         defaults.set(pageTurn.rawValue, forKey: Keys.pageTurn)
+        defaults.set(networkImageCacheMB, forKey: Keys.imageCacheMB)
     }
 }

@@ -92,7 +92,11 @@ struct ReaderView: View {
                 pendingAnchor = imageAnchor(for: closed, in: content)
             }
         }
-        .onDisappear { ProgressStore.shared.flushAnchors() }
+        .onAppear { ReadingChrome.shared.enter() }
+        .onDisappear {
+            ReadingChrome.shared.leave()
+            ProgressStore.shared.flushAnchors()
+        }
     }
 
     // MARK: 小说 / 整理：段落流

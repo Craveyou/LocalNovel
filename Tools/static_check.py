@@ -349,8 +349,8 @@ def main():
           and "DocumentsBootstrap.guideFileName" in resolver)
     check("切回前台补写说明文件", "DocumentsBootstrap.ensureVisibleInFilesApp()" in store)
     check("版本号提升以刷新系统元数据",
-          "<string>2.1</string>" in plist and "CURRENT_PROJECT_VERSION = 1" in pbx
-          and "MARKETING_VERSION = 2.1" in pbx)
+          "<string>2.2</string>" in plist and "CURRENT_PROJECT_VERSION = 1" in pbx
+          and "MARKETING_VERSION = 2.2" in pbx)
     check("UI 给出「文件 App 搜索本地小说」兜底路径",
           "搜索框搜「本地小说」" in welcome and "搜索「本地小说」" in store)
     check("AppIcon asset catalog（1024 + Contents.json）",
@@ -697,8 +697,8 @@ def main():
     check("文档正文含双格式包一节",
           "### 5. 同一部书按格式分成两个包（PDF 包 + 图片包）"
           in (ROOT / "Docs" / "漫画目录结构说明.md").read_text(encoding="utf-8"))
-    check("版本升到 2.1 / build 1",
-          "<string>2.1</string>" in plist and "<key>CFBundleVersion</key>\n\t<string>1</string>" in plist)
+    check("版本升到 2.2 / build 1",
+          "<string>2.2</string>" in plist and "<key>CFBundleVersion</key>\n\t<string>1</string>" in plist)
 
 
     print("\n== N. 本轮：底部三页 / 短剧 / NAS 连接 ==")
@@ -751,6 +751,50 @@ def main():
           and "RemoteVideoView" in nas_views)
     check("结构说明覆盖短剧",
           "短剧" in guide and "剧照" in guide)
+
+    print("\n== P. 本轮：NAS 图片缓存上限 / 阅读时收起标签栏 ==")
+    chrome = (APP / "Core" / "ReadingChrome.swift").read_text(encoding="utf-8")
+    cache = (APP / "Media" / "RemoteImageCache.swift").read_text(encoding="utf-8")
+    root_view = (APP / "Views" / "RootView.swift").read_text(encoding="utf-8")
+    remote_media = (APP / "Views" / "RemoteMediaViews.swift").read_text(encoding="utf-8")
+    prefs_src = (APP / "Core" / "Preferences.swift").read_text(encoding="utf-8")
+
+    check("阅读状态用计数而不是布尔（切章重建不闪标签栏）",
+          "final class ReadingChrome" in chrome and "private var depth = 0" in chrome
+          and "func enter()" in chrome and "func leave()" in chrome
+          and "depth == 0, isImmersive" in chrome)
+    check("阅读时收起标签栏，退出立即恢复",
+          ".toolbar(chrome.isImmersive ? .hidden : .visible, for: .tabBar)" in tab
+          and ".toolbar(chrome.isImmersive ? .hidden : .visible, for: .tabBar)" in root_view)
+    check("文字 / 漫画 / 剧照 / 视频四类阅读界面都登记沉浸",
+          "ReadingChrome.shared.enter()" in reader
+          and "ReadingChrome.shared.leave()" in reader
+          and remote_media.count("ReadingChrome.shared.enter()") == 2
+          and remote_media.count("ReadingChrome.shared.leave()") == 2)
+    check("缓存上限可调，默认 512 MB，可选「不限制」",
+          "networkImageCacheMB" in prefs_src
+          and "static let imageCacheOptions = [128, 256, 512, 1024, 2048, 0]" in prefs_src
+          and "? 512" in prefs_src)
+    check("设置页有 NAS 图片缓存区块：上限 / 占用 / 清理",
+          'Section("NAS 图片缓存")' in settings and "Picker(\"上限\"" in settings
+          and "LabeledContent(\"已占用\")" in settings
+          and "清理图片缓存" in settings)
+    check("清理前二次确认，且只动本机缓存",
+          'confirmationDialog("清空 NAS 图片缓存？"' in settings
+          and "只删除本机缓存文件" in settings)
+    check("缓存按最久未修改淘汰，超限自动裁",
+          "static func trim(folder: URL, limit: Int64) -> Usage" in cache
+          and "contentModificationDateKey" in cache
+          and "entries.sort { $0.date < $1.date }" in cache
+          and "guard total > limit else" in cache)
+    check("改上限后立即按新上限裁一次",
+          "func enforceLimit() async" in cache
+          and "RemoteImageCache.shared.enforceLimit()" in settings)
+    check("落盘与淘汰在后台队列，不阻塞翻页",
+          "private let queue = DispatchQueue(label: \"LocalNovel.remoteImageCache\"" in cache
+          and "let target = folder" in cache and "try? payload.write(to: target" in cache)
+    check("上限为 0 时不自动删（不限制）",
+          "guard limit > 0 else { return measure(folder: folder) }" in cache)
 
     print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")
     if FAIL:

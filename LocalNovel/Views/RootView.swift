@@ -7,6 +7,7 @@ struct RootView: View {
     @EnvironmentObject private var library: LibraryStore
     @EnvironmentObject private var prefs: Preferences
     @Environment(\.scenePhase) private var scenePhase
+    @ObservedObject private var chrome = ReadingChrome.shared
 
     @State private var selectedBook: Book?
     @State private var selectedChapter: Chapter?
@@ -32,6 +33,8 @@ struct RootView: View {
             }
         }
         .navigationSplitViewStyle(.balanced)
+        // 与 MainTabView 同一份状态：分栏布局下 TabView 那层不一定生效，这里补一刀
+        .toolbar(chrome.isImmersive ? .hidden : .visible, for: .tabBar)
         // nil = 跟随系统外观；浅色 / 深色则手动固定
         .preferredColorScheme(prefs.preferredScheme)
         .onAppear {

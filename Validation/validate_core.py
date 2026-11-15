@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import os
 import re
 import sys
 import tempfile
@@ -940,6 +941,54 @@ def main():
     check("根目录散装视频 = 一部单片",
           loose is not None and len(loose.chapters) == 1
           and loose.chapters[0].kind == "file", str(loose.title if loose else None))
+
+    print("\n== P. NAS 图片缓存：上限与按最久未修改淘汰 ==")
+    import time as _time
+
+    def cache_measure(folder: Path):
+        files = [f for f in folder.iterdir() if f.is_file()]
+        return sum(f.stat().st_size for f in files), len(files)
+
+    def cache_trim(folder: Path, limit: int):
+        """等价 Swift RemoteImageCache.trim：按 mtime 从旧到新删，直到总量 <= limit"""
+        total, count = cache_measure(folder)
+        if limit <= 0 or total <= limit:
+            return total, count
+        entries = sorted(((f, f.stat().st_size, f.stat().st_mtime)
+                          for f in folder.iterdir() if f.is_file()),
+                         key=lambda x: x[2])
+        remaining = count
+        for f, size, _ in entries:
+            if total <= limit:
+                break
+            f.unlink()
+            total -= size
+            remaining -= 1
+        return max(0, total), max(0, remaining)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp)
+        # 5 张 1 MB 的假图片，越靠前的越旧
+        names = ["a.jpg", "b.jpg", "c.jpg", "d.jpg", "e.jpg"]
+        for i, name in enumerate(names):
+            (folder / name).write_bytes(b"x" * (1024 * 1024))
+            os.utime(folder / name, (_time.time() - 3600 * (len(names) - i),) * 2)
+
+        total, count = cache_trim(folder, 3 * 1024 * 1024)
+        left = sorted(f.name for f in folder.iterdir())
+        check("超出上限时裁到上限以内", total <= 3 * 1024 * 1024 and count == 3, f"{total} {count}")
+        check("优先删最久未修改的（旧的两张被删）",
+              left == ["c.jpg", "d.jpg", "e.jpg"], str(left))
+
+        total2, count2 = cache_trim(folder, 10 * 1024 * 1024)
+        check("未超上限时一个都不动",
+              total2 == total and count2 == 3, f"{total2} {count2}")
+
+        total3, count3 = cache_trim(folder, 0)
+        check("上限 0 = 不限制，不删任何文件", count3 == 3 and total3 == total, f"{total3} {count3}")
+
+        total4, count4 = cache_trim(folder, 1)
+        check("上限极小时清到只剩 1 条以内", count4 <= 1, f"{total4} {count4}")
 
     print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")
     if FAIL:

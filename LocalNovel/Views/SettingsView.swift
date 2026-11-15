@@ -10,6 +10,9 @@ struct SettingsView: View {
     @EnvironmentObject private var library: LibraryStore
     @Environment(\.dismiss) private var dismiss
     @State private var showGuide = false
+    /// NAS 图片缓存占用（进入设置时扫一次，改上限 / 清理后刷新）
+    @State private var cacheUsage = RemoteImageCache.Usage()
+    @State private var showCacheConfirm = false
 
     init(showsDoneButton: Bool = true) {
         self.showsDoneButton = showsDoneButton
@@ -82,6 +85,28 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
+                Section("NAS 图片缓存") {
+                    Picker("上限", selection: binding(for: \.networkImageCacheMB)) {
+                        ForEach(Preferences.imageCacheOptions, id: \.self) { mb in
+                            Text(mb == 0 ? "不限制" : "\(mb) MB").tag(mb)
+                        }
+                    }
+                    LabeledContent("已占用") {
+                        Text(cacheUsageText)
+                            .monospacedDigit()
+                    }
+                    Button(role: .destructive) {
+                        showCacheConfirm = true
+                    } label: {
+                        Label("清理图片缓存", systemImage: "trash")
+                    }
+                    .disabled(cacheUsage.isEmpty)
+                    Text("NAS 上的漫画、剧照与插图会先下载到本机再显示；超出上限时按「最久未修改」自动淘汰。"
+                         + "清理只删本机缓存，NAS 原图不受影响，下次浏览会重新下载。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
                 Section("章节目录") {
                     Toggle("去掉章节名的序号前缀", isOn: binding(for: \.cleanTitles))
                     Text("章节默认按文件夹原名展示与排序；开启后需在下方重新扫描才会生效。")
@@ -129,6 +154,27 @@ struct SettingsView: View {
                 }
             }
             .sheet(isPresented: $showGuide) { StructureGuideView() }
+            .task { await refreshCacheUsage() }
+            .onChange(of: prefs.networkImageCacheMB) { _, _ in
+                // 改小上限后立刻裁一次，占用数字同步刷新
+                Task {
+                    await RemoteImageCache.shared.enforceLimit()
+                    await refreshCacheUsage()
+                }
+            }
+            .confirmationDialog("清空 NAS 图片缓存？",
+                                isPresented: $showCacheConfirm,
+                                titleVisibility: .visible) {
+                Button("清理 \(cacheUsageText)", role: .destructive) {
+                    Task {
+                        await RemoteImageCache.shared.clear()
+                        await refreshCacheUsage()
+                    }
+                }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("只删除本机缓存文件，NAS 上的原图不受影响；下次浏览会重新下载。")
+            }
             .navigationTitle("设置")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -139,5 +185,23 @@ struct SettingsView: View {
                 }
             }
         }
+    }
+
+    private var cacheUsageText: String {
+        guard !cacheUsage.isEmpty else { return "0 KB" }
+        let size = Self.sizeFormatter.string(fromByteCount: cacheUsage.bytes)
+        return "\(size) · \(cacheUsage.files) 个文件"
+    }
+
+    private static let sizeFormatter: ByteCountFormatter = {
+        let formatter = ByteCountFormatter()
+        formatter.allowedUnits = [.useKB, .useMB, .useGB]
+        formatter.countStyle = .file
+        return formatter
+    }()
+
+    @MainActor
+    private func refreshCacheUsage() async {
+        cacheUsage = await RemoteImageCache.shared.usage()
     }
 }

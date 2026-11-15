@@ -87,6 +87,8 @@ struct RemoteImageSequenceView: View {
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
         .background(Color.black.opacity(0.02))
+        .onAppear { ReadingChrome.shared.enter() }
+        .onDisappear { ReadingChrome.shared.leave() }
     }
 }
 
@@ -144,8 +146,14 @@ struct RemoteVideoView: View {
         }
         .navigationTitle(entry.name)
         .navigationBarTitleDisplayMode(.inline)
-        .onAppear(perform: prepare)
-        .onDisappear { player?.pause() }
+        .onAppear {
+            ReadingChrome.shared.enter()
+            prepare()
+        }
+        .onDisappear {
+            ReadingChrome.shared.leave()
+            player?.pause()
+        }
         .task {
             await VideoMetaStore.shared.load(entry.url,
                                              headers: WebDAVClient.headers(account: account),
