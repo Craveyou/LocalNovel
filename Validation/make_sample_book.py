@@ -4,6 +4,7 @@
 三分区结构：
   小说/   每个文件一本书（txt / epub / pdf）
   漫画/   漫画名 → 第几部 → 第几话 → 图片；另有 pdf 单话
+  短剧/   剧名 → 剧照（图片）/ 视频（mp4）两个包；另有只有视频与根目录单片
   整理/   作者名 → 章节名 → txt + 序号图片 + 动图 + 音视频
 
 用途：给 S1 等价验证提供真实目录树，也作为 Xcode 工程里可直接导入的样例数据。
@@ -184,6 +185,26 @@ def main():
         folder.mkdir(parents=True)
         for i in range(1, 4):
             png(folder / f"{i:03d}.jpg", f"第0{no}话 p{i}", color, (600, 900))
+
+    # ---------------- 短剧 ----------------
+    # 剧照包 + 视频包（用户的结构）
+    drama = ROOT / "短剧" / "逆光而行"
+    stills = drama / "剧照"
+    stills.mkdir(parents=True)
+    for i in range(1, 4):
+        png(stills / f"00{i}.jpg", f"逆光而行 剧照 {i}", (120, 70 + i * 20, 160), (600, 900))
+    episodes = drama / "视频"
+    episodes.mkdir(parents=True)
+    for i in (1, 2):
+        make_video(episodes / f"第0{i}集.mp4")
+
+    # 只有视频，没有剧照
+    only = ROOT / "短剧" / "只有视频的一部"
+    only.mkdir(parents=True)
+    make_video(only / "全集.mp4")
+
+    # 短剧根目录直接放一个视频 = 一部单片
+    make_video(ROOT / "短剧" / "散装短片.mp4")
 
     # ---------------- 整理 ----------------
     b1 = ROOT / "整理" / "墨青山"

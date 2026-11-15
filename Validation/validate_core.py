@@ -30,7 +30,7 @@ VIDEO_EXT = {"mp4", "mov", "m4v"}
 AUDIO_EXT = {"mp3", "m4a", "aac", "wav", "aiff", "aif", "flac", "caf"}
 ANIMATED_EXT = {"gif", "apng"}
 NOVEL_EXT = {"txt", "text", "md", "markdown", "epub", "pdf"}
-SECTIONS = {"novel": "小说", "comic": "漫画", "organized": "整理"}
+SECTIONS = {"novel": "小说", "comic": "漫画", "organized": "整理", "shortDrama": "短剧"}
 
 
 def normalize(s: str) -> str:
@@ -172,6 +172,9 @@ def resolve_chapter(ch: Chapter, animated_detector=animated_by_ext) -> ChapterCo
     if ch.kind != "folder":
         if ext(ch.url.name) == "pdf":
             return ChapterContent(ch, None, [], [], [], ch.url)
+        kind = classify(ch.url.name)
+        if kind in ("video", "audio"):
+            return ChapterContent(ch, None, [], [MediaItem(ch.url, kind, None)], [], None)
         return ChapterContent(ch, ch.url, [], [], [], None)
     if not ch.url.is_dir():
         return ChapterContent(ch, None, [], [], [], None)
@@ -304,6 +307,52 @@ def scan_comic(root: Path):
     return books
 
 
+# ---------------- 短剧 ----------------
+
+def collect_short(dir_path: Path, root: Path, depth: int, group: list[str]):
+    files = [p for p in files_in(dir_path)]
+    images = [p for p in files if ext(p.name) in IMAGE_EXT]
+    videos = [p for p in files if ext(p.name) in VIDEO_EXT]
+    is_root = dir_path == root
+    own_group = [] if is_root else group + [dir_path.name]
+    out: list[Chapter] = []
+
+    if images:
+        out.append(Chapter(dir_path, dir_path.name,
+                           "剧照" if is_root else dir_path.name, "folder", None))
+
+    video_group = " · ".join(own_group) if own_group else None
+    for v in natural_sorted(videos, key=lambda p: p.name):
+        out.append(Chapter(v, v.name, stem(v.name), "file", video_group))
+
+    if depth < 3:
+        for sub in subdirectories(dir_path):
+            out += collect_short(sub, root, depth + 1, own_group)
+    return out
+
+
+def sort_short(chapters: list[Chapter]):
+    """剧照在前，其余按 包名 → 集名 自然排序"""
+    images = [c for c in chapters if c.kind == "folder"]
+    rest = [c for c in chapters if c.kind != "folder"]
+    named = natural_sorted([c for c in rest if c.group], key=lambda c: c.group or "")
+    loose = [c for c in rest if not c.group]
+    return images + named + loose
+
+
+def scan_short_drama(root: Path):
+    if not root.is_dir():
+        return []
+    books: list[Book] = []
+    for folder in subdirectories(root):
+        chapters = collect_short(folder, folder, 0, [])
+        if chapters:
+            books.append(Book(folder, folder.name, "shortDrama", sort_short(chapters)))
+    for v in [p for p in files_in(root) if ext(p.name) in VIDEO_EXT]:
+        books.append(Book(v, stem(v.name), "shortDrama",
+                          [Chapter(v, v.name, stem(v.name), "file", None)]))
+    return natural_sorted(books, key=lambda b: b.title)
+
 # ---------------- 整理 ----------------
 
 def scan_organized(root: Path):
@@ -345,7 +394,8 @@ def scan_sections(root: Path):
     # 情形 1：直接选中某个分区
     if root.name in SECTIONS.values() and not has_section_child:
         key = next(k for k, v in SECTIONS.items() if v == root.name)
-        scanner = {"novel": scan_novel, "comic": scan_comic, "organized": scan_organized}[key]
+        scanner = {"novel": scan_novel, "comic": scan_comic, "organized": scan_organized,
+                   "shortDrama": scan_short_drama}[key]
         return ("singleSection", scanner(root))
 
     # 情形 2：三分区书库根
@@ -355,7 +405,7 @@ def scan_sections(root: Path):
         for section in present:
             key = next(k for k, v in SECTIONS.items() if v == section.name)
             scanner = {"novel": scan_novel, "comic": scan_comic,
-                       "organized": scan_organized}[key]
+                       "organized": scan_organized, "shortDrama": scan_short_drama}[key]
             books += scanner(section)
         for plain in dirs:
             if plain.name not in SECTIONS.values():
@@ -864,6 +914,32 @@ def main():
               str([(c.group, c.title) for c in found["别名包"].chapters]))
         check("说明文本里的示例结构能被识别",
               all(t in found for t in ["星海旅人", "短篇漫画", "深嵌套"]))
+
+
+    print("\n== O. 短剧：剧照包 + 视频包 ==")
+    dramas = {b.title: b for b in books if b.category == "shortDrama"}
+    check("短剧名文件夹各成一部（3 部）", len(dramas) == 3, str(sorted(dramas)))
+    drama = dramas.get("逆光而行")
+    if drama:
+        check("剧照包排最前（按漫画方式连排）",
+              drama.chapters[0].kind == "folder" and drama.chapters[0].title == "剧照",
+              str([(c.title, c.kind, c.group) for c in drama.chapters]))
+        check("剧照包读到 3 张图",
+              len(resolve_chapter(drama.chapters[0]).images) == 3)
+        check("视频包按集列出，组名为「视频」",
+              [c.group for c in drama.chapters[1:]] == ["视频", "视频"],
+              str([(c.group, c.title) for c in drama.chapters]))
+        check("每集都是单文件视频，可装成 av",
+              all(c.kind == "file" for c in drama.chapters[1:])
+              and len(resolve_chapter(drama.chapters[1]).av) == 1)
+    only = dramas.get("只有视频的一部")
+    check("没有剧照也能识别（只有视频）",
+          only is not None and len(only.chapters) == 1 and only.chapters[0].kind == "file",
+          str([(c.title, c.kind) for c in (only.chapters if only else [])]))
+    loose = dramas.get("散装短片")
+    check("根目录散装视频 = 一部单片",
+          loose is not None and len(loose.chapters) == 1
+          and loose.chapters[0].kind == "file", str(loose.title if loose else None))
 
     print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")
     if FAIL:

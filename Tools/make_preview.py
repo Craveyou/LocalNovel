@@ -27,8 +27,9 @@ SECTION_HINT = {
     "novel": "每本一个文件：txt / md / epub / pdf",
     "comic": "每部一个文件夹：部 → 话，图片或 pdf",
     "organized": "作者 → 章节 → 正文 + 插图 + 音视频",
+    "shortDrama": "剧名：剧照包 + 视频包（视频带大小 · 时长）",
 }
-SECTION_ICON = {"novel": "📖", "comic": "🖼", "organized": "📁"}
+SECTION_ICON = {"novel": "📖", "comic": "🖼", "organized": "📁", "shortDrama": "🎬"}
 
 
 def tidy(text: str):
@@ -190,7 +191,7 @@ def main():
              "icon": SECTION_ICON[key],
              "hint": SECTION_HINT[key],
              "books": sections[key]}
-            for key in ("novel", "comic", "organized")
+            for key in ("novel", "comic", "organized", "shortDrama")
         ]
     }
 
@@ -379,6 +380,7 @@ table.rules td:last-child{color:var(--sub)}
 └─ 银河旧事/            ← 系列
    ├─ 第一部 启程.txt
    └─ 前传/前传.txt      ← 「银河旧事 · 前传」</pre>
+      <p><b>短剧</b>：剧名/剧照（图片）+ 剧名/视频（mp4）两个包；剧照按漫画方式连排，视频行显示大小与时长。</p>
       <p><b>整理</b>：作者名/章节名/正文.txt + 按序号图片 + 音视频，始终上下滚动。</p>
       <p style="color:var(--sub)">隐藏文件、Thumbs.db、desktop.ini、放书说明.txt 不参与扫描；不认识的扩展名会在阅读页提示「已忽略」。</p>
     </div>
@@ -413,7 +415,7 @@ function seriesNames(s){
 }
 
 function bookItem(bk, index){
-  return `<button class="item ${index === b ? 'active' : ''}" data-b="${index}">${esc(bk.title)}<small>${bk.chapters.length} ${sec === 'comic' ? '话' : '章'}</small></button>`;
+  return `<button class="item ${index === b ? 'active' : ''}" data-b="${index}">${esc(bk.title)}<small>${bk.chapters.length} ${sec === 'comic' ? '话' : (sec === 'shortDrama' ? '集' : '章')}</small></button>`;
 }
 
 function renderBooks(){
@@ -574,7 +576,7 @@ function renderReader(){
   if(!bk){ $('content').innerHTML = '<div class="empty">选择一本书开始阅读</div>'; return; }
   const ch = bk.chapters[c];
   if(!ch){ $('content').innerHTML = '<div class="empty">选择一章开始阅读</div>'; return; }
-  const isComic = sec === 'comic';
+  const isComic = sec === 'comic' || (sec === 'shortDrama' && ch.images.length > 0);
   if(sec === 'novel' && PAGE_TURN && !(ch.pdfPages && ch.pdfPages.length) && ch.paragraphs.length){
     renderPaged(ch, bk);
     return;

@@ -287,8 +287,11 @@ enum ShortDramaScanner {
         let isRoot = dir.path == root.path
 
         var chapters: [Chapter] = []
+        // 当前目录自己的分组名：剧名层没有分组，往下一层才用包名
+        let ownGroup = isRoot ? [] : group + [dir.lastPathComponent]
 
         // 1) 这一层有图片 = 一个剧照包（整包一"章"，阅读时按漫画连排）
+        //    标题已经是包名，不再重复做分组
         if !images.isEmpty {
             let name = dir.lastPathComponent
             let title = isRoot
@@ -298,11 +301,11 @@ enum ShortDramaScanner {
                                     rawName: name,
                                     title: title,
                                     kind: .folder,
-                                    groupName: isRoot ? nil : group.joined(separator: " · ")))
+                                    groupName: nil))
         }
 
-        // 2) 这一层的每个视频 = 一集
-        let videoGroup = isRoot ? nil : group.joined(separator: " · ")
+        // 2) 这一层的每个视频 = 一集，分组就是它所在的包
+        let videoGroup = ownGroup.isEmpty ? nil : ownGroup.joined(separator: " · ")
         for video in videos {
             let raw = video.deletingPathExtension().lastPathComponent
             chapters.append(Chapter(folderURL: video,
@@ -313,9 +316,8 @@ enum ShortDramaScanner {
         }
 
         guard depth < maxDepth else { return chapters }
-        let nextGroup = isRoot ? group : group + [dir.lastPathComponent]
         for sub in listing.dirs {
-            chapters += collect(in: sub, root: root, depth: depth + 1, group: nextGroup,
+            chapters += collect(in: sub, root: root, depth: depth + 1, group: ownGroup,
                                 cleanTitles: cleanTitles, fileManager: fileManager)
         }
         return chapters

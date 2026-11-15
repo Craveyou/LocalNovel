@@ -217,7 +217,7 @@ struct NASSectionView: View {
                     if isConnecting { ProgressView().controlSize(.small) }
                     Text(store.status(for: connection).text)
                         .font(.footnote)
-                        .foregroundStyle(errorMessage == nil ? .secondary : .red)
+                        .foregroundStyle(errorMessage == nil ? Color.secondary : Color.red)
                 }
                 if let errorMessage {
                     Text(errorMessage)
@@ -478,7 +478,7 @@ struct NASConnectionEditor: View {
                         Label(testResult,
                               systemImage: testOK ? "checkmark.circle" : "exclamationmark.circle")
                             .font(.footnote)
-                            .foregroundStyle(testOK ? .green : .red)
+                            .foregroundStyle(testOK ? Color.green : Color.red)
                     }
                 }
 
