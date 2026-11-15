@@ -50,17 +50,60 @@ final class RemoteImageCache {
         memory.object(forKey: key(url) as NSString)
     }
 
+    /// 同时下载的张数上限：预取与可见图共用这一个池子，避免把连接数打满
+    private static let maxConcurrentDownloads = 4
+    private let limiter = AsyncLimiter(limit: RemoteImageCache.maxConcurrentDownloads)
+    /// 同一张图正在下载时，后来的请求直接等它的结果，不重复走一遍网络
+    private let lock = NSLock()
+    private var inFlight: [String: Task<UIImage?, Never>] = [:]
+
     func image(for url: URL, account: WebDAVAccount) async -> UIImage? {
         if let hit = cachedImage(for: url) { return hit }
 
+        let token = key(url)
+        lock.lock()
+        if let running = inFlight[token] {
+            lock.unlock()
+            return await running.value
+        }
+        let task = Task<UIImage?, Never> { [weak self] in
+            guard let self else { return nil }
+            return await self.load(url, account: account)
+        }
+        inFlight[token] = task
+        lock.unlock()
+
+        let image = await task.value
+
+        lock.lock()
+        inFlight[token] = nil
+        lock.unlock()
+        return image
+    }
+
+    /// 预取一组图片：已在内存里的直接跳过；其余进下载池排队（低优先级）。
+    /// 用于剧照 / 漫画往后翻的时候提前拉好，滑到下一张不用等。
+    func prefetch(_ urls: [URL], account: WebDAVAccount) {
+        for url in urls {
+            if memory.object(forKey: key(url) as NSString) != nil { continue }
+            Task(priority: .utility) { [weak self] in
+                _ = await self?.image(for: url, account: account)
+            }
+        }
+    }
+
+    private func load(_ url: URL, account: WebDAVAccount) async -> UIImage? {
         let file = folder.appendingPathComponent(digest(url.absoluteString))
         if let data = await readFile(file), let image = UIImage(data: data) {
             memory.setObject(image, forKey: key(url) as NSString)
             return image
         }
 
-        guard let data = try? await download(url, account: account),
-              let image = UIImage(data: data) else { return nil }
+        await limiter.acquire()
+        let data = try? await download(url, account: account)
+        await limiter.release()
+
+        guard let data, let image = UIImage(data: data) else { return nil }
         memory.setObject(image, forKey: key(url) as NSString)
         // 落盘与淘汰都放后台队列：翻页时不要让写盘卡住主线程
         let limit = configuredLimit
@@ -181,5 +224,35 @@ final class RemoteImageCache {
     private func digest(_ text: String) -> String {
         let hash = SHA256.hash(data: Data(text.utf8))
         return hash.map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+
+// MARK: - 并发闸门
+//
+// 一次预取会同时发起好几个请求；没有闸门的话会把 URLSession 的连接池占满，
+// 反而让屏幕上正在等的那张图排到最后。这里限制同时最多 4 个下载在飞。
+actor AsyncLimiter {
+    private var available: Int
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    init(limit: Int) {
+        available = max(1, limit)
+    }
+
+    func acquire() async {
+        if available > 0 {
+            available -= 1
+            return
+        }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func release() {
+        if waiters.isEmpty {
+            available += 1
+        } else {
+            waiters.removeFirst().resume()
+        }
     }
 }

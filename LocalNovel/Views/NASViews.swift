@@ -49,10 +49,37 @@ struct NASRootView: View {
                                     } label: {
                                         Label("删除", systemImage: "trash")
                                     }
+                                    Button {
+                                        editing = connection
+                                    } label: {
+                                        Label("编辑", systemImage: "pencil")
+                                    }
+                                    .tint(.blue)
+                                }
+                                .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                                    Button {
+                                        editing = connection
+                                    } label: {
+                                        Label("编辑", systemImage: "pencil")
+                                    }
+                                    .tint(.blue)
+                                }
+                                .contextMenu {
+                                    Button {
+                                        editing = connection
+                                    } label: {
+                                        Label("编辑连接", systemImage: "pencil")
+                                    }
+                                    Button(role: .destructive) {
+                                        pendingDelete = connection
+                                    } label: {
+                                        Label("删除连接", systemImage: "trash")
+                                    }
                                 }
                             }
                         } footer: {
-                            Text("SMB 共享请在「文件」App 里连接，再用书库的「导入书籍文件夹」加入；"
+                            Text("左滑或长按连接可编辑 / 删除；进入连接后右上角 ✏️ 也能改地址与分类目录。\n"
+                                 + "SMB 共享请在「文件」App 里连接，再用书库的「导入书籍文件夹」加入；"
                                  + "App 内直连走 WebDAV（飞牛：控制面板 → 文件共享 → WebDAV）。")
                         }
                         Color.clear.frame(height: 72).listRowBackground(Color.clear)
@@ -157,7 +184,10 @@ struct NASRootView: View {
     }
 }
 
-// MARK: - 连接下的分类入口
+// MARK: - 连接下的分类入口（呈现与书库首页完全一致）
+//
+// 书库首页的「小说 / 漫画 / 整理 / 短剧」是 CategoryCard；NAS 这里用同一个组件，
+// 只是把副标题换成飞牛上的目录路径、数量换成该目录下的部数（进入时并发数一次）。
 
 struct NASSectionView: View {
     let connection: NASConnection
@@ -166,86 +196,130 @@ struct NASSectionView: View {
     @State private var endpoint: NASStore.Endpoint?
     @State private var errorMessage: String?
     @State private var isConnecting = false
+    /// 分类目录下的部数；nil = 还没数到（连不上或正在读）
+    @State private var counts: [String: Int] = [:]
+    @State private var editing = false
+    /// 上次请求实际用的协议（https 会显示 HTTP/2，说明多路复用已生效）
+    @State private var protocolName: String?
+
+    /// 连接可能在别处被编辑过，一律读 store 里的最新值
+    private var current: NASConnection {
+        store.connections.first(where: { $0.id == connection.id }) ?? connection
+    }
 
     var body: some View {
-        List {
-            Section {
+        ScrollView {
+            VStack(spacing: 12) {
                 ForEach(NASConnection.categories) { category in
-                    if let endpoint {
-                        NavigationLink(value: NASRoute(connection: connection,
-                                                       url: store.categoryURL(category,
-                                                                              connection: connection,
-                                                                              endpoint: endpoint),
-                                                       title: category.label)) {
-                            HStack(spacing: 12) {
-                                Image(systemName: category.symbol)
-                                    .font(.title3)
-                                    .frame(width: 30)
-                                    .foregroundStyle(.tint)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(category.label).font(.headline)
-                                    Text(connection.path(for: category))
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                            .padding(.vertical, 2)
-                        }
-                    } else {
-                        HStack(spacing: 12) {
-                            Image(systemName: category.symbol)
-                                .font(.title3)
-                                .frame(width: 30)
-                                .foregroundStyle(.tertiary)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(category.label).font(.headline).foregroundStyle(.tertiary)
-                                Text(connection.path(for: category))
-                                    .font(.caption)
-                                    .foregroundStyle(.tertiary)
-                            }
-                        }
-                    }
+                    card(category)
                 }
-            } header: {
-                Text("分类（固定访问飞牛目录）")
-            } footer: {
-                Text("分类里的路径可在连接的「编辑」里改；NAS 页不含小说。")
             }
-
-            Section("连接状态") {
-                HStack(spacing: 8) {
-                    if isConnecting { ProgressView().controlSize(.small) }
-                    Text(store.status(for: connection).text)
-                        .font(.footnote)
-                        .foregroundStyle(errorMessage == nil ? Color.secondary : Color.red)
+            .padding(16)
+        }
+        .navigationTitle(current.name)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button { editing = true } label: {
+                    Label("编辑连接", systemImage: "pencil")
                 }
-                if let errorMessage {
-                    Text(errorMessage)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Button("重新判断内外网") {
-                    Task { await connect(force: true) }
-                }
-                .font(.footnote)
             }
         }
-        .navigationTitle(connection.name)
-        .navigationBarTitleDisplayMode(.inline)
+        .sheet(isPresented: $editing) {
+            NASConnectionEditor(connection: current) { saved, password in
+                store.save(saved, password: password)
+                Task { await connect(force: true) }
+            }
+        }
+        .safeAreaInset(edge: .bottom) { statusBar }
         .task { await connect() }
         .refreshable { await connect(force: true) }
     }
 
+    private func card(_ category: BookCategory) -> some View {
+        let countText = counts[category.rawValue].map { "\($0)" }
+        return Group {
+            if let endpoint {
+                NavigationLink(value: NASRoute(connection: current,
+                                               url: store.categoryURL(category,
+                                                                      connection: current,
+                                                                      endpoint: endpoint),
+                                               title: category.label)) {
+                    CategoryCard(symbol: category.symbol,
+                                 title: category.label,
+                                 subtitle: current.path(for: category),
+                                 countText: countText)
+                }
+                .buttonStyle(.plain)
+            } else {
+                CategoryCard(symbol: category.symbol,
+                             title: category.label,
+                             subtitle: isConnecting ? "正在连接…" : current.path(for: category),
+                             countText: countText,
+                             isDimmed: true)
+            }
+        }
+    }
+
+    private var statusBar: some View {
+        HStack(spacing: 8) {
+            if isConnecting { ProgressView().controlSize(.small) }
+            VStack(alignment: .leading, spacing: 1) {
+                Text(errorMessage ?? store.status(for: current).text)
+                    .font(.footnote)
+                    .foregroundStyle(errorMessage == nil ? Color.secondary : Color.red)
+                    .lineLimit(2)
+                if let protocolName {
+                    Text(protocolName)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            Spacer(minLength: 0)
+            Button("重探") { Task { await connect(force: true) } }
+                .font(.footnote)
+                .disabled(isConnecting)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(.bar)
+    }
+
+    @MainActor
     private func connect(force: Bool = false) async {
         guard !isConnecting else { return }
         isConnecting = true
         errorMessage = nil
-        let value = await store.resolve(connection, force: force)
+        let value = await store.resolve(current, force: force)
         endpoint = value
         if value == nil {
             errorMessage = store.lastError
+            counts = [:]
         }
         isConnecting = false
+        if let value { await countItems(endpoint: value) }
+        protocolName = ProtocolProbe.shared.displayName
+    }
+
+    /// 三个分类各列一层目录，取子目录数（并发，失败就留空不显示数字）
+    @MainActor
+    private func countItems(endpoint: NASStore.Endpoint) async {
+        let account = store.account(for: current)
+        var result: [String: Int] = [:]
+        await withTaskGroup(of: (String, Int?).self) { group in
+            for category in NASConnection.categories {
+                let url = store.categoryURL(category, connection: current, endpoint: endpoint)
+                group.addTask {
+                    guard let entries = try? await WebDAVClient.list(dir: url, account: account)
+                    else { return (category.rawValue, nil) }
+                    return (category.rawValue, entries.filter { $0.isDirectory }.count)
+                }
+            }
+            for await (key, value) in group {
+                if let value { result[key] = value }
+            }
+        }
+        counts = result
     }
 }
 
@@ -531,7 +605,9 @@ struct NASConnectionEditor: View {
             }
             do {
                 try await WebDAVClient.probe(base: base, account: account)
-                testResult = "\(label)可直连：\(base.absoluteString)"
+                // 顺手把实际协议带出来：https + 服务端支持时会显示 HTTP/2
+                let proto = ProtocolProbe.shared.displayName.map { "（\($0)）" } ?? ""
+                testResult = "\(label)可直连\(proto)：\(base.absoluteString)"
                 testOK = true
                 isTesting = false
                 return

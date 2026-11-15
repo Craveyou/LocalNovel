@@ -163,9 +163,25 @@ enum WebDAVClient {
         request.setValue("Basic \(token)", forHTTPHeaderField: "Authorization")
     }
 
+    /// 全工程共用一条会话：https 时由系统按 ALPN 自动协商 HTTP/2（单连接多路复用），
+    /// http 时退回 HTTP/1.1 keep-alive + 最多 4 条并发连接。
+    static let session: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 12
+        config.timeoutIntervalForResource = 60
+        config.httpMaximumConnectionsPerHost = 4
+        config.requestCachePolicy = .reloadIgnoringLocalCacheData
+        return URLSession(configuration: config,
+                          delegate: ProtocolProbe.shared,
+                          delegateQueue: nil)
+    }()
+
+    /// 上一次请求实际用的协议：h2 / h3 表示多路复用已生效
+    static var lastProtocolName: String? { ProtocolProbe.shared.lastProtocol }
+
     private static func send(_ request: URLRequest) async throws -> (Data, URLResponse) {
         do {
-            return try await URLSession.shared.data(for: request)
+            return try await session.data(for: request)
         } catch {
             throw WebDAVError.unreachable
         }
@@ -175,6 +191,41 @@ enum WebDAVClient {
         var path = url.path
         while path.count > 1 && path.hasSuffix("/") { path.removeLast() }
         return path.removingPercentEncoding ?? path
+    }
+}
+
+// MARK: - 协议探测（判断 https 下有没有真的走 HTTP/2）
+
+final class ProtocolProbe: NSObject, URLSessionTaskDelegate {
+    static let shared = ProtocolProbe()
+
+    private let lock = NSLock()
+    private var value: String?
+
+    var lastProtocol: String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+
+    /// 「h2」→「HTTP/2（多路复用）」；没有协议名（缓存命中 / 失败）时保持原值
+    var displayName: String? {
+        guard let value else { return nil }
+        switch value {
+        case "h2", "h2c": return "HTTP/2（多路复用）"
+        case "h3", "h3-29": return "HTTP/3（多路复用）"
+        case "http/1.1": return "HTTP/1.1"
+        default: return value
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    didFinishCollecting metrics: URLSessionTaskMetrics) {
+        guard let name = metrics.transactionMetrics.last?.networkProtocolName,
+              !name.isEmpty else { return }
+        lock.lock()
+        value = name
+        lock.unlock()
     }
 }
 

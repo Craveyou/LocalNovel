@@ -349,8 +349,8 @@ def main():
           and "DocumentsBootstrap.guideFileName" in resolver)
     check("切回前台补写说明文件", "DocumentsBootstrap.ensureVisibleInFilesApp()" in store)
     check("版本号提升以刷新系统元数据",
-          "<string>2.2</string>" in plist and "CURRENT_PROJECT_VERSION = 1" in pbx
-          and "MARKETING_VERSION = 2.2" in pbx)
+          "<string>2.3</string>" in plist and "CURRENT_PROJECT_VERSION = 1" in pbx
+          and "MARKETING_VERSION = 2.3" in pbx)
     check("UI 给出「文件 App 搜索本地小说」兜底路径",
           "搜索框搜「本地小说」" in welcome and "搜索「本地小说」" in store)
     check("AppIcon asset catalog（1024 + Contents.json）",
@@ -697,8 +697,8 @@ def main():
     check("文档正文含双格式包一节",
           "### 5. 同一部书按格式分成两个包（PDF 包 + 图片包）"
           in (ROOT / "Docs" / "漫画目录结构说明.md").read_text(encoding="utf-8"))
-    check("版本升到 2.2 / build 1",
-          "<string>2.2</string>" in plist and "<key>CFBundleVersion</key>\n\t<string>1</string>" in plist)
+    check("版本升到 2.3 / build 1",
+          "<string>2.3</string>" in plist and "<key>CFBundleVersion</key>\n\t<string>1</string>" in plist)
 
 
     print("\n== N. 本轮：底部三页 / 短剧 / NAS 连接 ==")
@@ -795,6 +795,50 @@ def main():
           and "let target = folder" in cache and "try? payload.write(to: target" in cache)
     check("上限为 0 时不自动删（不限制）",
           "guard limit > 0 else { return measure(folder: folder) }" in cache)
+
+    print("\n== Q. 本轮：连接编辑 / NAS 分类卡片 / 预取与 HTTP/2 ==")
+    card = (APP / "Views" / "CategoryCard.swift").read_text(encoding="utf-8")
+
+    check("书库与 NAS 的「大类入口」共用同一个卡片组件",
+          "struct CategoryCard: View" in card
+          and "CategoryCard(symbol: category.symbol" in sidebar
+          and nas_views.count("CategoryCard(symbol: category.symbol") == 2)
+    check("NAS 三个分类与书库同样是卡片列表（不再是 List 行）",
+          "ForEach(NASConnection.categories) { category in" in nas_views
+          and "private func card(_ category: BookCategory) -> some View" in nas_views
+          and "VStack(spacing: 12)" in nas_views
+          and "padding(16)" in nas_views)
+    check("卡片右侧显示该目录下的部数（进入时并发数一次）",
+          "private func countItems(endpoint: NASStore.Endpoint) async" in nas_views
+          and "withTaskGroup(of: (String, Int?).self)" in nas_views
+          and "entries.filter { $0.isDirectory }.count" in nas_views)
+    check("连接可以编辑：左滑 / 长按 / 分类页右上角",
+          'Label("编辑", systemImage: "pencil")' in nas_views
+          and "contextMenu" in nas_views
+          and 'Button { editing = true } label:' in nas_views)
+    check("编辑后连接信息取 store 最新值并重新探测",
+          "store.connections.first(where: { $0.id == connection.id })" in nas_views
+          and "store.save(saved, password: password)" in nas_views
+          and "await connect(force: true)" in nas_views)
+    check("预取：前后各两张，命中内存直接跳过",
+          "for offset in [-2, -1, 1, 2]" in media_views
+          and "RemoteImageCache.shared.prefetch(urls, account: account)" in media_views
+          and "func prefetch(_ urls: [URL], account: WebDAVAccount)" in cache
+          and "if memory.object(forKey: key(url) as NSString) != nil { continue }" in cache)
+    check("下载并发闸门 4 个，同一张图不重复下载",
+          "private static let maxConcurrentDownloads = 4" in cache
+          and "actor AsyncLimiter" in cache
+          and "await limiter.acquire()" in cache
+          and "if let running = inFlight[token]" in cache)
+    check("URLSession 限 4 条连接/host，https 由系统协商 HTTP/2",
+          "config.httpMaximumConnectionsPerHost = 4" in dav
+          and "static let session: URLSession" in dav
+          and "return try await session.data(for: request)" in dav)
+    check("能显示当前实际协议（验证多路复用是否生效）",
+          "final class ProtocolProbe: NSObject, URLSessionTaskDelegate" in dav
+          and "networkProtocolName" in dav
+          and "HTTP/2（多路复用）" in dav
+          and "ProtocolProbe.shared.displayName" in nas_views)
 
     print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")
     if FAIL:

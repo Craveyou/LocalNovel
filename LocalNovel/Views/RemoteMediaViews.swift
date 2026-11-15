@@ -72,9 +72,11 @@ struct RemoteImageSequenceView: View {
         GeometryReader { geo in
             ScrollView {
                 LazyVStack(spacing: 0) {
-                    ForEach(entries) { entry in
-                        RemoteImage(url: entry.url, account: account)
+                    ForEach(entries.indices, id: \.self) { index in
+                        RemoteImage(url: entries[index].url, account: account)
                             .frame(width: geo.size.width)
+                            // 滑到这张就顺手把前后各两张拉进缓存（共 4 个并发，见 RemoteImageCache）
+                            .onAppear { prefetch(around: index) }
                     }
                     Text("共 \(entries.count) 张")
                         .font(.caption)
@@ -89,6 +91,20 @@ struct RemoteImageSequenceView: View {
         .background(Color.black.opacity(0.02))
         .onAppear { ReadingChrome.shared.enter() }
         .onDisappear { ReadingChrome.shared.leave() }
+    }
+
+    /// 预取前后各两张：往前翻、往后翻都不用等
+    private func prefetch(around index: Int) {
+        guard !entries.isEmpty else { return }
+        var urls: [URL] = []
+        for offset in [-2, -1, 1, 2] {
+            let target = index + offset
+            if target >= 0, target < entries.count, target != index {
+                urls.append(entries[target].url)
+            }
+        }
+        guard !urls.isEmpty else { return }
+        RemoteImageCache.shared.prefetch(urls, account: account)
     }
 }
 

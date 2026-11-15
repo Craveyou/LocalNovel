@@ -173,43 +173,18 @@ struct LibrarySidebar: View {
         }
     }
 
+    /// 卡片视觉抽到 CategoryCard，与 NAS 页共用同一套
     private func sectionCard(_ category: BookCategory) -> some View {
-        let count = library.count(in: category)
-        return Button {
+        Button {
             withAnimation(.easeOut(duration: 0.18)) {
                 openedSection = category
                 openedSeries = nil
             }
         } label: {
-            HStack(spacing: 14) {
-                Image(systemName: category.symbol)
-                    .font(.title2)
-                    .foregroundStyle(.tint)
-                    .frame(width: 46, height: 46)
-                    .background(.tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(category.label)
-                        .font(.headline)
-                        .foregroundStyle(.primary)
-                    Text(category.hint)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer(minLength: 8)
-                Text("\(count)")
-                    .font(.title3.monospacedDigit())
-                    .foregroundStyle(count == 0 ? Color.secondary : Color.primary)
-                Image(systemName: "chevron.right")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.tertiary)
-            }
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 14))
-            .contentShape(RoundedRectangle(cornerRadius: 14))
+            CategoryCard(symbol: category.symbol,
+                         title: category.label,
+                         subtitle: category.hint,
+                         countText: "\(library.count(in: category))")
         }
         .buttonStyle(.plain)
     }
