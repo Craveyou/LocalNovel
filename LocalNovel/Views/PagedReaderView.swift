@@ -138,11 +138,12 @@ final class PageTurnController: UIViewController {
     // MARK: 输入
 
     func apply(_ new: PagedReaderInput) {
+        let chapterChanged = input?.chapterId != new.chapterId
         input = new
         if new.signature != signature {
             signature = new.signature
-            // 换章 / 改字号 / 改行距：按进度锚点重新定位
-            didRestore = false
+            // 换章：按这本书的进度锚点定位；同章内改字号 / 行距：留在当前这段
+            didRestore = !chapterChanged && !pages.isEmpty
             needsRebuild = true
             rebuildIfNeeded()
         }
