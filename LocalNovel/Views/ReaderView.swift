@@ -124,6 +124,11 @@ struct ReaderView: View {
         // 在 iOS 27 的分栏布局里会被 detail 的导航栏更新覆盖掉（表现就是读书时标签栏还在）。
         // 视图存在即隐藏、退出自动恢复，不再依赖 ReadingChrome 的时序。
         .toolbar(.hidden, for: .tabBar)
+        // 分栏布局下上面的声明可能被外层覆盖：直接压住宿主 UITabBarController
+        .background {
+            TabBarAutoHide()
+                .allowsHitTesting(false)
+        }
         .toolbar {
             // 只有「读文字」的章节才需要编码开关
             if showsEncodingMenu {
@@ -147,6 +152,9 @@ struct ReaderView: View {
         .onAppear { ReadingChrome.shared.enter() }
         .onDisappear {
             ReadingChrome.shared.leave()
+            // 兜底隐藏是在布局阶段强制设置的，退出阅读时显式还原一次，
+            // 避免 representable 销毁顺序不同导致标签栏一直不回来
+            TabBarVisibility.setHidden(false, animated: false)
             ProgressStore.shared.flushAnchors()
         }
     }
@@ -309,7 +317,7 @@ struct ReaderView: View {
 
     private var usePaging: Bool {
         category == .novel
-            && prefs.pageTurn == .page
+            && prefs.pageTurn.isPaged
             && content.pdfURL == nil
             && !paragraphs.isEmpty
     }
@@ -338,7 +346,8 @@ struct ReaderView: View {
                                     hasNextChapter: nextChapter != nil,
                                     nextTitle: nextChapter?.displayTitle ?? "",
                                     isComic: isComic,
-                                    boostRate: prefs.longPressRate),
+                                    boostRate: prefs.longPressRate,
+                                    style: prefs.pageTurn.flipStyle),
             onProgress: { paragraph in
                 ProgressStore.shared.noteAnchor("blk-p\(paragraph)", for: chapter.id)
             },

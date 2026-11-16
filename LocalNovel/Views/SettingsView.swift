@@ -36,9 +36,7 @@ struct SettingsView: View {
                         }
                     }
                     .pickerStyle(.segmented)
-                    Text(prefs.pageTurn == .page
-                         ? "左右翻页：仿真翻页动画，点屏幕左 / 右侧翻页，底部显示页码。含插图的章节里，插图与音视频各占一页。"
-                         : "上下滚动：传统连续滚动，段落流畅衔接。")
+                    Text(prefs.pageTurn.detail)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                     Text("这一项只影响「小说」分区。「整理」是图文混排、「漫画」是满宽连排，两者始终上下滚动。")

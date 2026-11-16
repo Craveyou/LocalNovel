@@ -3,21 +3,28 @@ import UIKit
 import Foundation
 import CoreText
 
-// MARK: - 翻页阅读器（左右翻页 / 仿真翻页）
+// MARK: - 分页阅读器（仿真卷曲 / 滑动翻页）
 //
 // 结构：
 //   PagedReaderView（SwiftUI 入口）
-//     └ PageTurnController（容器：UIPageViewController.pageCurl + 底部页码）
-//         ├ TextPageController（CoreText 绘制一页文字，与分页测量同一套引擎）
-//         ├ ImagePageView / MediaPageView（插图、音视频各占一页）
-//         └ FooterPageView（章末：下一章 / 已是最后一章）
+//     └ PagedBaseController（公共：分页、定位、页码、点击翻页）
+//         ├ CurlPageController   —— UIPageViewController.pageCurl，纸张卷起
+//         └ SlidePageController  —— UIScrollView 分页，整页跟手横移 + 页边阴影
 //
-// 三条约束：
-// 1) 分页在「容器拿到真实尺寸后」做，尺寸与绘制区域是同一个 rect，
-//    否则会出现文字超出页底、末行被切。
-// 2) 阅读记忆沿用段落锚点 blk-pN，与滚动模式共用，切换模式不丢位置。
-// 3) 翻页回调不写 UserDefaults（走 ProgressStore.noteAnchor 去抖），
-//    也不改任何 SwiftUI @State，避免翻页时整页重算。
+// 两套引擎共用同一份排版与页面构建，切换只换「怎么呈现」：
+//   · 分页仍然用 CoreText 测量，绘制与测量同一个 rect，不会出现末行被切；
+//   · 阅读记忆沿用段落锚点 blk-pN，与滚动模式互通；
+//   · 整章只保留一份 attributed，页面控制器按窗口装载，大文件不会把内存吃满。
+//
+// 定位规则（两处「跳到最后一页」的历史坑都在这）：
+// 1) 只有在用户真正翻过页之后，才用「当前页」反推段落保持位置；
+//    在这之前一直用传入的记忆段落。首帧尺寸不稳定时反复 rebuild 也不会把位置挤走。
+// 2) 记忆段落在偏移前先按本章段落数收敛，越界值不再落到「最后一个「起始段落 ≤ 目标」的页」。
+
+enum PageFlipStyle: Equatable {
+    case curl
+    case slide
+}
 
 struct PagedReaderInput {
     let chapterId: String
@@ -31,6 +38,7 @@ struct PagedReaderInput {
     let nextTitle: String
     let isComic: Bool
     let boostRate: Double
+    let style: PageFlipStyle
 
     /// 只有影响排版的参数变化才重建；restoreParagraph 故意不参与。
     /// 用 O(1) 的指纹（段数 + 首末段长度），不再遍历全部段落算总长：
@@ -39,7 +47,7 @@ struct PagedReaderInput {
         let head = paragraphs.first?.utf16.count ?? 0
         let tail = paragraphs.last?.utf16.count ?? 0
         return "\(chapterId)|\(paragraphs.count)|\(head)|\(tail)|\(fontSize)|\(lineSpacing)"
-            + "|\(images.count)|\(avMedia.count)|\(hasNextChapter)"
+            + "|\(images.count)|\(avMedia.count)|\(hasNextChapter)|\(style == .curl ? "curl" : "slide")"
     }
 }
 
@@ -56,63 +64,62 @@ struct PagedReaderView: UIViewControllerRepresentable {
     let onTapMedia: (MediaItem) -> Void
     let onOpenNext: () -> Void
 
-    func makeUIViewController(context: Context) -> PageTurnController {
-        let controller = PageTurnController()
+    func makeUIViewController(context: Context) -> PagedBaseController {
+        // 两种引擎都继承 PagedBaseController，SwiftUI 侧不必感知差异。
+        // 切换阅读方式时 ReaderView 用 .id(pageTurn) 强制重建，所以这里不会中途换类型。
+        let controller: PagedBaseController = input.style == .curl
+            ? CurlPageController()
+            : SlidePageController()
         wire(controller)
         controller.apply(input)
         return controller
     }
 
-    func updateUIViewController(_ controller: PageTurnController, context: Context) {
+    func updateUIViewController(_ controller: PagedBaseController, context: Context) {
         wire(controller)
         controller.apply(input)
     }
 
-    private func wire(_ controller: PageTurnController) {
+    private func wire(_ controller: PagedBaseController) {
         controller.onProgress = onProgress
         controller.onTapMedia = onTapMedia
         controller.onOpenNext = onOpenNext
     }
 }
 
-// MARK: - 容器
+// MARK: - 公共容器
 
-final class PageTurnController: UIViewController {
+class PagedBaseController: UIViewController {
     var onProgress: ((Int) -> Void)?
     var onTapMedia: ((MediaItem) -> Void)?
     var onOpenNext: (() -> Void)?
 
-    private let pager = UIPageViewController(transitionStyle: .pageCurl,
-                                             navigationOrientation: .horizontal,
-                                             options: nil)
-    private let pageLabel = UILabel()
+    private(set) var input: PagedReaderInput?
+    private(set) var pages: [ReaderPage] = []
+    private(set) var slices: [ReaderPageSlice] = []
+    private(set) var currentIndex = 0
+    /// 整章唯一的排版文本：所有文字页共用这一份，不再每页各建一份全文
+    private(set) var measureAttributed: NSAttributedString?
 
-    private var input: PagedReaderInput?
-    private var pages: [ReaderPage] = []
-    private var slices: [ReaderPageSlice] = []
-    private var built: [UIViewController?] = []
-    /// 全章唯一的排版文本：所有文字页共用这一份，不再每页各建一份全文
-    private var measureAttributed: NSAttributedString?
-    private var currentIndex = 0
-    private var didRestore = false
-    private var needsRebuild = true
     private var signature = ""
     private var contentSize: CGSize = .zero
+    private var needsRebuild = true
+    /// 记忆段落：用户翻页之前，每次 rebuild 都用它定位
+    private var restoreParagraph = 0
+    /// 用户是否已在本章内主动翻页（翻过之后才改为「保持当前页」）
+    private var didNavigate = false
+    private let pageLabel = UILabel()
+
+    // MARK: 子类扩展点
+
+    /// 把第 index 页显示出来
+    func presentPage(at index: Int, animated: Bool) { _ = animated }
+    /// 页面数组重建完成（子类在这里重排自己的容器）
+    func didRebuildPages() {}
 
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .systemBackground
-        pager.isDoubleSided = false
-        pager.dataSource = self
-        pager.delegate = self
-        pager.view.backgroundColor = .systemBackground
-        pager.view.clipsToBounds = true
-
-        addChild(pager)
-        pager.view.frame = view.bounds
-        pager.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        view.addSubview(pager.view)
-        pager.didMove(toParent: self)
 
         pageLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
         pageLabel.textColor = .secondaryLabel
@@ -122,13 +129,13 @@ final class PageTurnController: UIViewController {
         NSLayoutConstraint.activate([
             pageLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             pageLabel.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor,
-                                              constant: -8)
+                                             constant: -8)
         ])
 
         let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
         tap.delegate = self
         tap.cancelsTouchesInView = false
-        pager.view.addGestureRecognizer(tap)
+        view.addGestureRecognizer(tap)
     }
 
     override func viewDidLayoutSubviews() {
@@ -144,11 +151,13 @@ final class PageTurnController: UIViewController {
 
     func apply(_ new: PagedReaderInput) {
         let chapterChanged = input?.chapterId != new.chapterId
+        if chapterChanged {
+            restoreParagraph = max(0, new.restoreParagraph)
+            didNavigate = false
+        }
         input = new
         if new.signature != signature {
             signature = new.signature
-            // 换章：按这本书的进度锚点定位；同章内改字号 / 行距：留在当前这段
-            didRestore = !chapterChanged && !pages.isEmpty
             needsRebuild = true
             rebuildIfNeeded()
         }
@@ -164,8 +173,7 @@ final class PageTurnController: UIViewController {
     }
 
     private func rebuildIfNeeded() {
-        guard needsRebuild else { return }
-        guard input != nil else { return }
+        guard needsRebuild, input != nil else { return }
         let rect = contentRect
         guard rect.width > 40, rect.height > 60 else { return }
         needsRebuild = false
@@ -174,7 +182,6 @@ final class PageTurnController: UIViewController {
 
     private func rebuild(_ rect: CGRect) {
         guard let input else { return }
-        let keepParagraph = nearestParagraph(at: currentIndex)
 
         // 整章只建一份 attributed：分页测量与逐页绘制共用，内存从「页数 × 全文」降到「1 × 全文」
         let attributed = TextPaginator.attributed(paragraphs: input.paragraphs,
@@ -191,45 +198,77 @@ final class PageTurnController: UIViewController {
         for item in input.images { list.append(.image(item)) }
         for item in input.avMedia { list.append(.av(item)) }
         list.append(.footer)
-
         pages = list
-        built = Array<UIViewController?>(repeating: nil, count: list.count)
 
-        let target: Int
-        if didRestore {
-            target = TextPaginator.pageIndex(forParagraph: keepParagraph, in: slices)
-        } else {
-            target = TextPaginator.pageIndex(forParagraph: input.restoreParagraph, in: slices)
-            didRestore = true
-        }
+        // 定位：用户没翻过页 → 永远用记忆段落（尺寸变化不会把位置挤走）；
+        // 翻过页 → 用当前页所在段落，字号 / 行距变化时原地不动。
+        let anchor = didNavigate ? nearestParagraph(at: currentIndex) : restoreParagraph
+        let target = TextPaginator.pageIndex(forParagraph: clampedParagraph(anchor), in: slices)
         currentIndex = min(max(target, 0), max(pages.count - 1, 0))
-        showCurrent(animated: false)
+
+        didRebuildPages()
         updateLabel()
     }
 
-    private func showCurrent(animated: Bool) {
-        guard currentIndex >= 0, currentIndex < pages.count else { return }
-        pager.setViewControllers([controller(at: currentIndex)],
-                                 direction: .forward,
-                                 animated: animated)
-        trimBuilt(around: currentIndex)
+    private func clampedParagraph(_ value: Int) -> Int {
+        let count = input?.paragraphs.count ?? 0
+        guard count > 0 else { return 0 }
+        return min(max(value, 0), count - 1)
     }
 
-    /// 只保留当前页前后各 2 页的控制器：页越多常驻的视图越多，大文件会把内存吃满。
-    /// 被释放的页需要时由 `controller(at:)` 重建，正文页共用同一份 attributed，重建很轻。
-    private func trimBuilt(around index: Int) {
-        guard !built.isEmpty else { return }
-        for i in built.indices where abs(i - index) > 2 {
-            built[i] = nil
+    // MARK: 翻页
+
+    /// 子类翻页后回调：把当前页同步到基类
+    func adopt(_ index: Int) {
+        guard index >= 0, index < pages.count else { return }
+        currentIndex = index
+        didNavigate = true
+        afterPageChange()
+    }
+
+    func move(by delta: Int) {
+        let target = min(max(currentIndex + delta, 0), max(pages.count - 1, 0))
+        guard target != currentIndex else { return }
+        currentIndex = target
+        didNavigate = true
+        presentPage(at: target, animated: true)
+        afterPageChange()
+    }
+
+    @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
+        let x = gesture.location(in: view).x
+        let width = max(view.bounds.width, 1)
+        if x < width * 0.28 {
+            move(by: -1)
+        } else if x > width * 0.72 {
+            move(by: 1)
         }
+    }
+
+    private func afterPageChange() {
+        updateLabel()
+        // 非文字页（插图 / 音视频 / 章末）不写锚点，避免把进度污染成「最后一段」
+        if let paragraph = currentParagraph { onProgress?(paragraph) }
+    }
+
+    func updateLabel() {
+        guard !pages.isEmpty else {
+            pageLabel.text = ""
+            return
+        }
+        pageLabel.text = TextPaginator.progressText(page: currentIndex, total: pages.count)
+    }
+
+    /// 拖动过程中按滚动偏移实时显示页码（松手后再校准）
+    func previewLabel(page: Int) {
+        guard !pages.isEmpty else { return }
+        pageLabel.text = TextPaginator.progressText(page: page, total: pages.count)
     }
 
     /// 当前页对应的段落；插图 / 音视频 / 章末页不产生段落锚点。
     ///
     /// 必须按 `pages` 取，不能拿 `currentIndex` 去索引 `slices`：`pages` 比 `slices`
-    /// 多出插图、音视频和章末页，两者下标并不对应。此前用 `min(currentIndex, count-1)`
-    /// 收敛，翻到正文之后的任意一页都会把锚点记成「最后一段」，
-    /// 下次进这一章就定位到最后一页（问题就出在这里）。
+    /// 多出插图、音视频和章末页，两者下标并不对应。
     private var currentParagraph: Int? {
         guard currentIndex >= 0, currentIndex < pages.count else { return nil }
         if case .text(let slice) = pages[currentIndex] { return slice.paragraph }
@@ -237,8 +276,8 @@ final class PageTurnController: UIViewController {
     }
 
     /// 从指定页往前找最近一个文字页的段落；用于换字号 / 换行距时保持位置
-    private func nearestParagraph(at index: Int) -> Int {
-        guard !pages.isEmpty else { return 0 }
+    func nearestParagraph(at index: Int) -> Int {
+        guard !pages.isEmpty else { return restoreParagraph }
         var i = min(max(index, 0), pages.count - 1)
         while i >= 0 {
             if case .text(let slice) = pages[i] { return slice.paragraph }
@@ -249,8 +288,8 @@ final class PageTurnController: UIViewController {
 
     // MARK: 页面构建
 
-    private func controller(at index: Int) -> UIViewController {
-        if index >= 0, index < built.count, let cached = built[index] { return cached }
+    /// 按页码新建页面控制器（不缓存：由子类按自己的窗口策略决定生命周期）
+    func makeController(at index: Int) -> UIViewController {
         guard index >= 0, index < pages.count else { return UIViewController() }
 
         let vc: UIViewController
@@ -279,9 +318,8 @@ final class PageTurnController: UIViewController {
                                         onOpenNext: { [weak self] in self?.onOpenNext?() }))
         }
         vc.view.backgroundColor = .systemBackground
-        // 用 tag 记住页码：页缓存会被淘汰，翻页数据源仍要能认出这一页是第几页
+        // 用 tag 记住页码：容器淘汰页面后仍要能认出它是第几页
         vc.view.tag = index + 1
-        if index < built.count { built[index] = vc }
         return vc
     }
 
@@ -290,59 +328,11 @@ final class PageTurnController: UIViewController {
         controller.view.backgroundColor = .systemBackground
         return controller
     }
-
-    private func index(of controller: UIViewController) -> Int? {
-        if let cached = built.firstIndex(where: { $0 === controller }) { return cached }
-        // 缓存淘汰后靠 tag 反查（设置时是 index + 1，用 0 表示「未登记」）
-        let index = controller.view.tag - 1
-        guard index >= 0, index < pages.count else { return nil }
-        return index
-    }
-
-    // MARK: 翻页
-
-    private func goForward() {
-        guard currentIndex + 1 < pages.count else { return }
-        currentIndex += 1
-        showCurrent(animated: true)
-        afterPageChange()
-    }
-
-    private func goBackward() {
-        guard currentIndex > 0 else { return }
-        currentIndex -= 1
-        showCurrent(animated: true)
-        afterPageChange()
-    }
-
-    @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
-        let x = gesture.location(in: view).x
-        let width = max(view.bounds.width, 1)
-        if x < width * 0.28 {
-            goBackward()
-        } else if x > width * 0.72 {
-            goForward()
-        }
-    }
-
-    private func afterPageChange() {
-        updateLabel()
-        // 非文字页（插图 / 音视频 / 章末）不写锚点，避免把进度污染成「最后一段」
-        if let paragraph = currentParagraph { onProgress?(paragraph) }
-    }
-
-    private func updateLabel() {
-        guard !pages.isEmpty else {
-            pageLabel.text = ""
-            return
-        }
-        pageLabel.text = TextPaginator.progressText(page: currentIndex, total: pages.count)
-    }
 }
 
-// MARK: - 翻页手势 / 数据源
+// MARK: - 点击手势
 
-extension PageTurnController: UIGestureRecognizerDelegate {
+extension PagedBaseController: UIGestureRecognizerDelegate {
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                            shouldReceive touch: UITouch) -> Bool {
         // 只在文字页接收点击翻页；图片页要留给「点开全屏」，章末页要留给按钮
@@ -352,7 +342,71 @@ extension PageTurnController: UIGestureRecognizerDelegate {
     }
 }
 
-extension PageTurnController: UIPageViewControllerDataSource {
+// MARK: - 仿真卷曲
+
+final class CurlPageController: PagedBaseController {
+    private let pager = UIPageViewController(transitionStyle: .pageCurl,
+                                             navigationOrientation: .horizontal,
+                                             options: nil)
+    /// 卷曲引擎需要数据源随时取相邻页，这里保留一个小窗口的缓存
+    private var cache: [Int: UIViewController] = [:]
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        pager.isDoubleSided = false
+        pager.dataSource = self
+        pager.delegate = self
+        pager.view.backgroundColor = .systemBackground
+        pager.view.clipsToBounds = true
+
+        addChild(pager)
+        pager.view.frame = view.bounds
+        pager.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        // 页码在最上层：插到 index 0，别盖住 label
+        view.insertSubview(pager.view, at: 0)
+        pager.didMove(toParent: self)
+    }
+
+    override func didRebuildPages() {
+        cache.removeAll()
+        show(index: currentIndex, animated: false)
+    }
+
+    override func presentPage(at index: Int, animated: Bool) {
+        show(index: index, animated: animated)
+    }
+
+    private func show(index: Int, animated: Bool) {
+        guard index >= 0, index < pages.count else { return }
+        pager.setViewControllers([controller(at: index)],
+                                 direction: .forward,
+                                 animated: animated)
+        trimCache(around: index)
+    }
+
+    private func controller(at index: Int) -> UIViewController {
+        if let cached = cache[index] { return cached }
+        let vc = makeController(at: index)
+        cache[index] = vc
+        return vc
+    }
+
+    /// 只保留当前页前后各两页：卷曲动画需要相邻页，但不必常驻整章
+    private func trimCache(around index: Int) {
+        for key in cache.keys where abs(key - index) > 2 {
+            cache[key] = nil
+        }
+    }
+
+    private func index(of controller: UIViewController) -> Int? {
+        if let hit = cache.first(where: { $0.value === controller }) { return hit.key }
+        let index = controller.view.tag - 1
+        guard index >= 0, index < pages.count else { return nil }
+        return index
+    }
+}
+
+extension CurlPageController: UIPageViewControllerDataSource {
     func pageViewController(_ pageViewController: UIPageViewController,
                             viewControllerBefore viewController: UIViewController) -> UIViewController? {
         guard let position = index(of: viewController), position > 0 else { return nil }
@@ -366,7 +420,7 @@ extension PageTurnController: UIPageViewControllerDataSource {
     }
 }
 
-extension PageTurnController: UIPageViewControllerDelegate {
+extension CurlPageController: UIPageViewControllerDelegate {
     func pageViewController(_ pageViewController: UIPageViewController,
                             didFinishAnimating finished: Bool,
                             previousViewControllers: [UIViewController],
@@ -374,8 +428,218 @@ extension PageTurnController: UIPageViewControllerDelegate {
         guard completed,
               let current = pageViewController.viewControllers?.first,
               let position = index(of: current) else { return }
-        currentIndex = position
-        afterPageChange()
+        adopt(position)
+    }
+}
+
+// MARK: - 滑动翻页
+
+/// 整页跟手横移：UIScrollView 分页 + 页边阴影。
+///
+/// 与卷曲引擎的区别只在呈现层，分页 / 定位 / 锚点全部复用基类，
+/// 所以两种模式之间切换不会丢阅读位置。
+final class SlidePageController: PagedBaseController {
+    private let scroller = UIScrollView()
+    private var hosts: [Int: PageHost] = [:]
+    private var pageWidth: CGFloat = 0
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        scroller.isPagingEnabled = true
+        scroller.alwaysBounceHorizontal = true
+        scroller.showsHorizontalScrollIndicator = false
+        scroller.contentInsetAdjustmentBehavior = .never
+        scroller.delegate = self
+        scroller.backgroundColor = .systemBackground
+        scroller.frame = view.bounds
+        scroller.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        view.insertSubview(scroller, at: 0)
+    }
+
+    override func viewDidLayoutSubviews() {
+        // 基类在这里触发分页（首次拿到真实尺寸后才算）
+        super.viewDidLayoutSubviews()
+
+        scroller.frame = view.bounds
+        let width = max(view.bounds.width, 1)
+        let height = max(view.bounds.height, 1)
+        let widthChanged = abs(width - pageWidth) > 0.5
+        pageWidth = width
+
+        guard !pages.isEmpty else {
+            scroller.contentSize = view.bounds.size
+            return
+        }
+        scroller.contentSize = CGSize(width: width * CGFloat(pages.count), height: height)
+        for (index, host) in hosts {
+            host.frame = CGRect(x: CGFloat(index) * width, y: 0, width: width, height: height)
+        }
+        if widthChanged {
+            jump(to: currentIndex)
+            load(around: currentIndex)
+        }
+    }
+
+    override func didRebuildPages() {
+        hosts.values.forEach { detach($0) }
+        hosts.removeAll()
+        let width = max(view.bounds.width, 1)
+        let height = max(view.bounds.height, 1)
+        pageWidth = width
+        scroller.contentSize = CGSize(width: width * CGFloat(max(pages.count, 1)), height: height)
+        jump(to: currentIndex)
+        load(around: currentIndex)
+        updateLabel()
+    }
+
+    override func presentPage(at index: Int, animated: Bool) {
+        guard index >= 0, index < pages.count else { return }
+        load(around: index)
+        scroller.setContentOffset(CGPoint(x: CGFloat(index) * pageWidth, y: 0),
+                                  animated: animated)
+        if !animated { updateLabel() }
+    }
+
+    private func jump(to index: Int) {
+        guard index >= 0, index < pages.count, pageWidth > 0 else { return }
+        scroller.setContentOffset(CGPoint(x: CGFloat(index) * pageWidth, y: 0), animated: false)
+    }
+
+    // MARK: 页面窗口化
+
+    /// 只装载当前页前后各一页：整章几百页全建出来会直接吃掉几百 MB
+    private func load(around index: Int) {
+        guard !pages.isEmpty else { return }
+        let center = min(max(index, 0), pages.count - 1)
+        let lower = max(0, center - 1)
+        let upper = min(pages.count - 1, center + 1)
+        guard lower <= upper else { return }
+        for i in lower...upper { ensureHost(i) }
+        evict(except: lower...upper)
+    }
+
+    private func ensureHost(_ index: Int) {
+        guard index >= 0, index < pages.count, hosts[index] == nil else { return }
+        let host = PageHost(index: index)
+        host.frame = CGRect(x: CGFloat(index) * pageWidth,
+                            y: 0,
+                            width: pageWidth,
+                            height: max(view.bounds.height, 1))
+        host.backgroundColor = .systemBackground
+
+        let vc = makeController(at: index)
+        addChild(vc)
+        vc.view.frame = host.bounds
+        vc.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        host.addSubview(vc.view)
+        vc.didMove(toParent: self)
+        host.child = vc
+        host.installEdgeShadows()
+
+        scroller.addSubview(host)
+        hosts[index] = host
+    }
+
+    private func evict(except range: ClosedRange<Int>) {
+        for (index, host) in hosts where !range.contains(index) {
+            detach(host)
+            hosts[index] = nil
+        }
+    }
+
+    private func detach(_ host: PageHost) {
+        if let child = host.child {
+            child.willMove(toParent: nil)
+            child.view.removeFromSuperview()
+            child.removeFromParent()
+            host.child = nil
+        }
+        host.removeFromSuperview()
+    }
+
+    private func indexFromOffset() -> Int {
+        guard pageWidth > 0 else { return 0 }
+        let raw = (scroller.contentOffset.x / pageWidth).rounded()
+        return min(max(Int(raw), 0), max(pages.count - 1, 0))
+    }
+}
+
+extension SlidePageController: UIScrollViewDelegate {
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        guard pageWidth > 0, !pages.isEmpty else { return }
+        let index = indexFromOffset()
+        load(around: index)
+        // 拖动 / 减速中实时显示页码，松手后 settle 再校准
+        if scrollView.isDragging || scrollView.isDecelerating {
+            previewLabel(page: index)
+        }
+    }
+
+    func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+        settle()
+    }
+
+    func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) {
+        settle()
+    }
+
+    private func settle() {
+        guard pageWidth > 0, !pages.isEmpty else { return }
+        let index = indexFromOffset()
+        if index != currentIndex {
+            adopt(index)
+        } else {
+            updateLabel()
+        }
+    }
+}
+
+/// 滑动翻页里的一页：承载子控制器的视图 + 左右页边阴影
+private final class PageHost: UIView {
+    let index: Int
+    var child: UIViewController?
+
+    private let shadowWidth: CGFloat = 12
+    private let leftEdge = CAGradientLayer()
+    private let rightEdge = CAGradientLayer()
+
+    init(index: Int) {
+        self.index = index
+        super.init(frame: .zero)
+        layer.masksToBounds = true
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func installEdgeShadows() {
+        leftEdge.name = "edge.left"
+        leftEdge.colors = [UIColor.black.withAlphaComponent(0.16).cgColor,
+                           UIColor.clear.cgColor]
+        leftEdge.startPoint = CGPoint(x: 0, y: 0.5)
+        leftEdge.endPoint = CGPoint(x: 1, y: 0.5)
+
+        rightEdge.name = "edge.right"
+        rightEdge.colors = [UIColor.clear.cgColor,
+                            UIColor.black.withAlphaComponent(0.16).cgColor]
+        rightEdge.startPoint = CGPoint(x: 0, y: 0.5)
+        rightEdge.endPoint = CGPoint(x: 1, y: 0.5)
+
+        layer.addSublayer(leftEdge)
+        layer.addSublayer(rightEdge)
+        layoutShadows()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        layoutShadows()
+    }
+
+    private func layoutShadows() {
+        leftEdge.frame = CGRect(x: 0, y: 0, width: shadowWidth, height: bounds.height)
+        rightEdge.frame = CGRect(x: max(bounds.width - shadowWidth, 0),
+                                 y: 0,
+                                 width: shadowWidth,
+                                 height: bounds.height)
     }
 }
 

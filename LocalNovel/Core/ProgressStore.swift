@@ -71,6 +71,11 @@ final class ProgressStore {
     }
 
     func setAnchor(_ anchor: String, for chapterId: String) {
+        // 主动设置优先于防抖队列里还没落盘的旧值，否则「从章首开始」会被
+        // 0.6 秒后的 flush 用上一次的位置覆盖回去。
+        lock.lock()
+        pendingAnchors.removeValue(forKey: chapterId)
+        lock.unlock()
         var map = defaults.dictionary(forKey: Keys.anchors) as? [String: String] ?? [:]
         map[chapterId] = anchor
         defaults.set(map, forKey: Keys.anchors)

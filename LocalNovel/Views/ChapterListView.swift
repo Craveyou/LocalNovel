@@ -34,6 +34,8 @@ struct ChapterListView: View {
     @State private var isSelecting = false
     @State private var selectedIds: Set<String> = []
     @State private var confirmBatchDelete = false
+    /// 由「上次读到哪一章」自动恢复的章节 id：这次 selection 变化不算用户主动选章
+    @State private var autoRestoredChapterId: String?
 
     private var currentBook: Book? {
         guard let book else { return nil }
@@ -52,8 +54,20 @@ struct ChapterListView: View {
                     .onChange(of: book.id) { _, _ in restoreSelection(in: book) }
                     .onChange(of: book.chapters.count) { _, _ in restoreSelection(in: book) }
                     .onChange(of: selection) { _, new in
-                        if let chapter = new {
-                            ProgressStore.shared.setLastChapter(chapter.id, for: book.id)
+                        guard let chapter = new else {
+                            autoRestoredChapterId = nil
+                            return
+                        }
+                        ProgressStore.shared.setLastChapter(chapter.id, for: book.id)
+                        // 自动恢复「上次读到哪一章」时保留该章的段落锚点，继续上次的位置；
+                        // 用户自己在目录里点某一章，则从这一章开头开始。
+                        //
+                        // 之前两种情况都沿用旧锚点：一旦锚点被旧版本写成「本章最后一段」，
+                        // 每次点这一章都会直接翻到最后一页，看起来就像「跳章跳错了」。
+                        if autoRestoredChapterId == chapter.id {
+                            autoRestoredChapterId = nil
+                        } else {
+                            ProgressStore.shared.setAnchor("blk-p0", for: chapter.id)
                         }
                     }
                     .toolbar {
@@ -334,6 +348,8 @@ struct ChapterListView: View {
            book.chapters.contains(where: { $0.id == current.id }) { return }
         if let last = ProgressStore.shared.lastChapterId(for: book.id),
            let chapter = book.chapters.first(where: { $0.id == last }) {
+            // 标记来源：这次 selection 变化不是用户点的，别把它当成「主动选章」重置到章首
+            autoRestoredChapterId = chapter.id
             selection = chapter
         } else {
             selection = nil

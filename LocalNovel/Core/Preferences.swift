@@ -20,17 +20,43 @@ enum AppearanceMode: Int, CaseIterable, Identifiable {
     }
 }
 
-/// 阅读方式：上下滚动 / 左右翻页（仿真翻页）
+/// 阅读方式：上下滚动 / 仿真翻页 / 滑动翻页
+///
+/// 三种手感对应主流阅读器的三类交互：
+///   · scroll — 连续滚动，段落无分页，适合长文与图文混排
+///   · page   — 仿真卷曲（UIPageViewController.pageCurl），翻页时有纸张卷起
+///   · slide  — 滑动翻页（跟手横移 + 页边阴影 + 松手吸附），与系统「图书」一致
 enum PageTurnMode: Int, CaseIterable, Identifiable {
     case scroll = 0
     case page = 1
+    case slide = 2
 
     var id: Int { rawValue }
 
     var label: String {
         switch self {
         case .scroll: return "上下滚动"
-        case .page:   return "左右翻页"
+        case .page:   return "仿真翻页"
+        case .slide:  return "滑动翻页"
+        }
+    }
+
+    /// 是否走「分页阅读」引擎（卷曲与滑动都是分页，只是呈现方式不同）
+    var isPaged: Bool { self != .scroll }
+
+    /// 分页引擎的呈现样式
+    var flipStyle: PageFlipStyle {
+        self == .page ? .curl : .slide
+    }
+
+    var detail: String {
+        switch self {
+        case .scroll:
+            return "上下滚动：连续长页，段落流畅衔接，适合长篇与图文混排。"
+        case .page:
+            return "仿真翻页：纸张卷起的立体动画，点屏幕左 / 右侧翻页，底部显示页码。"
+        case .slide:
+            return "滑动翻页：整页跟手横移，翻动时带页边阴影，松手自动吸附到下一页；也可点左右边缘翻页。"
         }
     }
 }
@@ -51,11 +77,10 @@ final class Preferences: ObservableObject {
         didSet { if loaded { save() } }
     }
 
-    /// 小说分区的阅读方式，默认仿真翻页；漫画与整理固定滚动，读这个值但不受它影响
-    @Published var pageTurn: PageTurnMode = .page {
+    /// 小说分区的阅读方式，默认滑动翻页；漫画与整理固定滚动，读这个值但不受它影响
+    @Published var pageTurn: PageTurnMode = .slide {
         didSet { if loaded { save() } }
     }
-
     /// 交给 .preferredColorScheme：nil 表示不覆盖，即跟随系统外观。
     var preferredScheme: ColorScheme? {
         switch appearance {
@@ -95,7 +120,14 @@ final class Preferences: ObservableObject {
         } else {
             appearance = .system
         }
-        pageTurn = PageTurnMode(rawValue: defaults.integer(forKey: Keys.pageTurn)) ?? .page
+        // 未设置过时默认「滑动翻页」（与系统图书一致的手感）。
+        // 注意不能用 defaults.integer(...)：未设置时它返回 0，会被当成 .scroll。
+        if let raw = defaults.object(forKey: Keys.pageTurn) as? Int,
+           let mode = PageTurnMode(rawValue: raw) {
+            pageTurn = mode
+        } else {
+            pageTurn = .slide
+        }
         cleanTitles = defaults.bool(forKey: Keys.cleanTitles)
         longPressRate = r > 0 ? r : 2.0
         // 默认 512 MB；用户显式选「不限制」时存的就是 0，要能区分「没设置过」

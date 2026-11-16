@@ -349,8 +349,8 @@ def main():
           and "DocumentsBootstrap.guideFileName" in resolver)
     check("切回前台补写说明文件", "DocumentsBootstrap.ensureVisibleInFilesApp()" in store)
     check("版本号提升以刷新系统元数据",
-          "<string>2.9</string>" in plist and "CURRENT_PROJECT_VERSION = 1" in pbx
-          and "MARKETING_VERSION = 2.9" in pbx)
+          "<string>2.10</string>" in plist and "CURRENT_PROJECT_VERSION = 1" in pbx
+          and "MARKETING_VERSION = 2.10" in pbx)
     check("UI 给出「文件 App 搜索本地小说」兜底路径",
           "搜索框搜「本地小说」" in welcome and "搜索「本地小说」" in store)
     check("AppIcon asset catalog（1024 + Contents.json）",
@@ -603,10 +603,11 @@ def main():
     guide = (APP / "Views" / "StructureGuideView.swift").read_text(encoding="utf-8")
     settings = (APP / "Views" / "SettingsView.swift").read_text(encoding="utf-8")
 
-    check("阅读方式两档可切换，默认左右翻页",
+    check("阅读方式三档可切换，默认滑动翻页",
           "enum PageTurnMode" in prefs_src and "case page = 1" in prefs_src
-          and "pageTurn = PageTurnMode(rawValue:" in prefs_src
-          and "@Published var pageTurn: PageTurnMode = .page" in prefs_src)
+          and "case slide = 2" in prefs_src
+          and "defaults.object(forKey: Keys.pageTurn) as? Int" in prefs_src
+          and "@Published var pageTurn: PageTurnMode = .slide" in prefs_src)
     check("设置页提供阅读方式切换",
           'Picker("翻页"' in settings and ".pickerStyle(.segmented)" in settings
           and "showGuide = true" in settings)
@@ -676,13 +677,14 @@ def main():
           and "private var isComic: Bool { category == .comic }" in reader
           and "category: latestBook()?.category ?? .novel" in root_view)
     check("翻页只对「小说」生效，整理 / 漫画恒滚动",
-          "category == .novel\n            && prefs.pageTurn == .page" in reader
-          and "&& prefs.pageTurn == .page" in reader)
+          "category == .novel\n            && prefs.pageTurn.isPaged" in reader
+          and "&& prefs.pageTurn.isPaged" in reader)
     check("设置页标明阅读方式仅影响小说",
           "Section(\"阅读方式（仅小说）\")" in settings
           and "「整理」是图文混排" in settings and "始终上下滚动" in settings)
     check("结构说明写清各分区阅读方式",
-          "只有小说用左右翻页" in guide and "翻页设置不影响这里" in guide)
+          "只有小说用分页阅读" in guide and "翻页设置不影响这里" in guide
+          and "滑动翻页（跟手横移）" in guide)
     check("漫画排序先分组再话名（同组相邻才分得成段）",
           "if ga.isEmpty != gb.isEmpty { return !ga.isEmpty }" in sections
           and 'let ga = a.groupName ?? "", gb = b.groupName ?? ""' in sections)
@@ -702,8 +704,8 @@ def main():
     check("文档正文含双格式包一节",
           "### 5. 同一部书按格式分成两个包（PDF 包 + 图片包）"
           in (ROOT / "Docs" / "漫画目录结构说明.md").read_text(encoding="utf-8"))
-    check("版本升到 2.9 / build 1",
-          "<string>2.9</string>" in plist and "<key>CFBundleVersion</key>\n\t<string>1</string>" in plist)
+    check("版本升到 2.10 / build 1",
+          "<string>2.10</string>" in plist and "<key>CFBundleVersion</key>\n\t<string>1</string>" in plist)
 
 
     print("\n== N. 本轮：底部三页 / 短剧 / NAS 连接 ==")
@@ -944,8 +946,8 @@ def main():
     check("NAS 书目录里直接放文件时仍当作一本书",
           "把目录本身当成一本书" in nas_lib_views
           and "hasMedia ? 1 : nil" in nas_lib)
-    check("版本升到 2.9 / build 1",
-          "<string>2.9</string>" in plist
+    check("版本升到 2.10 / build 1",
+          "<string>2.10</string>" in plist
           and "<key>CFBundleVersion</key>\n\t<string>1</string>" in plist)
 
     print("\n== S. 本轮：txt 乱码（UTF-16 误判 / GBK / Big5） ==")
@@ -998,10 +1000,11 @@ def main():
     check("锚点越界回落到本章开头（重新切章后不跳末尾）",
           "value < paragraphs.count else { return 0 }" in reader)
     check("整章只建一份排版文本（不再每页一份全文）",
-          "private var measureAttributed" in paged
+          "private(set) var measureAttributed" in paged
           and "let attributed = measureAttributed" in paged)
     check("页控制器按窗口淘汰（大章节不常驻全部页视图）",
-          "func trimBuilt(around" in paged and "abs(i - index) > 2" in paged)
+          "func evict(except range: ClosedRange<Int>)" in paged
+          and "abs(key - index) > 2" in paged)
     check("绘制不再复制整章文本上色",
           ".foregroundColor: UIColor.label" in paginator
           and "NSMutableAttributedString(attributedString: attributed)" not in paged)
@@ -1022,6 +1025,43 @@ def main():
           and "getLineStart(&lineStart" in splitter)
     check("扫描期间有「正在读取书库」反馈",
           "library.isScanning" in root_view)
+
+    print("\n== U. 滑动翻页 / 标签栏兜底 / 选章从章首开始 ==")
+    pref_src = (APP / "Core" / "Preferences.swift").read_text(encoding="utf-8")
+    chapter_list = (APP / "Views" / "ChapterListView.swift").read_text(encoding="utf-8")
+    hider_path = APP / "Views" / "TabBarAutoHide.swift"
+    hider = hider_path.read_text(encoding="utf-8") if hider_path.exists() else ""
+
+    check("阅读方式三档：滚动 / 仿真卷曲 / 滑动",
+          "case scroll = 0" in pref_src and "case page = 1" in pref_src
+          and "case slide = 2" in pref_src and "var isPaged: Bool" in pref_src)
+    check("滑动翻页用 UIScrollView 分页（整页跟手横移）",
+          "scroller.isPagingEnabled = true" in paged
+          and "contentInsetAdjustmentBehavior = .never" in paged)
+    check("滑动页有左右页边阴影（纸张叠压感）",
+          "UIColor.black.withAlphaComponent(0.16).cgColor" in paged
+          and 'leftEdge.name = "edge.left"' in paged)
+    check("两套引擎共用分页 / 定位 / 锚点（切换模式不丢位置）",
+          "class PagedBaseController: UIViewController" in paged
+          and "final class CurlPageController: PagedBaseController" in paged
+          and "final class SlidePageController: PagedBaseController" in paged)
+    check("未翻页前始终用记忆段落定位（首帧尺寸变化不挤走位置）",
+          "let anchor = didNavigate ? nearestParagraph(at: currentIndex) : restoreParagraph" in paged
+          and "func clampedParagraph(_ value: Int) -> Int" in paged)
+    check("标签栏 UIKit 兜底：布局阶段重复压住 UITabBarController",
+          "struct TabBarAutoHide: UIViewControllerRepresentable" in hider
+          and "override func viewWillLayoutSubviews()" in hider
+          and "TabBarVisibility.setHidden(true, animated: false)" in hider
+          and "tab.tabBar.isHidden = hidden" in hider)
+    check("阅读页挂上标签栏兜底",
+          "TabBarAutoHide()" in reader)
+    check("用户主动在目录选章 → 从章首开始",
+          'ProgressStore.shared.setAnchor("blk-p0", for: chapter.id)' in chapter_list)
+    check("自动恢复上次章节时不重置锚点",
+          "autoRestoredChapterId = chapter.id" in chapter_list
+          and "if autoRestoredChapterId == chapter.id" in chapter_list)
+    check("主动设锚点会清掉同章的防抖旧值",
+          "pendingAnchors.removeValue(forKey: chapterId)" in (APP / "Core" / "ProgressStore.swift").read_text(encoding="utf-8"))
 
     print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")
     if FAIL:
