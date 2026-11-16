@@ -15,6 +15,9 @@ struct RootView: View {
     /// restore 只在首次出现时跑一次；此前每次 onAppear 都全量重扫 + 清缓存，
     /// 会让阅读器内容反复失效，也是「再次点书一直载入」的诱因之一。
     @State private var didRestore = false
+    /// 由「打开小说自动定位」或「恢复上次章节」设进来的章节 id。
+    /// 它的 selection 变化不算用户主动选章：保留该章的段落锚点，从上次位置续读。
+    @State private var autoRestoredChapterId: String?
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
@@ -25,8 +28,14 @@ struct RootView: View {
             if let chapter = selectedChapter {
                 ReaderView(chapter: chapter,
                            nextChapter: nextChapter(after: chapter),
+                           chapters: (latestBook()?.chapters ?? []).filter { !$0.isPlaceholder },
                            category: latestBook()?.category ?? .novel,
-                           onOpenNext: { next in selectedChapter = next })
+                           onOpenNext: { next in selectedChapter = next },
+                           onSelectChapter: { chapter in selectChapter(chapter) },
+                           onExit: {
+                               selectedChapter = nil
+                               selectedBook = nil   // 回到书库首页，再点同一本也会重新触发「选书即读」
+                           })
                     .id(chapter.id) // 切章时重建，重置滚动与播放器
             } else {
                 WelcomeView()
@@ -44,6 +53,44 @@ struct RootView: View {
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { library.refreshOnForeground() }
+        }
+        // 小说「选书即读」：点书直接进入阅读器，不再停在章节目录页。
+        // 其它大类维持原来的「选书 → 目录 → 选章」流程。
+        .onChange(of: selectedBook?.id) { _, _ in
+            guard let book = selectedBook else {
+                selectedChapter = nil
+                return
+            }
+            if book.category == .novel {
+                openNovelDirectly(book)
+            } else {
+                selectedChapter = nil
+            }
+        }
+        // 切章完成（占位章 → 真实章节）后，若当前章已失效或还没选中，重新定位到记忆章节
+        .onChange(of: chapterSignature) { _, _ in
+            guard let book = selectedBook, book.category == .novel else { return }
+            let fresh = latestBook() ?? book
+            let stale = selectedChapter.map { current in
+                !fresh.chapters.contains(where: { $0.id == current.id })
+            } ?? true
+            guard stale, let target = preferredChapter(in: fresh, allowFirst: true) else { return }
+            autoRestoredChapterId = target.id
+            selectedChapter = target
+        }
+        // 选章副作用统一到 RootView（小说）：记「最近读的章」并区分续读 / 主动选章
+        .onChange(of: selectedChapter?.id) { _, _ in
+            guard let chapter = selectedChapter,
+                  let book = selectedBook, book.category == .novel else { return }
+            // 占位章（切章前的整本）id 会在切完后失效，不能覆盖记忆里的真实章节 id，
+            // 否则下次切完章就找不到上次读的章，被重置到第一章。
+            guard !chapter.isPlaceholder else { return }
+            ProgressStore.shared.setLastChapter(chapter.id, for: book.id)
+            if autoRestoredChapterId == chapter.id {
+                autoRestoredChapterId = nil   // 自动恢复：保留该章段落锚点，续读
+            } else {
+                ProgressStore.shared.setAnchor("blk-p0", for: chapter.id) // 主动选章：从章首
+            }
         }
         // 全工程【唯一】一个 fileImporter：多个同类弹层叠加会互相冲突、两个都弹不出来
         .fileImporter(
@@ -74,6 +121,39 @@ struct RootView: View {
     private func latestBook() -> Book? {
         guard let book = selectedBook else { return nil }
         return library.library?.books.first(where: { $0.id == book.id }) ?? book
+    }
+
+    /// 章节集合的指纹：单文件小说首次打开时后台切章，切完 id 全变，
+    /// 用它触发「当前章节失效 → 重新定位」，避免阅读停在已不存在的占位章。
+    private var chapterSignature: String {
+        (latestBook()?.chapters ?? []).map(\.id).joined(separator: "|")
+    }
+
+    /// 选书即读：先触发切章（若还没切），再选中上次读到的章或第一章。
+    /// 切章前只有一个占位章，读的就是整本文件；切章完成由 chapterSignature 对齐。
+    private func openNovelDirectly(_ book: Book) {
+        library.ensureChapters(for: book)
+        let fresh = latestBook() ?? book
+        guard let target = preferredChapter(in: fresh, allowFirst: true) else { return }
+        autoRestoredChapterId = target.id
+        selectedChapter = target
+    }
+
+    /// 记忆章节优先；allowFirst = true 时没有记忆则退到第一章（还没有真实章时用占位章）。
+    private func preferredChapter(in book: Book, allowFirst: Bool) -> Chapter? {
+        let chapters = book.chapters.filter { !$0.isPlaceholder }
+        if let last = ProgressStore.shared.lastChapterId(for: book.id),
+           let hit = chapters.first(where: { $0.id == last }) {
+            return hit
+        }
+        if allowFirst { return chapters.first ?? book.chapters.first }
+        return nil
+    }
+
+    /// 目录弹层 / 章末导航主动跳章：清掉自动恢复标记，让 onChange 把锚点重置到章首。
+    private func selectChapter(_ chapter: Chapter) {
+        autoRestoredChapterId = nil
+        selectedChapter = chapter
     }
 
     private func nextChapter(after chapter: Chapter) -> Chapter? {

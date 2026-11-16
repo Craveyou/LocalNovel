@@ -21,9 +21,15 @@ import SwiftUI
 struct ReaderView: View {
     let chapter: Chapter
     let nextChapter: Chapter?
+    /// 本书全部章节（供控制菜单里的目录弹层跳转）
+    let chapters: [Chapter]
     /// 所在分区。翻页只给「小说」；漫画连排、整理图文混排，都必须滚动
     let category: BookCategory
     let onOpenNext: (Chapter) -> Void
+    /// 目录弹层里主动跳章
+    let onSelectChapter: (Chapter) -> Void
+    /// 退出阅读回到书库
+    let onExit: () -> Void
 
     @EnvironmentObject private var library: LibraryStore
     @EnvironmentObject private var prefs: Preferences
@@ -32,15 +38,25 @@ struct ReaderView: View {
     @State private var showSettings = false
     /// 关闭全屏大图后要滚回的插图锚点（如 "blk-i3"）
     @State private var pendingAnchor: String?
+    /// 点屏幕中间弹出的阅读控制菜单
+    @State private var showControls = false
+    /// 控制菜单里的「目录」弹层
+    @State private var showTOC = false
 
     init(chapter: Chapter,
          nextChapter: Chapter? = nil,
+         chapters: [Chapter] = [],
          category: BookCategory = .novel,
-         onOpenNext: @escaping (Chapter) -> Void = { _ in }) {
+         onOpenNext: @escaping (Chapter) -> Void = { _ in },
+         onSelectChapter: @escaping (Chapter) -> Void = { _ in },
+         onExit: @escaping () -> Void = {}) {
         self.chapter = chapter
         self.nextChapter = nextChapter
+        self.chapters = chapters
         self.category = category
         self.onOpenNext = onOpenNext
+        self.onSelectChapter = onSelectChapter
+        self.onExit = onExit
     }
 
     private var isComic: Bool { category == .comic }
@@ -106,16 +122,17 @@ struct ReaderView: View {
     var body: some View {
         Group {
             if let pdf = content.pdfURL {
-                PdfChapterView(url: pdf)
+                centerTappable(PdfChapterView(url: pdf))
             } else if usesComicLayout {
-                comicBody(content)
+                centerTappable(comicBody(content))
             } else if isMediaOnly {
                 // 短剧的每一集就是一段视频：不进「正文」流程，直接给播放器
-                mediaOnlyBody(content)
+                centerTappable(mediaOnlyBody(content))
             } else if usePaging {
+                // 翻页引擎自己处理中间点击（UIKit handleTap），这里不重复挂，避免双重触发
                 pagedBody(content)
             } else {
-                scrollBody(content)
+                centerTappable(scrollBody(content))
             }
         }
         .navigationTitle(chapter.title)
@@ -130,16 +147,33 @@ struct ReaderView: View {
                 .allowsHitTesting(false)
         }
         .toolbar {
-            // 只有「读文字」的章节才需要编码开关
-            if showsEncodingMenu {
-                ToolbarItem(placement: .primaryAction) {
-                    encodingMenu
+            // 顶部仍保留「设置」与编码的快捷入口；中间单击另有一套完整控制菜单
+            ToolbarItem(placement: .primaryAction) {
+                Button { showControls = true } label: {
+                    Label("显示选项", systemImage: "textformat.size")
                 }
             }
-            ToolbarItem(placement: .primaryAction) {
-                Button { showSettings = true } label: {
-                    Label("设置", systemImage: "gearshape")
-                }
+        }
+        // 控制菜单 + 目录弹层（reader 层覆盖，不随分页引擎重建）
+        .overlay {
+            if showControls {
+                ReaderControlsPanel(
+                    chapterTitle: chapter.displayTitle,
+                    showsEncoding: showsEncodingMenu,
+                    encodingMenu: AnyView(encodingMenu),
+                    onTOC: { showTOC = true },
+                    onSettings: { showSettings = true },
+                    onExit: onExit,
+                    onDismiss: { showControls = false }
+                )
+                .transition(.opacity)
+            }
+        }
+        .sheet(isPresented: $showTOC) {
+            ReaderTOCView(chapters: chapters, currentId: chapter.id) { picked in
+                showTOC = false
+                showControls = false
+                onSelectChapter(picked)
             }
         }
         .sheet(isPresented: $showSettings) { SettingsView() }
@@ -359,9 +393,30 @@ struct ReaderView: View {
             onTapMedia: { item in galleryItem = item },
             onOpenNext: {
                 if let next = nextChapter { onOpenNext(next) }
+            },
+            onTapCenter: {
+                withAnimation(.easeOut(duration: 0.18)) { showControls.toggle() }
             }
         )
         .id("paged-\(prefs.pageTurn.rawValue)")
+    }
+
+    /// 非翻页模式：中间 28%~72% 区域单击弹出控制菜单。
+    /// 用带坐标的 tap 手势挂在内容上：子视图（图片看大图、按钮）有自己的手势时优先响应，
+    /// 只有落在纯文字 / 空白处的点击才冒泡到这里，再按 x 判断是不是中间区域。
+    private func centerTappable<V: View>(_ content: V) -> some View {
+        GeometryReader { geo in
+            content
+                .frame(width: geo.size.width, height: geo.size.height)
+                .contentShape(Rectangle())
+                .onTapGesture(coordinateSpace: .local) { point in
+                    // .local 原点即本视图左上；iPad 分栏下 geo.size.width 是 detail 列真实宽度
+                    let w = geo.size.width
+                    if point.x > w * 0.28 && point.x < w * 0.72 {
+                        withAnimation(.easeOut(duration: 0.18)) { showControls.toggle() }
+                    }
+                }
+        }
     }
 
     // MARK: 锚点

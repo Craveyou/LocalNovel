@@ -82,6 +82,11 @@ struct Chapter: Identifiable, Hashable {
 
     /// 能否删除源文件：slice 属于整本文件，只能隐藏，不能单独删
     var canDeleteFromDisk: Bool { kind != .slice }
+
+    /// 切章前的占位章：整本小说只挂一个 slice，range 为 nil。
+    /// 目录弹层里要过滤掉它（否则会看到一条和书名重复的「章」），
+    /// 切章完成后它会被一系列带 range 的真实 slice 替换。
+    var isPlaceholder: Bool { kind == .slice && range == nil }
 }
 
 /// 一章解析后的内容：正文 → 图片（序号）→ 章末音视频

@@ -58,12 +58,13 @@ struct ChapterListView: View {
                             autoRestoredChapterId = nil
                             return
                         }
+                        // 小说的选章副作用（lastChapter / 锚点 / 选书即读）已统一到
+                        // RootView 处理，这里只服务漫画 / 整理 / 短剧，避免两处重复写、
+                        // 也避免「选书即读」被误判成手动选章而把锚点清到章首。
+                        guard book.category != .novel else { return }
                         ProgressStore.shared.setLastChapter(chapter.id, for: book.id)
                         // 自动恢复「上次读到哪一章」时保留该章的段落锚点，继续上次的位置；
                         // 用户自己在目录里点某一章，则从这一章开头开始。
-                        //
-                        // 之前两种情况都沿用旧锚点：一旦锚点被旧版本写成「本章最后一段」，
-                        // 每次点这一章都会直接翻到最后一页，看起来就像「跳章跳错了」。
                         if autoRestoredChapterId == chapter.id {
                             autoRestoredChapterId = nil
                         } else {

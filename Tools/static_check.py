@@ -349,8 +349,8 @@ def main():
           and "DocumentsBootstrap.guideFileName" in resolver)
     check("切回前台补写说明文件", "DocumentsBootstrap.ensureVisibleInFilesApp()" in store)
     check("版本号提升以刷新系统元数据",
-          "<string>2.10</string>" in plist and "CURRENT_PROJECT_VERSION = 1" in pbx
-          and "MARKETING_VERSION = 2.10" in pbx)
+          "<string>2.11</string>" in plist and "CURRENT_PROJECT_VERSION = 1" in pbx
+          and "MARKETING_VERSION = 2.11" in pbx)
     check("UI 给出「文件 App 搜索本地小说」兜底路径",
           "搜索框搜「本地小说」" in welcome and "搜索「本地小说」" in store)
     check("AppIcon asset catalog（1024 + Contents.json）",
@@ -684,7 +684,7 @@ def main():
           and "「整理」是图文混排" in settings and "始终上下滚动" in settings)
     check("结构说明写清各分区阅读方式",
           "只有小说用分页阅读" in guide and "翻页设置不影响这里" in guide
-          and "滑动翻页（跟手横移）" in guide)
+          and "控制菜单" in guide and "点书直接进正文" in guide)
     check("漫画排序先分组再话名（同组相邻才分得成段）",
           "if ga.isEmpty != gb.isEmpty { return !ga.isEmpty }" in sections
           and 'let ga = a.groupName ?? "", gb = b.groupName ?? ""' in sections)
@@ -704,8 +704,8 @@ def main():
     check("文档正文含双格式包一节",
           "### 5. 同一部书按格式分成两个包（PDF 包 + 图片包）"
           in (ROOT / "Docs" / "漫画目录结构说明.md").read_text(encoding="utf-8"))
-    check("版本升到 2.10 / build 1",
-          "<string>2.10</string>" in plist and "<key>CFBundleVersion</key>\n\t<string>1</string>" in plist)
+    check("版本升到 2.11 / build 1",
+          "<string>2.11</string>" in plist and "<key>CFBundleVersion</key>\n\t<string>1</string>" in plist)
 
 
     print("\n== N. 本轮：底部三页 / 短剧 / NAS 连接 ==")
@@ -946,8 +946,8 @@ def main():
     check("NAS 书目录里直接放文件时仍当作一本书",
           "把目录本身当成一本书" in nas_lib_views
           and "hasMedia ? 1 : nil" in nas_lib)
-    check("版本升到 2.10 / build 1",
-          "<string>2.10</string>" in plist
+    check("版本升到 2.11 / build 1",
+          "<string>2.11</string>" in plist
           and "<key>CFBundleVersion</key>\n\t<string>1</string>" in plist)
 
     print("\n== S. 本轮：txt 乱码（UTF-16 误判 / GBK / Big5） ==")
@@ -980,7 +980,7 @@ def main():
           and "objectWillChange.send()" in store_src)
     check("阅读器有「文本编码」菜单，只在读文字时出现",
           "private var encodingMenu" in reader
-          and "if showsEncodingMenu" in reader
+          and "showsEncoding: showsEncodingMenu" in reader
           and "content.pdfURL == nil && content.textURL != nil" in reader)
     check("NAS 阅读页同样能换编码",
           "TextEncodingStore.bookKey(forURL:" in nas_lib_views
@@ -1064,6 +1064,58 @@ def main():
           "Keys.slideMigrated" in pref_src and "if pageTurn == .page" in pref_src)
     check("主动设锚点会清掉同章的防抖旧值",
           "pendingAnchors.removeValue(forKey: chapterId)" in (APP / "Core" / "ProgressStore.swift").read_text(encoding="utf-8"))
+
+    print("\n== V. 小说选书即读 / 中间单击控制菜单 / 目录弹层 ==")
+    root = (APP / "Views" / "RootView.swift").read_text(encoding="utf-8")
+    controls = (APP / "Views" / "ReaderControlsView.swift").read_text(encoding="utf-8")
+    models = (APP / "Core" / "LibraryModels.swift").read_text(encoding="utf-8")
+    list_view = (APP / "Views" / "ChapterListView.swift").read_text(encoding="utf-8")
+
+    check("小说选书即读：选书后直接定位章节进 detail",
+          "openNovelDirectly(book)" in root
+          and "book.category == .novel" in root
+          and "selectedChapter = nil" in root)
+    check("切章完成 / 章节失效时重新定位（chapterSignature）",
+          "var chapterSignature" in root
+          and "contains(where: { $0.id == current.id })" in root)
+    check("选章副作用统一到 RootView，目录页对小说放行",
+          "ProgressStore.shared.setLastChapter(chapter.id, for: book.id)" in root
+          and "guard book.category != .novel else { return }" in list_view)
+    check("阅读器新增 chapters / onSelectChapter / onExit 参数",
+          "let chapters: [Chapter]" in reader
+          and "let onSelectChapter" in reader
+          and "let onExit" in reader)
+    check("翻页引擎中间区域单击回调 onTapCenter",
+          "let onTapCenter: () -> Void" in paged
+          and "controller.onTapCenter = onTapCenter" in paged
+          and "onTapCenter?()" in paged)
+    check("非翻页模式中间区域单击（坐标 28%~72%）",
+          "func centerTappable" in reader
+          and "point.x > w * 0.28 && point.x < w * 0.72" in reader)
+    check("占位章标识，目录里过滤掉",
+          "var isPlaceholder" in models
+          and "filter { !$0.isPlaceholder }" in root)
+    check("控制菜单可调字号 / 行距 / 翻页 / 外观",
+          "struct ReaderControlsPanel" in controls
+          and 'binding(for: \\.pageTurn)' in controls
+          and 'binding(for: \\.appearance)' in controls
+          and "prefs.fontSize - 1" in controls
+          and "prefs.lineSpacing - 1" in controls)
+    check("控制菜单含目录入口与退出阅读",
+          "onTOC: { showTOC = true }" in reader
+          and 'Label("目录", systemImage: "list.bullet")' in controls
+          and "onExit" in controls)
+    check("目录弹层列出全部章节、当前章高亮、点击跳转",
+          "struct ReaderTOCView" in controls
+          and "chapter.id == currentId" in controls
+          and "onSelect(chapter)" in controls)
+    check("阅读页挂控制菜单 overlay 与目录 sheet",
+          "ReaderControlsPanel(" in reader
+          and ".sheet(isPresented: $showTOC)" in reader)
+    check("控制菜单含「全部设置」入口（复用设置页）",
+          "let onSettings: () -> Void" in controls
+          and 'Label("全部设置", systemImage: "gearshape")' in controls
+          and "onSettings: { showSettings = true }" in reader)
 
     print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")
     if FAIL:

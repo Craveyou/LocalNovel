@@ -63,6 +63,8 @@ struct PagedReaderView: UIViewControllerRepresentable {
     let onProgress: (Int) -> Void
     let onTapMedia: (MediaItem) -> Void
     let onOpenNext: () -> Void
+    /// 点屏幕中间 28%~72% 区域：弹出 / 收起阅读控制菜单
+    let onTapCenter: () -> Void
 
     func makeUIViewController(context: Context) -> PagedBaseController {
         // 两种引擎都继承 PagedBaseController，SwiftUI 侧不必感知差异。
@@ -84,6 +86,7 @@ struct PagedReaderView: UIViewControllerRepresentable {
         controller.onProgress = onProgress
         controller.onTapMedia = onTapMedia
         controller.onOpenNext = onOpenNext
+        controller.onTapCenter = onTapCenter
     }
 }
 
@@ -93,6 +96,7 @@ class PagedBaseController: UIViewController {
     var onProgress: ((Int) -> Void)?
     var onTapMedia: ((MediaItem) -> Void)?
     var onOpenNext: (() -> Void)?
+    var onTapCenter: (() -> Void)?
 
     private(set) var input: PagedReaderInput?
     private(set) var pages: [ReaderPage] = []
@@ -236,12 +240,16 @@ class PagedBaseController: UIViewController {
     }
 
     @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
-        let x = gesture.location(in: view).x
+        let point = gesture.location(in: view)
         let width = max(view.bounds.width, 1)
+        let x = point.x
         if x < width * 0.28 {
             move(by: -1)
         } else if x > width * 0.72 {
             move(by: 1)
+        } else {
+            // 中间区域：弹出 / 收起控制菜单（字号、行距、翻页、外观、目录）
+            onTapCenter?()
         }
     }
 
