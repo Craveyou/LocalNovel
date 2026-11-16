@@ -1060,6 +1060,8 @@ def main():
     check("自动恢复上次章节时不重置锚点",
           "autoRestoredChapterId = chapter.id" in chapter_list
           and "if autoRestoredChapterId == chapter.id" in chapter_list)
+    check("老用户升级后一次性迁移到滑动翻页（只做一次）",
+          "Keys.slideMigrated" in pref_src and "if pageTurn == .page" in pref_src)
     check("主动设锚点会清掉同章的防抖旧值",
           "pendingAnchors.removeValue(forKey: chapterId)" in (APP / "Core" / "ProgressStore.swift").read_text(encoding="utf-8"))
 

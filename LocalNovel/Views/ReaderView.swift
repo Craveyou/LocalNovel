@@ -325,12 +325,17 @@ struct ReaderView: View {
     /// 阅读记忆存的是段落锚点（blk-pN），翻页按段落反查页码。
     /// 锚点必须落在本章段落范围内：章节内容变了（重新切章 / 换源）时旧锚点会越界，
     /// 越界后 pageIndex 会把页码收敛到最后一页 —— 表现就是「点开章节直接翻到末尾」。
+    ///
+    /// 另外，旧版本曾把「插图 / 章末页」的页码误写成最后一段，这类锚点至今还留在
+    /// UserDefaults 里，会让每次进这一章都停在末页。落在本章末尾的锚点按脏数据处理：
+    /// 真正读到最后一段的场景极少，从章首重读的代价远小于「每次都跳末页」。
     private var restoreParagraph: Int {
         guard let anchor = ProgressStore.shared.anchor(for: chapter.id),
               anchor.hasPrefix("blk-p"),
               let value = Int(anchor.dropFirst("blk-p".count)),
               value >= 0,
               value < paragraphs.count else { return 0 }
+        if paragraphs.count > 3, value >= paragraphs.count - 1 { return 0 }
         return value
     }
 
