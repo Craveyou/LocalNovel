@@ -400,6 +400,8 @@ struct NASChapterReaderView: View {
         }
         .navigationTitle(current.name)
         .navigationBarTitleDisplayMode(.inline)
+        // 与书库阅读页同一套：由阅读页自己声明隐藏标签栏，不依赖外层状态时序
+        .toolbar(.hidden, for: .tabBar)
         .toolbar {
             if showsEncodingMenu {
                 ToolbarItem(placement: .primaryAction) {

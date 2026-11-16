@@ -120,6 +120,10 @@ struct ReaderView: View {
         }
         .navigationTitle(chapter.title)
         .navigationBarTitleDisplayMode(.inline)
+        // 阅读页自己声明隐藏底部标签栏：只在 TabView / NavigationSplitView 外层改状态，
+        // 在 iOS 27 的分栏布局里会被 detail 的导航栏更新覆盖掉（表现就是读书时标签栏还在）。
+        // 视图存在即隐藏、退出自动恢复，不再依赖 ReadingChrome 的时序。
+        .toolbar(.hidden, for: .tabBar)
         .toolbar {
             // 只有「读文字」的章节才需要编码开关
             if showsEncodingMenu {
@@ -310,11 +314,15 @@ struct ReaderView: View {
             && !paragraphs.isEmpty
     }
 
-    /// 阅读记忆存的是段落锚点（blk-pN），翻页按段落反查页码
+    /// 阅读记忆存的是段落锚点（blk-pN），翻页按段落反查页码。
+    /// 锚点必须落在本章段落范围内：章节内容变了（重新切章 / 换源）时旧锚点会越界，
+    /// 越界后 pageIndex 会把页码收敛到最后一页 —— 表现就是「点开章节直接翻到末尾」。
     private var restoreParagraph: Int {
         guard let anchor = ProgressStore.shared.anchor(for: chapter.id),
               anchor.hasPrefix("blk-p"),
-              let value = Int(anchor.dropFirst("blk-p".count)) else { return 0 }
+              let value = Int(anchor.dropFirst("blk-p".count)),
+              value >= 0,
+              value < paragraphs.count else { return 0 }
         return value
     }
 

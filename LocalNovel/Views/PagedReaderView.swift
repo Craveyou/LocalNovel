@@ -32,10 +32,13 @@ struct PagedReaderInput {
     let isComic: Bool
     let boostRate: Double
 
-    /// 只有影响排版的参数变化才重建；restoreParagraph 故意不参与
+    /// 只有影响排版的参数变化才重建；restoreParagraph 故意不参与。
+    /// 用 O(1) 的指纹（段数 + 首末段长度），不再遍历全部段落算总长：
+    /// 几十万段的书每次 body 重算都做一次 NSString 桥接，主线程会被拖住。
     var signature: String {
-        let total = paragraphs.reduce(0) { $0 + ($1 as NSString).length }
-        return "\(chapterId)|\(paragraphs.count)|\(total)|\(fontSize)|\(lineSpacing)"
+        let head = paragraphs.first?.utf16.count ?? 0
+        let tail = paragraphs.last?.utf16.count ?? 0
+        return "\(chapterId)|\(paragraphs.count)|\(head)|\(tail)|\(fontSize)|\(lineSpacing)"
             + "|\(images.count)|\(avMedia.count)|\(hasNextChapter)"
     }
 }
@@ -88,6 +91,8 @@ final class PageTurnController: UIViewController {
     private var pages: [ReaderPage] = []
     private var slices: [ReaderPageSlice] = []
     private var built: [UIViewController?] = []
+    /// 全章唯一的排版文本：所有文字页共用这一份，不再每页各建一份全文
+    private var measureAttributed: NSAttributedString?
     private var currentIndex = 0
     private var didRestore = false
     private var needsRebuild = true
@@ -169,11 +174,16 @@ final class PageTurnController: UIViewController {
 
     private func rebuild(_ rect: CGRect) {
         guard let input else { return }
-        let keepParagraph = currentParagraph
+        let keepParagraph = nearestParagraph(at: currentIndex)
 
-        slices = TextPaginator.paginate(paragraphs: input.paragraphs,
-                                        fontSize: input.fontSize,
-                                        lineSpacing: input.lineSpacing,
+        // 整章只建一份 attributed：分页测量与逐页绘制共用，内存从「页数 × 全文」降到「1 × 全文」
+        let attributed = TextPaginator.attributed(paragraphs: input.paragraphs,
+                                                  fontSize: input.fontSize,
+                                                  lineSpacing: input.lineSpacing)
+        measureAttributed = attributed
+
+        slices = TextPaginator.paginate(attributed: attributed,
+                                        paragraphs: input.paragraphs,
                                         size: rect.size)
 
         var list: [ReaderPage] = slices.map { .text($0) }
@@ -202,12 +212,39 @@ final class PageTurnController: UIViewController {
         pager.setViewControllers([controller(at: currentIndex)],
                                  direction: .forward,
                                  animated: animated)
+        trimBuilt(around: currentIndex)
     }
 
-    private var currentParagraph: Int {
-        guard !slices.isEmpty else { return 0 }
-        let index = min(max(currentIndex, 0), slices.count - 1)
-        return slices[index].paragraph
+    /// 只保留当前页前后各 2 页的控制器：页越多常驻的视图越多，大文件会把内存吃满。
+    /// 被释放的页需要时由 `controller(at:)` 重建，正文页共用同一份 attributed，重建很轻。
+    private func trimBuilt(around index: Int) {
+        guard !built.isEmpty else { return }
+        for i in built.indices where abs(i - index) > 2 {
+            built[i] = nil
+        }
+    }
+
+    /// 当前页对应的段落；插图 / 音视频 / 章末页不产生段落锚点。
+    ///
+    /// 必须按 `pages` 取，不能拿 `currentIndex` 去索引 `slices`：`pages` 比 `slices`
+    /// 多出插图、音视频和章末页，两者下标并不对应。此前用 `min(currentIndex, count-1)`
+    /// 收敛，翻到正文之后的任意一页都会把锚点记成「最后一段」，
+    /// 下次进这一章就定位到最后一页（问题就出在这里）。
+    private var currentParagraph: Int? {
+        guard currentIndex >= 0, currentIndex < pages.count else { return nil }
+        if case .text(let slice) = pages[currentIndex] { return slice.paragraph }
+        return nil
+    }
+
+    /// 从指定页往前找最近一个文字页的段落；用于换字号 / 换行距时保持位置
+    private func nearestParagraph(at index: Int) -> Int {
+        guard !pages.isEmpty else { return 0 }
+        var i = min(max(index, 0), pages.count - 1)
+        while i >= 0 {
+            if case .text(let slice) = pages[i] { return slice.paragraph }
+            i -= 1
+        }
+        return 0
     }
 
     // MARK: 页面构建
@@ -219,9 +256,11 @@ final class PageTurnController: UIViewController {
         let vc: UIViewController
         switch pages[index] {
         case .text(let slice):
-            let attributed = TextPaginator.attributed(paragraphs: input?.paragraphs ?? [],
-                                                       fontSize: input?.fontSize ?? 18,
-                                                       lineSpacing: input?.lineSpacing ?? 10)
+            // 共用 rebuild 时建好的那一份全文；缺失才兜底重建（正常不会走到）
+            let attributed = measureAttributed
+                ?? TextPaginator.attributed(paragraphs: input?.paragraphs ?? [],
+                                            fontSize: input?.fontSize ?? 18,
+                                            lineSpacing: input?.lineSpacing ?? 10)
             vc = TextPageController(attributed: attributed,
                                     slice: slice,
                                     textFrame: contentRect)
@@ -240,6 +279,8 @@ final class PageTurnController: UIViewController {
                                         onOpenNext: { [weak self] in self?.onOpenNext?() }))
         }
         vc.view.backgroundColor = .systemBackground
+        // 用 tag 记住页码：页缓存会被淘汰，翻页数据源仍要能认出这一页是第几页
+        vc.view.tag = index + 1
         if index < built.count { built[index] = vc }
         return vc
     }
@@ -251,8 +292,11 @@ final class PageTurnController: UIViewController {
     }
 
     private func index(of controller: UIViewController) -> Int? {
-        guard !built.isEmpty else { return nil }
-        return built.firstIndex(where: { $0 === controller })
+        if let cached = built.firstIndex(where: { $0 === controller }) { return cached }
+        // 缓存淘汰后靠 tag 反查（设置时是 index + 1，用 0 表示「未登记」）
+        let index = controller.view.tag - 1
+        guard index >= 0, index < pages.count else { return nil }
+        return index
     }
 
     // MARK: 翻页
@@ -283,7 +327,8 @@ final class PageTurnController: UIViewController {
 
     private func afterPageChange() {
         updateLabel()
-        onProgress?(currentParagraph)
+        // 非文字页（插图 / 音视频 / 章末）不写锚点，避免把进度污染成「最后一段」
+        if let paragraph = currentParagraph { onProgress?(paragraph) }
     }
 
     private func updateLabel() {
@@ -390,11 +435,10 @@ final class CoreTextPageView: UIView {
         let visible = NSIntersectionRange(textRange, full)
         guard visible.length > 0 else { return }
 
-        // 颜色随浅色 / 深色实时取，不在分页阶段固化
-        let mutable = NSMutableAttributedString(attributedString: attributed)
-        mutable.addAttribute(.foregroundColor, value: UIColor.label, range: full)
-
-        let framesetter = CTFramesetterCreateWithAttributedString(mutable as CFAttributedString)
+        // 颜色已经在 TextPaginator.attributes 里写成 UIColor.label（动态色，按当前 trait 解析）。
+        // 之前为「上色」在这里把整章文本复制一份 mutable，正文一长就是成倍的内存与 CPU，
+        // 大文件进入阅读几秒内就被系统杀掉。现在直接画共享的那一份。
+        let framesetter = CTFramesetterCreateWithAttributedString(attributed as CFAttributedString)
         let path = CGPath(rect: CGRect(origin: .zero, size: bounds.size), transform: nil)
         let frame = CTFramesetterCreateFrame(framesetter,
                                              CFRange(location: visible.location,

@@ -35,19 +35,26 @@ enum ChapterSplitter {
         var headings: [(title: String, start: Int, bodyStart: Int)] = []
         var index = 0
         while index < ns.length {
-            let lineRange = ns.lineRange(for: NSRange(location: index, length: 0))
-            let rawLine = ns.substring(with: lineRange)
-            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !line.isEmpty,
-               line.count <= maxTitleLength,
-               headingPattern?.firstMatch(in: line,
-                                          options: [],
-                                          range: NSRange(location: 0, length: (line as NSString).length)) != nil {
-                headings.append((compact(line),
-                                 lineRange.location,
-                                 lineRange.location + lineRange.length))
+            var lineStart = 0, lineEnd = 0, contentsEnd = 0
+            ns.getLineStart(&lineStart, end: &lineEnd, contentsEnd: &contentsEnd,
+                            for: NSRange(location: index, length: 0))
+            let contentLength = max(0, contentsEnd - lineStart)
+            // 先看长度，再决定要不要把这一行取出来。
+            // 整本几十 MB 有上百万行，原来每行都 substring 一次，
+            // 会瞬间产生上百万个临时字符串，主线程直接卡到被系统杀掉
+            // （表现就是「加载大文件小说时闪退」）。
+            if contentLength > 0, contentLength <= maxTitleLength * 2 {
+                let line = ns.substring(with: NSRange(location: lineStart, length: contentLength))
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !line.isEmpty,
+                   line.count <= maxTitleLength,
+                   headingPattern?.firstMatch(in: line,
+                                              options: [],
+                                              range: NSRange(location: 0, length: (line as NSString).length)) != nil {
+                    headings.append((compact(line), lineStart, lineEnd))
+                }
             }
-            let next = lineRange.location + lineRange.length
+            let next = lineEnd
             if next <= index { break }
             index = next
         }

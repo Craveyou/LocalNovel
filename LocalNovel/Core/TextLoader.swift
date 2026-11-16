@@ -50,8 +50,12 @@ enum TextLoader {
     }()
 
     /// 纯文本读取（txt / md）
+    /// 用 mappedIfSafe：几十 MB 的正文不再整份拷贝进堆，直接映射文件，
+    /// 只有解码后生成的 String 占用内存（大文件闪退的重要一环）。
     static func load(_ url: URL, preferred: TextEncodingOption = .auto) throws -> String {
-        guard let data = try? Data(contentsOf: url) else { throw TextError.unreadable(url) }
+        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else {
+            throw TextError.unreadable(url)
+        }
         if let text = decode(data, preferred: preferred) { return normalize(text) }
         throw TextError.undecodable(url)
     }
@@ -129,6 +133,55 @@ enum TextLoader {
         return decodeAutomatically(data)
     }
 
+    /// 判定编码时只看前 64 KB：中文正文的字节分布在这个长度上已足够稳定
+    private static let decodeSampleLimit = 64 * 1024
+
+    /// 在样本上比较 GB18030 / Big5，返回更可读的那个编码。
+    /// 判不准（样本几乎全是 ASCII、两种编码得分接近）就返回 nil，
+    /// 交给整份文件打分，避免把 Big5 的书错认成 GBK。
+    private static func guessLegacyEncoding(in sample: Data) -> String.Encoding? {
+        var best: (encoding: String.Encoding, score: Double)?
+        var runnerUp = -Double.infinity
+        for enc in legacyEncodings {
+            guard let s = decodeSample(sample, encoding: enc), !isGarbled(s) else { continue }
+            let score = readability(s)
+            if score > (best?.score ?? -Double.infinity) {
+                runnerUp = best?.score ?? -Double.infinity
+                best = (enc, score)
+            } else if score > runnerUp {
+                runnerUp = score
+            }
+        }
+        guard let best, best.score >= 0.35 else { return nil }
+        guard hasCJKContent(sample) else { return nil }
+        if runnerUp.isFinite, best.score - runnerUp < 0.08 { return nil }
+        return best.encoding
+    }
+
+    /// 样本里非 ASCII 字节占比够高才值得相信「简繁判定」
+    private static func hasCJKContent(_ sample: Data) -> Bool {
+        var nonASCII = 0
+        var total = 0
+        for byte in sample.prefix(4096) {
+            total += 1
+            if byte >= 0x80 { nonASCII += 1 }
+        }
+        guard total > 0 else { return false }
+        return Double(nonASCII) / Double(total) > 0.10
+    }
+
+    /// 样本末尾可能切在多字节字符中间：回退 1~3 字节再试，避免整体解码失败
+    private static func decodeSample(_ sample: Data, encoding: String.Encoding) -> String? {
+        for trim in 0..<4 {
+            let end = sample.count - trim
+            guard end > 3 else { return nil }
+            if let s = String(data: sample.prefix(end), encoding: encoding), !s.isEmpty {
+                return s
+            }
+        }
+        return nil
+    }
+
     /// 自动检测：BOM → 严格 UTF-8 → 有特征的 UTF-16 → GB18030/Big5 打分 → 系统探测
     private static func decodeAutomatically(_ data: Data) -> String? {
         if let s = decodeByBOM(data) { return s }
@@ -144,6 +197,15 @@ enum TextLoader {
         }
 
         var best: (text: String, score: Double)?
+        // 大文件先在小样本上判编码，再整份解一次。
+        // 原来把 GB18030 / Big5 各解一份全文再比对，一本 50 MB 的书会同时持有
+        // 两三个完整 String（每个约 100 MB），还没画出一行就被系统杀掉。
+        if data.count > decodeSampleLimit {
+            if let encoding = guessLegacyEncoding(in: data.prefix(decodeSampleLimit)),
+               let s = String(data: data, encoding: encoding), !s.isEmpty, !isGarbled(s) {
+                return s
+            }
+        }
         for enc in legacyEncodings {
             guard let s = String(data: data, encoding: enc), !s.isEmpty else { continue }
             if isGarbled(s) { continue }
@@ -260,6 +322,9 @@ enum TextLoader {
     static func normalize(_ s: String) -> String {
         var t = s
         if t.hasPrefix("\u{FEFF}") { t.removeFirst() }
+        // 没有 \r 就不要做替换：replacingOccurrences 会复制整份文本，
+        // 几十 MB 的书白复制一次就是几十 MB 的峰值内存。
+        guard t.contains("\r") else { return t }
         return t
             .replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")

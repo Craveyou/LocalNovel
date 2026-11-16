@@ -349,8 +349,8 @@ def main():
           and "DocumentsBootstrap.guideFileName" in resolver)
     check("切回前台补写说明文件", "DocumentsBootstrap.ensureVisibleInFilesApp()" in store)
     check("版本号提升以刷新系统元数据",
-          "<string>2.8</string>" in plist and "CURRENT_PROJECT_VERSION = 1" in pbx
-          and "MARKETING_VERSION = 2.8" in pbx)
+          "<string>2.9</string>" in plist and "CURRENT_PROJECT_VERSION = 1" in pbx
+          and "MARKETING_VERSION = 2.9" in pbx)
     check("UI 给出「文件 App 搜索本地小说」兜底路径",
           "搜索框搜「本地小说」" in welcome and "搜索「本地小说」" in store)
     check("AppIcon asset catalog（1024 + Contents.json）",
@@ -617,7 +617,8 @@ def main():
     check("空白页不单独成页（分页点落在段尾时不产生空页）",
           "trimmingCharacters(in: .whitespacesAndNewlines).isEmpty" in paginator)
     check("容器放不下一行时立即退出（不死循环）",
-          "guard visible.length > 0 else { break }" in paginator)
+          "guard visible.length > 0 else { return (0, nil) }" in paginator
+          and "guard step.advance > 0 else { break }" in paginator)
     check("分页与绘制共用同一套排版参数",
           "static func attributes(fontSize" in paginator
           and "TextPaginator.attributed(" in paged)
@@ -626,8 +627,9 @@ def main():
     check("文字页用 CoreText 绘制同一段区间",
           "class CoreTextPageView" in paged and "CTFrameDraw(frame, context)" in paged
           and "NSIntersectionRange(textRange, full)" in paged)
-    check("文字颜色随浅色 / 深色实时取，不固化在分页里",
-          "mutable.addAttribute(.foregroundColor, value: UIColor.label" in paged)
+    check("文字用动态色，绘制时不复制整章文本",
+          ".foregroundColor: UIColor.label" in paginator
+          and "NSMutableAttributedString(attributedString: attributed)" not in paged)
     check("翻页记忆沿用段落锚点，与滚动模式互通",
           'restoreParagraph' in paged and 'anchor.hasPrefix("blk-p")' in reader
           and 'noteAnchor("blk-p\\(paragraph)"' in reader)
@@ -700,8 +702,8 @@ def main():
     check("文档正文含双格式包一节",
           "### 5. 同一部书按格式分成两个包（PDF 包 + 图片包）"
           in (ROOT / "Docs" / "漫画目录结构说明.md").read_text(encoding="utf-8"))
-    check("版本升到 2.8 / build 1",
-          "<string>2.8</string>" in plist and "<key>CFBundleVersion</key>\n\t<string>1</string>" in plist)
+    check("版本升到 2.9 / build 1",
+          "<string>2.9</string>" in plist and "<key>CFBundleVersion</key>\n\t<string>1</string>" in plist)
 
 
     print("\n== N. 本轮：底部三页 / 短剧 / NAS 连接 ==")
@@ -942,8 +944,8 @@ def main():
     check("NAS 书目录里直接放文件时仍当作一本书",
           "把目录本身当成一本书" in nas_lib_views
           and "hasMedia ? 1 : nil" in nas_lib)
-    check("版本升到 2.8 / build 1",
-          "<string>2.8</string>" in plist
+    check("版本升到 2.9 / build 1",
+          "<string>2.9</string>" in plist
           and "<key>CFBundleVersion</key>\n\t<string>1</string>" in plist)
 
     print("\n== S. 本轮：txt 乱码（UTF-16 误判 / GBK / Big5） ==")
@@ -981,6 +983,45 @@ def main():
     check("NAS 阅读页同样能换编码",
           "TextEncodingStore.bookKey(forURL:" in nas_lib_views
           and "RemoteTextCache.shared.invalidate()" in nas_lib_views)
+
+    # ---------- T. 本轮：标签栏不收起 / 章节跳末页 / 大文件闪退 ----------
+    print("\n== T. 本轮：阅读标签栏 / 章节跳末页 / 大文件内存 ==")
+    check("阅读页自己声明隐藏底部标签栏（书库）",
+          ".toolbar(.hidden, for: .tabBar)" in reader)
+    check("阅读页自己声明隐藏底部标签栏（NAS）",
+          ".toolbar(.hidden, for: .tabBar)" in nas_lib_views)
+    check("隐藏标签栏声明在 tab 内容视图上（写在 TabView 上不生效）",
+          ".toolbar(chrome.isImmersive ? .hidden : .visible, for: .tabBar)\n                .tabItem" in tab)
+    check("跳末页根因：按 pages 取段落，插图/章末页不写锚点",
+          "if case .text(let slice) = pages[currentIndex] { return slice.paragraph }" in paged
+          and "if let paragraph = currentParagraph { onProgress?(paragraph) }" in paged)
+    check("锚点越界回落到本章开头（重新切章后不跳末尾）",
+          "value < paragraphs.count else { return 0 }" in reader)
+    check("整章只建一份排版文本（不再每页一份全文）",
+          "private var measureAttributed" in paged
+          and "let attributed = measureAttributed" in paged)
+    check("页控制器按窗口淘汰（大章节不常驻全部页视图）",
+          "func trimBuilt(around" in paged and "abs(i - index) > 2" in paged)
+    check("绘制不再复制整章文本上色",
+          ".foregroundColor: UIColor.label" in paginator
+          and "NSMutableAttributedString(attributedString: attributed)" not in paged)
+    check("大文件读取用内存映射，不整份拷贝进堆",
+          "Data(contentsOf: url, options: .mappedIfSafe)" in loader_src)
+    check("大文件先在小样本上判编码（不同时解出多份全文）",
+          "decodeSampleLimit" in loader_src and "guessLegacyEncoding" in loader_src
+          and "data.prefix(decodeSampleLimit)" in loader_src)
+    check("分页循环用 autoreleasepool 回收中间对象",
+          "autoreleasepool { () -> (advance: Int, paragraph: Int?) in" in paginator)
+    check("没有 \\r 时不做换行替换（省一次全文复制）",
+          'guard t.contains("\\r") else { return t }' in loader_src)
+    check("启动扫描离开主线程（大文件不卡死主线程）",
+          "let docs = appDocumentsURL()\n        let external = RootFolderAccess.shared.restoreRootFolder()" in store_src
+          and "DispatchQueue.global(qos: .userInitiated).async {\n            var docsReport" in store_src)
+    check("切章逐行扫描先判行长，不为每行创建字符串",
+          "contentLength <= maxTitleLength * 2" in splitter
+          and "getLineStart(&lineStart" in splitter)
+    check("扫描期间有「正在读取书库」反馈",
+          "library.isScanning" in root_view)
 
     print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")
     if FAIL:

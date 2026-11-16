@@ -41,6 +41,9 @@ enum TextPaginator {
 
     /// 排版属性：字号 + 行距 + 段间距。段间距取 lineSpacing，
     /// 与滚动模式里 LazyVStack(spacing: lineSpacing) 的视觉一致。
+    ///
+    /// 颜色写成动态色 UIColor.label：绘制时按当前 trait 解析，深浅色切换只需重绘。
+    /// 这样逐页绘制就不用再为「上色」复制一份整章文本（大文件的内存杀手之一）。
     static func attributes(fontSize: CGFloat, lineSpacing: CGFloat) -> [NSAttributedString.Key: Any] {
         let style = NSMutableParagraphStyle()
         style.lineSpacing = lineSpacing
@@ -48,7 +51,8 @@ enum TextPaginator {
         style.lineBreakMode = .byWordWrapping
         return [
             .font: UIFont.systemFont(ofSize: fontSize),
-            .paragraphStyle: style
+            .paragraphStyle: style,
+            .foregroundColor: UIColor.label
         ]
     }
 
@@ -68,6 +72,15 @@ enum TextPaginator {
                          size: CGSize) -> [ReaderPageSlice] {
         guard !paragraphs.isEmpty, size.width > 40, size.height > 60 else { return [] }
         let attr = attributed(paragraphs: paragraphs, fontSize: fontSize, lineSpacing: lineSpacing)
+        return paginate(attributed: attr, paragraphs: paragraphs, size: size)
+    }
+
+    /// 分页（复用外部建好的 attributed）：翻页阅读器整章只建一份排版文本，
+    /// 测量与逐页绘制共用，避免「每页一份全文」把内存放大几十倍。
+    static func paginate(attributed attr: NSAttributedString,
+                         paragraphs: [String],
+                         size: CGSize) -> [ReaderPageSlice] {
+        guard !paragraphs.isEmpty, size.width > 40, size.height > 60 else { return [] }
         let length = attr.length
         guard length > 0 else { return [] }
 
@@ -79,20 +92,29 @@ enum TextPaginator {
         var slices: [ReaderPageSlice] = []
         var location = 0
         while location < length {
-            let frame = CTFramesetterCreateFrame(framesetter,
-                                                 CFRange(location: location, length: 0),
-                                                 path, nil)
-            let visible = CTFrameGetVisibleStringRange(frame)
-            // 容器连一行都放不下时必须退出，否则会死循环
-            guard visible.length > 0 else { break }
-            let chunk = text.substring(with: NSRange(location: location, length: visible.length))
-            // 只剩换行 / 空白的「页」不单独成页（分页处正好落在段落结尾时会出现）
-            if !chunk.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                slices.append(ReaderPageSlice(location: location,
-                                              length: visible.length,
-                                              paragraph: paragraphIndex(of: location, starts: starts)))
+            // 每次试排都会产生 CTFrame 与一页字符串：用 autoreleasepool 及时回收，
+            // 否则一次分页几千页会把中间对象全压在内存里（大文件闪退的原因之一）。
+            let step = autoreleasepool { () -> (advance: Int, paragraph: Int?) in
+                let frame = CTFramesetterCreateFrame(framesetter,
+                                                     CFRange(location: location, length: 0),
+                                                     path, nil)
+                let visible = CTFrameGetVisibleStringRange(frame)
+                // 容器连一行都放不下时必须退出，否则会死循环
+                guard visible.length > 0 else { return (0, nil) }
+                let chunk = text.substring(with: NSRange(location: location, length: visible.length))
+                // 只剩换行 / 空白的「页」不单独成页（分页处正好落在段落结尾时会出现）
+                if chunk.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    return (visible.length, nil)
+                }
+                return (visible.length, paragraphIndex(of: location, starts: starts))
             }
-            location += visible.length
+            guard step.advance > 0 else { break }
+            if let paragraph = step.paragraph {
+                slices.append(ReaderPageSlice(location: location,
+                                              length: step.advance,
+                                              paragraph: paragraph))
+            }
+            location += step.advance
         }
         return slices
     }

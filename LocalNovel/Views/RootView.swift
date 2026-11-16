@@ -92,6 +92,16 @@ struct WelcomeView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 18) {
+                // 扫描已挪到后台：大书库 / 大文件时先给个「在读」提示，不再白屏几秒
+                if library.isScanning {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                        Text("正在读取书库…")
+                    }
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                }
+
                 Image(systemName: "books.vertical.fill")
                     .font(.system(size: 52))
                     .foregroundStyle(.tint)

@@ -59,34 +59,54 @@ final class LibraryStore: ObservableObject {
     // MARK: - 零交互主路径
 
     /// 启动恢复：优先读 App 文档目录；没有分区再尝试上次选中的外部目录（兼容旧版本数据）。
+    ///
+    /// 扫描必须离开主线程：整本切章要解码全文 + 逐行找标题，一本几十 MB 的书
+    /// 足以把主线程卡到被系统杀掉（表现就是「加载大文件小说时闪退」）。
     func restore() {
-        let docs = appDocumentsURL()
-        var docsReport: ScanDiagnostics?
-        if let docs {
-            let report = BookScanner.scanWithDiagnostics(
-                rootURL: docs, cleanTitles: Preferences.shared.cleanTitles)
-            if !report.library.books.isEmpty {
-                usingAppDocuments = true
-                invalidateCaches()
-                apply(report, root: docs,
-                      headline: "已从 App 文档目录载入 \(report.library.books.count) 本")
-                return
-            }
-            docsReport = report
-        }
-        if let external = RootFolderAccess.shared.restoreRootFolder() {
-            usingAppDocuments = false
-            invalidateCaches()
-            let report = BookScanner.scanWithDiagnostics(
-                rootURL: external, cleanTitles: Preferences.shared.cleanTitles)
-            if !report.library.books.isEmpty {
-                apply(report, root: external, headline: "已载入书库")
-                return
-            }
-            applyEmpty(report, docsReport: docsReport)
+        if isScanning {
+            pendingRescan = true
             return
         }
-        applyEmpty(docsReport, docsReport: docsReport)
+        let docs = appDocumentsURL()
+        let external = RootFolderAccess.shared.restoreRootFolder()
+        let clean = Preferences.shared.cleanTitles
+        isScanning = true
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            var docsReport: ScanDiagnostics?
+            if let docs {
+                let report = BookScanner.scanWithDiagnostics(rootURL: docs, cleanTitles: clean)
+                if !report.library.books.isEmpty {
+                    DispatchQueue.main.async {
+                        self.usingAppDocuments = true
+                        self.invalidateCaches()
+                        self.isScanning = false
+                        self.apply(report, root: docs,
+                                   headline: "已从 App 文档目录载入 \(report.library.books.count) 本")
+                    }
+                    return
+                }
+                docsReport = report
+            }
+            if let external {
+                let report = BookScanner.scanWithDiagnostics(rootURL: external, cleanTitles: clean)
+                DispatchQueue.main.async {
+                    self.usingAppDocuments = false
+                    self.invalidateCaches()
+                    self.isScanning = false
+                    if report.library.books.isEmpty {
+                        self.applyEmpty(report, docsReport: docsReport)
+                    } else {
+                        self.apply(report, root: external, headline: "已载入书库")
+                    }
+                }
+                return
+            }
+            DispatchQueue.main.async {
+                self.isScanning = false
+                self.applyEmpty(docsReport, docsReport: docsReport)
+            }
+        }
     }
 
     /// 每次回到前台：补写说明文件 + 后台重扫，文件 App 里刚整理的结构立刻生效。
@@ -217,14 +237,25 @@ final class LibraryStore: ObservableObject {
         }
         usingAppDocuments = true
         invalidateCaches()
-        let report = BookScanner.scanWithDiagnostics(
-            rootURL: docs, cleanTitles: Preferences.shared.cleanTitles)
-        if report.library.books.isEmpty {
-            applyEmpty(report, docsReport: report)
-            errorMessage = "App 文档目录里还没有书。把文件放进「小说 / 漫画 / 整理」，回到本 App 会自动出现。"
-        } else {
-            apply(report, root: docs,
-                  headline: "已从 App 文档目录载入 \(report.library.books.count) 本")
+        if isScanning {
+            pendingRescan = true
+            return
+        }
+        isScanning = true
+        let clean = Preferences.shared.cleanTitles
+        // 同样放到后台：书多 / 书大时同步扫描会卡住界面
+        DispatchQueue.global(qos: .userInitiated).async {
+            let report = BookScanner.scanWithDiagnostics(rootURL: docs, cleanTitles: clean)
+            DispatchQueue.main.async {
+                self.isScanning = false
+                if report.library.books.isEmpty {
+                    self.applyEmpty(report, docsReport: report)
+                    self.errorMessage = "App 文档目录里还没有书。把文件放进「小说 / 漫画 / 整理」，回到本 App 会自动出现。"
+                } else {
+                    self.apply(report, root: docs,
+                               headline: "已从 App 文档目录载入 \(report.library.books.count) 本")
+                }
+            }
         }
     }
 
