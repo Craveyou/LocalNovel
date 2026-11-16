@@ -442,9 +442,11 @@ def main():
           and "pendingAnchor = imageAnchor" in reader
           and "proxy.scrollTo(anchor, anchor: .center)" in reader
           and "noteAnchor(anchor, for: chapter.id)" in reader)
-    check("章末有下一章按钮，最后一章给出提示",
-          "下一章" in reader and "onOpenNext(next)" in reader
-          and "已是最后一章" in reader and "chapterFooter" in reader)
+    check("小说章末不再放「下一章」按钮；其他分区仍保留按钮 + 最后一章提示",
+          "private var endMark" in reader
+          and "if category == .novel {" in reader
+          and "onOpenNext(next)" in reader
+          and "advanceIfPulledPastBottom" in reader)
     check("下一章基于最新章节列表计算并直接切换",
           "nextChapter(after: chapter)" in welcome
           and "onOpenNext: { next in selectedChapter = next }" in welcome
@@ -637,9 +639,14 @@ def main():
     check("点屏幕左右边缘翻页（中间不误触）",
           "width * 0.28" in paged and "width * 0.72" in paged
           and "shouldReceive touch" in paged)
-    check("末页给「下一章 / 已是最后一章」",
-          "struct FooterPageView" in paged and "已是最后一章" in paged
-          and "下一章" in paged)
+    check("翻到末页（滑动继续右拖 / 卷曲左滑 / 右侧点击）直接进下一章",
+          "func advanceToNextChapter" in paged
+          and "nextChapterThreshold" in paged
+          and "handleSwipeLeft" in paged
+          and "scrollViewDidEndDragging" in paged
+          and "if !input.hasNextChapter { list.append(.footer) }" in paged
+          and "struct FooterPageView" in paged and "已是最后一章" in paged
+          and "Button(action: onOpenNext)" not in paged)
     check("翻页模式下插图 / 音视频各占一页，内容不丢",
           "case image(MediaItem)" in paged and "case av(MediaItem)" in paged
           and "MediaAttachmentView(item: item" in paged)
@@ -1116,6 +1123,36 @@ def main():
           "let onSettings: () -> Void" in controls
           and 'Label("全部设置", systemImage: "gearshape")' in controls
           and "onSettings: { showSettings = true }" in reader)
+
+    print("\n== W. 本轮：章末去掉「下一章」按钮，翻到底直接续章 ==")
+    reader = (APP / "Views" / "ReaderView.swift").read_text(encoding="utf-8")
+    paged = (APP / "Views" / "PagedReaderView.swift").read_text(encoding="utf-8")
+
+    check("有下一章时不再追加章末页（末页就是正文最后一页）",
+          "if !input.hasNextChapter { list.append(.footer) }" in paged)
+    check("章末页只剩「已是最后一章」，不再有按钮",
+          "struct FooterPageView" in paged
+          and "Button" not in paged.split("private struct FooterPageView")[1]
+          and "已是最后一章" in paged)
+    check("统一的续章出口：末页再翻才切，一次翻页只切一次",
+          "func advanceToNextChapter" in paged
+          and "nextTriggered" in paged
+          and "input?.hasNextChapter == true" in paged)
+    check("滑动翻页：末页继续右拖超过阈值才切章",
+          "nextChapterThreshold: CGFloat = 72" in paged
+          and ".contentOffset.x - maxOffset" in paged
+          and "func finishDrag() -> Bool" in paged)
+    check("仿真翻页：末页左滑切章（不再顶死在末页）",
+          "UISwipeGestureRecognizer" in paged
+          and "@objc private func handleSwipeLeft" in paged
+          and "swipe.cancelsTouchesInView = false" in paged)
+    check("点击翻页到末页同样进下一章",
+          "if delta > 0, advanceToNextChapter() { return }" in paged)
+    check("小说上下滚动：到底继续上拉进下一章（整理不受影响，短章也能拉）",
+          "onScrollGeometryChange" in reader
+          and "advanceIfPulledPastBottom" in reader
+          and "guard category == .novel" in reader
+          and ".scrollBounceBehavior(.always" in reader)
 
     print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")
     if FAIL:

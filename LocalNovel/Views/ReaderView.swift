@@ -2,8 +2,8 @@ import SwiftUI
 
 // MARK: - 第三栏：阅读器
 // 四种形态：
-//   · 小说（左右翻页）：CoreText 分页 + 仿真翻页，页内点击左右边缘翻页
-//   · 小说（上下滚动，可在设置里切换）：正文 → 图片 → 章末音视频 → 下一章
+//   · 小说（左右翻页）：CoreText 分页 + 仿真翻页，页内点击左右边缘翻页，末页再翻即进下一章
+//   · 小说（上下滚动，可在设置里切换）：正文 → 图片 → 章末音视频 → 到底继续上拉进下一章
 //   · 整理（始终上下滚动）：图文混排，插图与音视频跟在正文后面
 //   · 漫画（图片章节 / pdf 单话）：满宽逐页连排，点击进全屏
 //   · 短剧（剧照包）：与漫画同一套满宽连排；视频集则走整理那套内联播放器
@@ -42,6 +42,8 @@ struct ReaderView: View {
     @State private var showControls = false
     /// 控制菜单里的「目录」弹层
     @State private var showTOC = false
+    /// 滚动模式：到底之后的上拉是否还有效（切过章或松手回弹后重新武装，保证一次一记）
+    @State private var bottomPullArmed = true
 
     init(chapter: Chapter,
          nextChapter: Chapter? = nil,
@@ -263,6 +265,18 @@ struct ReaderView: View {
                 .padding(.horizontal, 20)
                 .padding(.vertical, 16)
             }
+            // 小说上下滚动：读到底还继续上拉 = 下一章（章末不再有「下一章」按钮）。
+            // 「整理」是图文混排的另一类，保持原样，所以这里按分区拦一道。
+            // 始终允许回弹：不足一屏的短章也得能「拉一下」进下一章，否则会卡死在末页。
+            .scrollBounceBehavior(.always, axes: .vertical)
+            .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                // 距底部还能再拉出多少：正常滚动恒 ≤ 0，只有橡皮筋越界才变正
+                let bottom = max(geometry.contentSize.height, geometry.containerSize.height)
+                return geometry.contentOffset.y + geometry.containerSize.height
+                    - bottom - geometry.contentInsets.bottom
+            } action: { _, pull in
+                advanceIfPulledPastBottom(pull)
+            }
             .onAppear { restoreAnchor(proxy) }
             .onChange(of: pendingAnchor) { _, anchor in
                 scrollToPendingAnchor(anchor, proxy: proxy)
@@ -383,7 +397,6 @@ struct ReaderView: View {
                                     lineSpacing: prefs.lineSpacing,
                                     restoreParagraph: restoreParagraph,
                                     hasNextChapter: nextChapter != nil,
-                                    nextTitle: nextChapter?.displayTitle ?? "",
                                     isComic: isComic,
                                     boostRate: prefs.longPressRate,
                                     style: prefs.pageTurn.flipStyle),
@@ -442,10 +455,16 @@ struct ReaderView: View {
     }
 
     // MARK: 章末导航
+    //
+    // 小说：章末不放「下一章」了。翻页读到底（或滚动模式下继续上拉）就是下一章，
+    //       只在整本最后一章留一行「已是最后一章」，避免用户以为卡住。
+    // 漫画 / 整理 / 短剧：本来就靠「连排到底 + 点按钮」，翻页设置不影响它们，按钮保留。
 
     private var chapterFooter: some View {
         Group {
-            if let next = nextChapter {
+            if category == .novel {
+                if nextChapter == nil { endMark }
+            } else if let next = nextChapter {
                 Button {
                     onOpenNext(next)
                 } label: {
@@ -472,17 +491,35 @@ struct ReaderView: View {
                 .buttonStyle(.plain)
                 .padding(.top, 28)
             } else {
-                VStack(spacing: 6) {
-                    Image(systemName: "checkmark.circle")
-                        .font(.title3)
-                    Text(lastUnitText)
-                        .font(.footnote.weight(.medium))
-                }
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity)
-                .padding(.top, 28)
+                endMark
             }
         }
+    }
+
+    private var endMark: some View {
+        VStack(spacing: 6) {
+            Image(systemName: "checkmark.circle")
+                .font(.title3)
+            Text(lastUnitText)
+                .font(.footnote.weight(.medium))
+        }
+        .foregroundStyle(.secondary)
+        .frame(maxWidth: .infinity)
+        .padding(.top, 28)
+    }
+
+    /// 滚动模式：读到底再往上拉一截 = 下一章。
+    /// 阈值给得比翻页那套大（120pt）：惯性甩到底的橡皮筋不会误触发，
+    /// 但刻意往上拉一定能过。一次上拉只切一次，回落（pull ≤ 4）后重新武装。
+    private func advanceIfPulledPastBottom(_ pull: CGFloat) {
+        guard category == .novel, let next = nextChapter else { return }
+        guard pull > 4 else {
+            bottomPullArmed = true
+            return
+        }
+        guard bottomPullArmed, pull > 120 else { return }
+        bottomPullArmed = false
+        onOpenNext(next)
     }
 
     private func sectionLabel(_ text: String) -> some View {

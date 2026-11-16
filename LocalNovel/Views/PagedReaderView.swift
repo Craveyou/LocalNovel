@@ -16,6 +16,10 @@ import CoreText
 //   · 阅读记忆沿用段落锚点 blk-pN，与滚动模式互通；
 //   · 整章只保留一份 attributed，页面控制器按窗口装载，大文件不会把内存吃满。
 //
+// 章末续章：本章最后一页再往后翻 = 下一章（章末没有「下一章」按钮，也不再有章末空白页）。
+//   滑动：末页继续右拖过阈值；卷曲：末页左滑；点击：末页点右侧。
+//   三个入口都收在 PagedBaseController.advanceToNextChapter，一次翻页只切一次。
+//
 // 定位规则（两处「跳到最后一页」的历史坑都在这）：
 // 1) 只有在用户真正翻过页之后，才用「当前页」反推段落保持位置；
 //    在这之前一直用传入的记忆段落。首帧尺寸不稳定时反复 rebuild 也不会把位置挤走。
@@ -34,8 +38,8 @@ struct PagedReaderInput {
     let fontSize: CGFloat
     let lineSpacing: CGFloat
     let restoreParagraph: Int
+    /// 本章后面还有没有章：决定「末页继续翻」是切下一章还是停住
     let hasNextChapter: Bool
-    let nextTitle: String
     let isComic: Bool
     let boostRate: Double
     let style: PageFlipStyle
@@ -112,6 +116,8 @@ class PagedBaseController: UIViewController {
     private var restoreParagraph = 0
     /// 用户是否已在本章内主动翻页（翻过之后才改为「保持当前页」）
     private var didNavigate = false
+    /// 是否已经把「翻到底」换成切章：一次翻页只切一次，等上层重建本控制器
+    private var nextTriggered = false
     private let pageLabel = UILabel()
 
     // MARK: 子类扩展点
@@ -158,6 +164,7 @@ class PagedBaseController: UIViewController {
         if chapterChanged {
             restoreParagraph = max(0, new.restoreParagraph)
             didNavigate = false
+            nextTriggered = false
         }
         input = new
         if new.signature != signature {
@@ -201,7 +208,9 @@ class PagedBaseController: UIViewController {
         // 保持与滚动模式完全一致的内容顺序：正文 → 插图（含动图）→ 音视频
         for item in input.images { list.append(.image(item)) }
         for item in input.avMedia { list.append(.av(item)) }
-        list.append(.footer)
+        // 有下一章时不再插「章末页」：本章最后一页再往后翻就直接进下一章
+        // （以前这里会多出一页，上面挂着「下一章」按钮，翻到底要先过一页空页）
+        if !input.hasNextChapter { list.append(.footer) }
         pages = list
 
         // 定位：用户没翻过页 → 永远用记忆段落（尺寸变化不会把位置挤走）；
@@ -231,12 +240,31 @@ class PagedBaseController: UIViewController {
     }
 
     func move(by delta: Int) {
+        // 章尾继续往后翻：不留在本页，直接进下一章（点右侧翻页也走这里）
+        if delta > 0, advanceToNextChapter() { return }
         let target = min(max(currentIndex + delta, 0), max(pages.count - 1, 0))
         guard target != currentIndex else { return }
         currentIndex = target
         didNavigate = true
         presentPage(at: target, animated: true)
         afterPageChange()
+    }
+
+    /// 本章已经翻到最后一页、还要继续往后翻：交给上层切到下一章。
+    ///
+    /// 返回 true 表示这一次翻页已被「下一章」接管，子类不要再做本地翻页
+    /// （否则会先在本章内弹回末页，再被切章覆盖，看起来像卡了一下）。
+    /// 章末已经没有「下一章」按钮，翻到底就是续章，这里是唯一的入口。
+    @discardableResult
+    func advanceToNextChapter(at position: Int? = nil) -> Bool {
+        let index = position ?? currentIndex
+        guard !pages.isEmpty,
+              index >= pages.count - 1,
+              input?.hasNextChapter == true,
+              !nextTriggered else { return false }
+        nextTriggered = true
+        onOpenNext?()
+        return true
     }
 
     @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
@@ -320,10 +348,7 @@ class PagedBaseController: UIViewController {
                                        chapterId: input?.chapterId ?? "",
                                        boostRate: input?.boostRate ?? 2.0))
         case .footer:
-            vc = hosting(FooterPageView(hasNext: input?.hasNextChapter ?? false,
-                                        nextTitle: input?.nextTitle ?? "",
-                                        isComic: input?.isComic ?? false,
-                                        onOpenNext: { [weak self] in self?.onOpenNext?() }))
+            vc = hosting(FooterPageView(isComic: input?.isComic ?? false))
         }
         vc.view.backgroundColor = .systemBackground
         // 用 tag 记住页码：容器淘汰页面后仍要能认出它是第几页
@@ -343,10 +368,19 @@ class PagedBaseController: UIViewController {
 extension PagedBaseController: UIGestureRecognizerDelegate {
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                            shouldReceive touch: UITouch) -> Bool {
+        // 「末页左滑进下一章」不受下面这条限制：末页可能是插图 / 音视频页
+        if gestureRecognizer is UISwipeGestureRecognizer { return true }
         // 只在文字页接收点击翻页；图片页要留给「点开全屏」，章末页要留给按钮
         guard currentIndex >= 0, currentIndex < pages.count else { return false }
         if case .text = pages[currentIndex] { return true }
         return false
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+        // 卷曲引擎的翻页由 UIPageViewController 内部的 pan 处理，
+        // 末页左滑必须能和它共存，否则两个手势互相打断
+        true
     }
 }
 
@@ -373,6 +407,20 @@ final class CurlPageController: PagedBaseController {
         // 页码在最上层：插到 index 0，别盖住 label
         view.insertSubview(pager.view, at: 0)
         pager.didMove(toParent: self)
+
+        // 翻到末页后数据源不再给「下一页」，UIPageViewController 到这里手感就是顶住。
+        // 补一个左滑识别补上这段路：只在末页生效，用来进下一章。
+        let swipe = UISwipeGestureRecognizer(target: self, action: #selector(handleSwipeLeft))
+        swipe.direction = .left
+        swipe.delegate = self
+        // 不吞触摸，卷曲自己的 pan 照常工作
+        swipe.cancelsTouchesInView = false
+        view.addGestureRecognizer(swipe)
+    }
+
+    /// 末页左滑 = 下一章
+    @objc private func handleSwipeLeft() {
+        _ = advanceToNextChapter()
     }
 
     override func didRebuildPages() {
@@ -450,6 +498,13 @@ final class SlidePageController: PagedBaseController {
     private let scroller = UIScrollView()
     private var hosts: [Int: PageHost] = [:]
     private var pageWidth: CGFloat = 0
+    /// 末页继续往外拖出去的最大距离（松手才判定，避免手势中途反复触发）
+    private var overflow: CGFloat = 0
+    /// 本次拖动是从第几页开始的：只认「本来就在末页又继续往外拉」，
+    /// 快速连翻甩到末页那一下不算（那种情况用户还在找页，不是要换章）
+    private var dragStartIndex = 0
+    /// 末页再拖出去这么多就切下一章：小了不起作用，易误触；太大拉不出来
+    private let nextChapterThreshold: CGFloat = 72
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -573,8 +628,18 @@ final class SlidePageController: PagedBaseController {
 }
 
 extension SlidePageController: UIScrollViewDelegate {
+    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        overflow = 0
+        dragStartIndex = indexFromOffset()
+    }
+
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         guard pageWidth > 0, !pages.isEmpty else { return }
+        // 贴在末页还继续往外拖：记下最大越界距离。
+        // 只有内容的右边缘会越界，所以拖到中间页时这里恒为 0，不会误判。
+        let maxOffset = max(scroller.contentSize.width - scroller.bounds.width, 0)
+        overflow = max(overflow, scroller.contentOffset.x - maxOffset)
+
         let index = indexFromOffset()
         load(around: index)
         // 拖动 / 减速中实时显示页码，松手后 settle 再校准
@@ -583,12 +648,26 @@ extension SlidePageController: UIScrollViewDelegate {
         }
     }
 
+    func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+        // 回弹本身就是一次减速动画：等它走完再判定，不然拿到的是越界中的偏移
+        if !decelerate { _ = finishDrag() }
+    }
+
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
-        settle()
+        if !finishDrag() { settle() }
     }
 
     func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) {
         settle()
+    }
+
+    /// 松手后判定：从末页继续往外拉过阈值 → 进下一章。返回 true 表示已切章
+    private func finishDrag() -> Bool {
+        let dragged = overflow
+        let startedAtEnd = dragStartIndex >= pages.count - 1
+        overflow = 0
+        guard dragged >= nextChapterThreshold, startedAtEnd else { return false }
+        return advanceToNextChapter(at: indexFromOffset())
     }
 
     private func settle() {
@@ -760,46 +839,19 @@ private struct MediaPageView: View {
     }
 }
 
+/// 整本最后一章的收尾页。
+/// 有下一章时不再生成这一页：本章最后一页再往后翻就直接进下一章。
 private struct FooterPageView: View {
-    let hasNext: Bool
-    let nextTitle: String
     let isComic: Bool
-    let onOpenNext: () -> Void
 
     var body: some View {
-        VStack(spacing: 16) {
-            Spacer()
-            if hasNext {
-                Button(action: onOpenNext) {
-                    VStack(spacing: 8) {
-                        Text("下一章")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Text(nextTitle)
-                            .font(.body.weight(.medium))
-                            .multilineTextAlignment(.center)
-                        Image(systemName: "chevron.right")
-                            .font(.footnote.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(18)
-                    .frame(maxWidth: .infinity)
-                    .background(Color.secondary.opacity(0.12),
-                                in: RoundedRectangle(cornerRadius: 12))
-                }
-                .buttonStyle(.plain)
-            } else {
-                VStack(spacing: 6) {
-                    Image(systemName: "checkmark.circle")
-                        .font(.title3)
-                    Text(isComic ? "已是最后一话" : "已是最后一章")
-                        .font(.footnote.weight(.medium))
-                }
-                .foregroundStyle(.secondary)
-            }
-            Spacer()
+        VStack(spacing: 6) {
+            Image(systemName: "checkmark.circle")
+                .font(.title3)
+            Text(isComic ? "已是最后一话" : "已是最后一章")
+                .font(.footnote.weight(.medium))
         }
-        .padding(24)
+        .foregroundStyle(.secondary)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
