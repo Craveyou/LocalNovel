@@ -128,6 +128,16 @@ final class Preferences: ObservableObject {
         } else {
             pageTurn = .slide
         }
+        // 2.10 之前「左右翻页」只有仿真卷曲一种，初始值就是 .page。
+        // 升级到带滑动翻页的版本时迁移一次：老用户开机就能直接看到新手感，
+        // 想回去可在设置里重选「仿真翻页」（迁移只做一次，之后尊重用户选择）。
+        if !defaults.bool(forKey: Keys.slideMigrated) {
+            defaults.set(true, forKey: Keys.slideMigrated)
+            if pageTurn == .page {
+                pageTurn = .slide
+                defaults.set(PageTurnMode.slide.rawValue, forKey: Keys.pageTurn)
+            }
+        }
         cleanTitles = defaults.bool(forKey: Keys.cleanTitles)
         longPressRate = r > 0 ? r : 2.0
         // 默认 512 MB；用户显式选「不限制」时存的就是 0，要能区分「没设置过」
@@ -145,6 +155,7 @@ final class Preferences: ObservableObject {
         static let cleanTitles = "LocalNovel.cleanTitles"
         static let longPressRate = "LocalNovel.longPressRate"
         static let pageTurn = "LocalNovel.pageTurn"
+        static let slideMigrated = "LocalNovel.slideMigrated"
         static let imageCacheMB = "LocalNovel.imageCacheMB"
     }
 
