@@ -349,8 +349,8 @@ def main():
           and "DocumentsBootstrap.guideFileName" in resolver)
     check("切回前台补写说明文件", "DocumentsBootstrap.ensureVisibleInFilesApp()" in store)
     check("版本号提升以刷新系统元数据",
-          "<string>2.12.2</string>" in plist and "CURRENT_PROJECT_VERSION = 13" in pbx
-          and "MARKETING_VERSION = 2.12.2" in pbx)
+          "<string>2.13.0</string>" in plist and "CURRENT_PROJECT_VERSION = 14" in pbx
+          and "MARKETING_VERSION = 2.13.0" in pbx)
     check("UI 给出「文件 App 搜索本地小说」兜底路径",
           "搜索框搜「本地小说」" in welcome and "搜索「本地小说」" in store)
     check("AppIcon asset catalog（1024 + Contents.json）",
@@ -713,9 +713,9 @@ def main():
     check("文档正文含双格式包一节",
           "### 5. 同一部书按格式分成两个包（PDF 包 + 图片包）"
           in (ROOT / "Docs" / "漫画目录结构说明.md").read_text(encoding="utf-8"))
-    check("版本升到 2.12.2 / build 13",
-          "<string>2.12.2</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>13</string>" in plist)
+    check("版本升到 2.13.0 / build 14",
+          "<string>2.13.0</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>14</string>" in plist)
 
 
     print("\n== N. 本轮：底部三页 / 短剧 / NAS 连接 ==")
@@ -966,9 +966,9 @@ def main():
     check("远端文件缓存有上限并会按最久未修改淘汰",
           "static let byteLimit: Int64 = 512 * 1024 * 1024" in nas_lib
           and "Task.detached(priority: .utility) { trim(folder: folder, limit: byteLimit) }" in nas_lib)
-    check("版本升到 2.12.2 / build 13",
-          "<string>2.12.2</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>13</string>" in plist)
+    check("版本升到 2.13.0 / build 14",
+          "<string>2.13.0</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>14</string>" in plist)
 
     print("\n== S. 本轮：txt 乱码（UTF-16 误判 / GBK / Big5） ==")
     encoding_src = (APP / "Core" / "TextEncoding.swift").read_text(encoding="utf-8")
@@ -1274,8 +1274,8 @@ def main():
     check("相邻章正文预取（切章不空等）",
           "func warmNextChapter()" in reader
           and "library.paragraphs(for: next)" in reader)
-    check("版本已升到 2.12.2 / build 13",
-          "2.12.2" in (APP / "Info.plist").read_text(encoding="utf-8"))
+    check("版本已升到 2.13.0 / build 14",
+          "2.13.0" in (APP / "Info.plist").read_text(encoding="utf-8"))
 
     print("\n== Z. 本轮：上下菜单栏 + 进度滑杆 + 目录面板 ==")
     bars = (APP / "Views" / "ReaderChromeBars.swift").read_text(encoding="utf-8")
@@ -1652,9 +1652,39 @@ def main():
           "let preferred: TextEncodingOption" in rule_sheet_src
           and "ChapterSplitter.sample(from: url, maxLines: 2000, preferred: preferred)" in rule_sheet_src)
 
-    check("版本已升到 2.12.2 / build 13",
-          "<string>2.12.2</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>13</string>" in plist)
+    # ------------------------------------------------------------------
+    # X. 2.13.0：小说区按「文件」呈现（书名单不分章，带文件大小）
+    # ------------------------------------------------------------------
+    print("\n== X. 本轮：小说书名单只显示文件（2.13.0） ==")
+    sections_src = (APP / "Core" / "BookSections.swift").read_text(encoding="utf-8")
+    sidebar_src = (APP / "Views" / "LibrarySidebar.swift").read_text(encoding="utf-8")
+    root_src = (APP / "Views" / "RootView.swift").read_text(encoding="utf-8")
+
+    check("小说书行改为显示文件格式标签",
+          "static func formatLabel(for fileURL: URL) -> String" in sections_src
+          and "NovelFileMeta(url: book.folderURL)" in sidebar_src
+          and "Text(NovelScanner.formatLabel(for: url))" in sidebar_src)
+    check("书行显示文件大小（缓存 + 后台读，不阻塞列表）",
+          "enum BookFileSize" in sections_src
+          and "static func cached(for url: URL) -> String?" in sections_src
+          and "Task.detached(priority: .utility)" in sections_src
+          and "sizeText = await BookFileSize.load(for: url)" in sidebar_src)
+    check("格式标签覆盖 txt / md / epub / pdf",
+          all(tag in sections_src for tag in ['return "TXT"', 'return "MD"',
+                                              'return "EPUB"', 'return "PDF"']))
+    check("小说书行不再显示章数与「正在分章…」",
+          'if book.category == .novel {' in sidebar_src
+          and "} else if library.isSplitting(book) {" in sidebar_src)
+    check("书名单面不触发分章（分章留到阅读页）",
+          "ensureChapters" not in strip_non_code(sidebar_src)
+          and "library.ensureChapters(for: book)" in root_src)
+    check("删除确认按文件说明，不再报「1 章」",
+          "private func deleteMessage(_ book: Book) -> String" in sidebar_src
+          and 'book.category == .novel\n            ? NovelScanner.formatLabel(for: book.folderURL)' in sidebar_src)
+
+    check("版本已升到 2.13.0 / build 14",
+          "<string>2.13.0</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>14</string>" in plist)
 
     print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")
     if FAIL:

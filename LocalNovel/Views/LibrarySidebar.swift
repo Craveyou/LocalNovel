@@ -114,7 +114,7 @@ struct LibrarySidebar: View {
             }
             Button("取消", role: .cancel) { pendingDelete = nil }
         } message: { book in
-            Text("《\(book.title)》（\(book.chapters.count) \(unit(for: book))）将从书库移除。若在 App 文档目录内，源文件会被一并删除且不可恢复；若在只读目录，则改为隐藏。")
+            Text(deleteMessage(book))
         }
         .alert(
             "删除结果",
@@ -284,7 +284,11 @@ struct LibrarySidebar: View {
                     .font(.headline)
                     .lineLimit(2)
                 HStack(spacing: 5) {
-                    if library.isSplitting(book) {
+                    if book.category == .novel {
+                        // 书名单只显示文件本身（TXT · 1.2 MB 这种）：
+                        // 这里不出现「N 章」也不出现「正在分章…」，分章留到进入阅读页时后台做。
+                        NovelFileMeta(url: book.folderURL)
+                    } else if library.isSplitting(book) {
                         ProgressView()
                             .controlSize(.mini)
                         Text("正在分章…")
@@ -321,6 +325,15 @@ struct LibrarySidebar: View {
         }
     }
 
+    /// 删除确认里的补充说明：小说按文件说（未进阅读页就没分章，报章数只会是「1 章」）
+    private func deleteMessage(_ book: Book) -> String {
+        let detail = book.category == .novel
+            ? NovelScanner.formatLabel(for: book.folderURL)
+            : "\(book.chapters.count) \(unit(for: book))"
+        return "《\(book.title)》（\(detail)）将从书库移除。"
+            + "若在 App 文档目录内，源文件会被一并删除且不可恢复；若在只读目录，则改为隐藏。"
+    }
+
     // MARK: - 底部状态（只显示进行中的任务与错误，不放常驻说明）
 
     private var statusBar: some View {
@@ -353,6 +366,35 @@ struct LibrarySidebar: View {
                     .padding(8)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(Color.red.opacity(0.08))
+            }
+        }
+    }
+}
+
+// MARK: - 小说书行副标题：格式 + 文件大小
+//
+// 格式立刻显示，大小异步补（缓存命中则直接出），读不到就只留格式：
+// 列表滚动时不阻塞在主线程做文件 IO。
+
+private struct NovelFileMeta: View {
+    let url: URL
+
+    @State private var sizeText: String?
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Text(NovelScanner.formatLabel(for: url))
+            if let sizeText {
+                Text("·")
+                Text(sizeText)
+                    .monospacedDigit()
+            }
+        }
+        .task(id: url.absoluteString) {
+            if let hit = BookFileSize.cached(for: url) {
+                sizeText = hit
+            } else {
+                sizeText = await BookFileSize.load(for: url)
             }
         }
     }

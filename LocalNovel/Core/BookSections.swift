@@ -62,6 +62,45 @@ enum LibrarySection: String, CaseIterable, Identifiable {
     }
 }
 
+// MARK: - 文件大小（书行副标题用）
+
+/// 书行上的文件大小：字典缓存 + 后台读。
+/// 列表滚动时逐行同步 stat 会拖慢首屏，所以只在行真的渲染出来时异步取一次，结果进缓存。
+enum BookFileSize {
+    private static var cache: [String: String] = [:]
+    private static let lock = NSLock()
+
+    static func cached(for url: URL) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return cache[url.absoluteString]
+    }
+
+    static func load(for url: URL) async -> String? {
+        if let hit = cached(for: url) { return hit }
+        let key = url.absoluteString
+        let text = await Task.detached(priority: .utility) { () -> String? in
+            NovelScanner.sizeText(for: url)
+        }.value
+        guard let text else { return nil }
+        lock.lock()
+        cache[key] = text
+        lock.unlock()
+        return text
+    }
+
+    /// 字节数转人读文本；0 / 负值返回空串（调用方按「没有」处理）
+    static func format(_ bytes: Int64) -> String {
+        guard bytes > 0 else { return "" }
+        let kb = Double(bytes) / 1024
+        if kb < 1 { return "\(bytes) B" }
+        if kb < 1024 { return String(format: "%.0f KB", kb) }
+        let mb = kb / 1024
+        if mb < 1024 { return String(format: "%.1f MB", mb) }
+        return String(format: "%.2f GB", mb / 1024)
+    }
+}
+
 // MARK: - 小说：每个电子书文件 = 一本书
 
 enum NovelScanner {
@@ -70,6 +109,28 @@ enum NovelScanner {
 
     static func isNovelFile(_ url: URL) -> Bool {
         bookExtensions.contains(MediaResolver.fileExtension(url.lastPathComponent))
+    }
+
+    /// 书行上的格式标签。
+    /// 小说区按「文件」呈现：列表只说明这是 txt / epub / pdf，不暴露分章状态与章数，
+    /// 分章推迟到进入阅读页时后台进行（RootView.openNovelDirectly → ensureChapters）。
+    static func formatLabel(for fileURL: URL) -> String {
+        let ext = MediaResolver.fileExtension(fileURL.lastPathComponent)
+        switch ext {
+        case "txt":              return "TXT"
+        case "text":             return "TEXT"
+        case "md", "markdown":   return "MD"
+        case "epub":             return "EPUB"
+        case "pdf":              return "PDF"
+        default:                 return ext.isEmpty ? "文件" : ext.uppercased()
+        }
+    }
+
+    /// 书行上的文件大小：读不到（文件被移除 / 无权限）就返回 nil，界面只留格式标签
+    static func sizeText(for fileURL: URL) -> String? {
+        guard let values = try? fileURL.resourceValues(forKeys: [.fileSizeKey]),
+              let size = values.fileSize, size > 0 else { return nil }
+        return BookFileSize.format(Int64(size))
     }
 
     static func scan(rootURL: URL, cleanTitles: Bool,
