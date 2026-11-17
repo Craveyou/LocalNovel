@@ -49,13 +49,26 @@ struct ReaderCatalogView: View {
     @State private var editingNote: ReaderNote?
     @State private var shareItem: ShareItem?
     @State private var showResplit = false
+    /// 搜正文开关（关着只搜章节名）
+    @State private var searchBody = false
+    @StateObject private var search = BookSearchModel()
+    /// 输入防抖：停手 350ms 才真去扫全文，边打字边扫纯属浪费
+    @State private var searchDebounce: Task<Void, Never>?
+
+    private var keyword: String {
+        query.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// 是否正在展示正文搜索结果
+    private var showingBodyResults: Bool {
+        searchBody && !keyword.isEmpty
+    }
 
     private var sorted: [Chapter] {
         descending ? Array(chapters.reversed()) : chapters
     }
 
     private var filtered: [Chapter] {
-        let keyword = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !keyword.isEmpty else { return sorted }
         return sorted.filter { $0.displayTitle.localizedCaseInsensitiveContains(keyword) }
     }
@@ -63,6 +76,20 @@ struct ReaderCatalogView: View {
     private func indexLabel(_ chapter: Chapter) -> String {
         guard let index = chapters.firstIndex(where: { $0.id == chapter.id }) else { return "" }
         return "\(index + 1)"
+    }
+
+    /// 关键词 / 开关变化后延迟发起正文搜索；关掉开关或清空关键词则立刻取消
+    private func scheduleBodySearch() {
+        searchDebounce?.cancel()
+        guard searchBody, !keyword.isEmpty else {
+            search.cancel()
+            return
+        }
+        searchDebounce = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(350))
+            guard !Task.isCancelled else { return }
+            search.start(query: keyword, chapters: chapters)
+        }
     }
 
     var body: some View {
@@ -89,6 +116,12 @@ struct ReaderCatalogView: View {
             }
         }
         .ignoresSafeArea(edges: .bottom)
+        .onChange(of: query) { _, _ in scheduleBodySearch() }
+        .onChange(of: searchBody) { _, _ in scheduleBodySearch() }
+        .onDisappear {
+            searchDebounce?.cancel()
+            search.cancel()
+        }
         .sheet(item: $editingNote) { note in
             NoteEditorSheet(note: note, theme: theme) { updated in
                 AnnotationStore.shared.update(updated)
@@ -175,7 +208,15 @@ struct ReaderCatalogView: View {
 
     private var subtitle: String {
         switch tab {
-        case .catalog:  return "共 \(chapters.count) 章"
+        case .catalog:
+            guard showingBodyResults else { return "共 \(chapters.count) 章" }
+            if search.isSearching {
+                return "搜索中 \(search.scanned)/\(search.total) 章 · 已找到 \(search.hits.count) 处"
+            }
+            if search.limitReached {
+                return "共 \(search.hits.count) 处（已达上限，换个更具体的关键词）"
+            }
+            return "共 \(search.hits.count) 处 · 扫完 \(search.scanned) 章"
         case .bookmark: return "共 \(annotations.bookmarks(in: bookId).count) 条书签"
         case .note:     return "共 \(annotations.notes(in: bookId).count) 条笔记"
         }
@@ -186,10 +227,11 @@ struct ReaderCatalogView: View {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 13))
                 .foregroundStyle(theme.uiHeaderFooter)
-            TextField("搜索章节", text: $query)
+            TextField(searchBody ? "搜索正文" : "搜索章节", text: $query)
                 .font(.system(size: 14))
                 .foregroundStyle(theme.uiText)
                 .autocorrectionDisabled()
+                .onSubmit { if searchBody { search.start(query: keyword, chapters: chapters) } }
             if !query.isEmpty {
                 Button { query = "" } label: {
                     Image(systemName: "xmark.circle.fill")
@@ -198,6 +240,19 @@ struct ReaderCatalogView: View {
                 }
                 .buttonStyle(.plain)
             }
+            // 正文搜索开关：关着只按章节名过滤，开着才扫全书正文（后台分章扫描）
+            Button {
+                searchBody.toggle()
+            } label: {
+                Text("正文")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(searchBody ? Color.white : theme.uiHeaderFooter)
+                    .padding(.horizontal, 9)
+                    .frame(height: 22)
+                    .background(searchBody ? Color.accentColor : theme.uiSeparator.opacity(0.5),
+                                in: Capsule())
+            }
+            .buttonStyle(.plain)
         }
         .padding(.horizontal, 10)
         .frame(height: 34)
@@ -210,10 +265,103 @@ struct ReaderCatalogView: View {
     @ViewBuilder
     private var content: some View {
         switch tab {
-        case .catalog:  chapterList
+        case .catalog:
+            if showingBodyResults { searchResults } else { chapterList }
         case .bookmark: bookmarkList
         case .note:     noteList
         }
+    }
+
+    // MARK: 正文搜索结果
+
+    @ViewBuilder
+    private var searchResults: some View {
+        ScrollView {
+            LazyVStack(spacing: 0) {
+                if let hint = search.hint {
+                    emptyHint(hint)
+                } else if search.hits.isEmpty && !search.isSearching {
+                    emptyHint("正文里没找到「\(keyword)」")
+                }
+
+                ForEach(search.hits) { hit in
+                    searchRow(hit)
+                }
+
+                if search.isSearching {
+                    VStack(spacing: 8) {
+                        if search.total > 0 {
+                            ProgressView(value: Double(search.scanned), total: Double(search.total))
+                                .tint(Color.accentColor)
+                        }
+                        Text(search.scanned >= search.total
+                             ? "正在收尾…"
+                             : "扫描 \(search.scanned)/\(search.total) 章")
+                            .font(.system(size: 11))
+                            .foregroundStyle(theme.uiHeaderFooter)
+                    }
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 16)
+                }
+
+                if search.limitReached {
+                    Text("已显示前 \(BookSearchModel.maxHits) 处，换个更具体的关键词能看到后面的结果")
+                        .font(.system(size: 11))
+                        .foregroundStyle(theme.uiHeaderFooter)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 24)
+                        .padding(.vertical, 12)
+                }
+            }
+            .padding(.bottom, 8)
+        }
+    }
+
+    private func searchRow(_ hit: SearchHit) -> some View {
+        Button {
+            if let chapter = chapters.first(where: { $0.id == hit.chapterId }) {
+                onSelectParagraph(chapter, hit.paragraph)
+            }
+        } label: {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text(hit.chapterTitle)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(theme.uiText)
+                        .lineLimit(1)
+                    Spacer(minLength: 6)
+                    Text("第 \(hit.paragraph + 1) 段")
+                        .font(.system(size: 10))
+                        .foregroundStyle(theme.uiHeaderFooter)
+                }
+                highlighted(hit.snippet, keyword: keyword)
+                    .font(.system(size: 13))
+                    .foregroundStyle(theme.uiText)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 9)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// 把命中的关键词单独染色（其余保持正文色）
+    private func highlighted(_ text: String, keyword: String) -> Text {
+        guard !keyword.isEmpty else { return Text(text) }
+        var result = Text("")
+        var rest = Substring(text)
+        while let found = rest.range(of: keyword,
+                                     options: [.caseInsensitive, .diacriticInsensitive]) {
+            result = result + Text(String(rest[rest.startIndex..<found.lowerBound]))
+            result = result + Text(String(rest[found]))
+                .foregroundStyle(Color.accentColor)
+                .bold()
+            rest = rest[found.upperBound...]
+        }
+        return result + Text(String(rest))
     }
 
     private var chapterList: some View {

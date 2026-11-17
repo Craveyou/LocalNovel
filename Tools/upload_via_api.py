@@ -20,6 +20,7 @@ import os
 import plistlib
 import re
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -49,10 +50,14 @@ def load_token():
 
 
 TOKEN = load_token()
-if not TOKEN:
-    print("❌ 未找到凭据。请设置 LN_GH_PAT_FILE 指向含 classic PAT 的文件")
-    print("   （PAT 需勾选 repo + workflow；本连接器令牌为只读，无法写入）")
-    sys.exit(1)
+
+
+def require_token():
+    """只在真正要联网的分支检查凭据：--unpack-only 纯本地操作，不该被拦。"""
+    if not TOKEN:
+        print("❌ 未找到凭据。请设置 LN_GH_PAT 或 LN_GH_PAT_FILE 指向含 classic PAT 的文件")
+        print("   （PAT 需勾选 repo + workflow；本连接器令牌为只读，无法写入）")
+        sys.exit(1)
 
 
 def call(method, path, payload=None, raw=False, timeout=30):
@@ -133,6 +138,65 @@ def get_with_redirect(path, timeout=300, retries=4):
     return -1, (last or "下载失败").encode()
 
 
+def ipa_version_label(data):
+    """从 ipa 内的 Info.plist 读真实版本；读不到就退回工程里的 Info.plist。"""
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            for n in z.namelist():
+                if n.endswith("Info.plist") and n.startswith("Payload/"):
+                    p = plistlib.loads(z.read(n))
+                    v = str(p.get("CFBundleShortVersionString") or "").strip()
+                    b = str(p.get("CFBundleVersion") or "").strip()
+                    if v:
+                        return f"{v}-b{b}" if b else v
+    except Exception:
+        pass
+    try:
+        with open(os.path.join(ROOT, "LocalNovel", "Info.plist"), "rb") as f:
+            p = plistlib.load(f)
+        v = str(p.get("CFBundleShortVersionString") or "0").strip()
+        b = str(p.get("CFBundleVersion") or "").strip()
+        return f"{v}-b{b}" if b else v
+    except Exception:
+        return "unknown"
+
+
+def install_ipa_from_zip(zip_path):
+    """从 artifact zip 里取出 ipa，按真实版本命名写进 build/，另留固定名副本。"""
+    blob = Path(zip_path).read_bytes()
+    ipa_bytes = None
+    try:
+        with zipfile.ZipFile(io.BytesIO(blob)) as z:
+            for name in z.namelist():
+                if name.lower().endswith(".ipa"):
+                    ipa_bytes = z.read(name)
+                    break
+    except zipfile.BadZipFile:
+        print("❌ artifact zip 不是合法压缩包（可能拿到了错误页）")
+        return None
+    if not ipa_bytes:
+        print("❌ artifact 里没有 ipa")
+        return None
+
+    # 命名规范：LocalNovel-<版本>-b<build>-unsigned.ipa，避免多版本混在一个名字里
+    label = ipa_version_label(ipa_bytes)
+    os.makedirs(os.path.join(ROOT, "build"), exist_ok=True)
+    out_path = os.path.join(ROOT, "build", f"LocalNovel-{label}-unsigned.ipa")
+    with open(out_path, "wb") as f:
+        f.write(ipa_bytes)
+    # 同时留一份不带版本号的固定名，方便老的安装习惯与脚本引用
+    alias_path = os.path.join(ROOT, "build", "LocalNovel-unsigned.ipa")
+    with open(alias_path, "wb") as f:
+        f.write(ipa_bytes)
+    print(f"\n✅ 完成：{out_path}（{len(ipa_bytes) / 1024:.0f} KB）")
+    print(f"   最新副本：{alias_path}")
+    with zipfile.ZipFile(io.BytesIO(ipa_bytes)) as z:
+        for n in z.namelist()[:8]:
+            print("   " + n)
+    print("\n下一步：把该 ipa 拖进 Sideloadly / AltStore，用你的 Apple ID 重签安装。")
+    return out_path
+
+
 def download_artifact_resumable(path, dest, rounds=100):
     """断点续传下载 artifact：每轮刷新签名地址，用 Range 从已落盘偏移继续。
 
@@ -141,6 +205,8 @@ def download_artifact_resumable(path, dest, rounds=100):
     直到 zip 的中央目录完整可解析。
     """
     dest = Path(dest)
+    # Windows 没有 /tmp：父目录不存在时 open() 会 FileNotFoundError，先建好
+    dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.exists() and zipfile.is_zipfile(dest):
         return True
     pos = dest.stat().st_size if dest.exists() else 0
@@ -207,8 +273,10 @@ def download_artifact_resumable(path, dest, rounds=100):
 
 # 只下载模式：编译已成功但下载失败时，不必重跑整轮编译
 if len(sys.argv) >= 3 and sys.argv[1] == "--download-only":
+    require_token()
     _art = sys.argv[2]
-    _out = sys.argv[3] if len(sys.argv) > 3 else f"/tmp/ln_artifact-{_art}.zip"
+    _out = (sys.argv[3] if len(sys.argv) > 3
+            else os.path.join(tempfile.gettempdir(), f"ln_artifact-{_art}.zip"))
     _code, _u, _ = call("GET", "/user")
     _owner = _u.get("login", "")
     _repo = os.environ.get("REPO_NAME", "LocalNovel")
@@ -217,8 +285,13 @@ if len(sys.argv) >= 3 and sys.argv[1] == "--download-only":
         f"/repos/{_owner}/{_repo}/actions/artifacts/{_art}/zip", _out)
     sys.exit(0 if ok else 1)
 
+# 只解包模式：zip 已经在本地，直接取出 ipa 落盘（CI 成功后不必再下载一次）
+if len(sys.argv) >= 3 and sys.argv[1] == "--unpack-only":
+    sys.exit(0 if install_ipa_from_zip(sys.argv[2]) else 1)
+
 
 # ---------- 1. 身份与仓库 ----------
+require_token()
 code, user, _ = call("GET", "/user")
 if code != 200:
     print(f"❌ 授权无效 (HTTP {code}): {safe(user.get('message'))}")
@@ -412,66 +485,13 @@ print(f"   artifact: {alive[0].get('name')} (id={art_id})")
 # 大文件走断点续传：签名地址有效期短、对象存储读超时很常见。
 # 缓存文件必须按 artifact id 命名：跨 run 复用会把上一次的旧包当成新产物（曾把 1.7 当成 1.8 交付）
 _resume_dest = Path(os.environ.get(
-    "LN_ARTIFACT_CACHE", f"/tmp/ln_artifact-{art_id}.zip"))
+    "LN_ARTIFACT_CACHE",
+    os.path.join(tempfile.gettempdir(), f"ln_artifact-{art_id}.zip")))
 if not download_artifact_resumable(
         REPO + f"/actions/artifacts/{art_id}/zip", _resume_dest):
     print("❌ artifact 下载失败。编译产物仍在，可稍后续传：")
     print(f"   LN_GH_PAT_FILE=<pat> python3 Tools/upload_via_api.py "
           f"--download-only {art_id} {_resume_dest}")
     sys.exit(1)
-blob = _resume_dest.read_bytes()
-c = 200
-
-ipa_bytes = None
-try:
-    with zipfile.ZipFile(io.BytesIO(blob)) as z:
-        for name in z.namelist():
-            if name.lower().endswith(".ipa"):
-                ipa_bytes = z.read(name)
-                break
-except zipfile.BadZipFile:
-    print("❌ artifact zip 不是合法压缩包（可能拿到了错误页）")
+if not install_ipa_from_zip(_resume_dest):
     sys.exit(1)
-if not ipa_bytes:
-    print("❌ artifact 里没有 ipa")
-    sys.exit(1)
-
-# 命名规范：LocalNovel-<版本>-b<build>-unsigned.ipa，避免多版本混在一个名字里
-def ipa_version_label(data):
-    """从 ipa 内的 Info.plist 读真实版本；读不到就退回工程里的 Info.plist。"""
-    try:
-        with zipfile.ZipFile(io.BytesIO(data)) as z:
-            for n in z.namelist():
-                if n.endswith("Info.plist") and n.startswith("Payload/"):
-                    p = plistlib.loads(z.read(n))
-                    v = str(p.get("CFBundleShortVersionString") or "").strip()
-                    b = str(p.get("CFBundleVersion") or "").strip()
-                    if v:
-                        return f"{v}-b{b}" if b else v
-    except Exception:
-        pass
-    try:
-        with open(os.path.join(ROOT, "LocalNovel", "Info.plist"), "rb") as f:
-            p = plistlib.load(f)
-        v = str(p.get("CFBundleShortVersionString") or "0").strip()
-        b = str(p.get("CFBundleVersion") or "").strip()
-        return f"{v}-b{b}" if b else v
-    except Exception:
-        return "unknown"
-
-
-os.makedirs(os.path.join(ROOT, "build"), exist_ok=True)
-label = ipa_version_label(ipa_bytes)
-out_path = os.path.join(ROOT, "build", f"LocalNovel-{label}-unsigned.ipa")
-with open(out_path, "wb") as f:
-    f.write(ipa_bytes)
-# 同时留一份不带版本号的固定名，方便老的安装习惯与脚本引用
-alias_path = os.path.join(ROOT, "build", "LocalNovel-unsigned.ipa")
-with open(alias_path, "wb") as f:
-    f.write(ipa_bytes)
-print(f"\n✅ 完成：{out_path}（{len(ipa_bytes) / 1024:.0f} KB）")
-print(f"   最新副本：{alias_path}")
-with zipfile.ZipFile(io.BytesIO(ipa_bytes)) as z:
-    for n in z.namelist()[:8]:
-        print("   " + n)
-print("\n下一步：把该 ipa 拖进 Sideloadly / AltStore，用你的 Apple ID 重签安装。")

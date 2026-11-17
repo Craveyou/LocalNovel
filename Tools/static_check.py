@@ -349,8 +349,8 @@ def main():
           and "DocumentsBootstrap.guideFileName" in resolver)
     check("切回前台补写说明文件", "DocumentsBootstrap.ensureVisibleInFilesApp()" in store)
     check("版本号提升以刷新系统元数据",
-          "<string>2.12.0</string>" in plist and "CURRENT_PROJECT_VERSION = 11" in pbx
-          and "MARKETING_VERSION = 2.12.0" in pbx)
+          "<string>2.12.1</string>" in plist and "CURRENT_PROJECT_VERSION = 12" in pbx
+          and "MARKETING_VERSION = 2.12.1" in pbx)
     check("UI 给出「文件 App 搜索本地小说」兜底路径",
           "搜索框搜「本地小说」" in welcome and "搜索「本地小说」" in store)
     check("AppIcon asset catalog（1024 + Contents.json）",
@@ -713,9 +713,9 @@ def main():
     check("文档正文含双格式包一节",
           "### 5. 同一部书按格式分成两个包（PDF 包 + 图片包）"
           in (ROOT / "Docs" / "漫画目录结构说明.md").read_text(encoding="utf-8"))
-    check("版本升到 2.12.0 / build 11",
-          "<string>2.12.0</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>11</string>" in plist)
+    check("版本升到 2.12.1 / build 12",
+          "<string>2.12.1</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>12</string>" in plist)
 
 
     print("\n== N. 本轮：底部三页 / 短剧 / NAS 连接 ==")
@@ -956,9 +956,9 @@ def main():
     check("NAS 书目录里直接放文件时仍当作一本书",
           "把目录本身当成一本书" in nas_lib_views
           and "hasMedia ? 1 : nil" in nas_lib)
-    check("版本升到 2.12.0 / build 11",
-          "<string>2.12.0</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>11</string>" in plist)
+    check("版本升到 2.12.1 / build 12",
+          "<string>2.12.1</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>12</string>" in plist)
 
     print("\n== S. 本轮：txt 乱码（UTF-16 误判 / GBK / Big5） ==")
     encoding_src = (APP / "Core" / "TextEncoding.swift").read_text(encoding="utf-8")
@@ -1264,8 +1264,8 @@ def main():
     check("相邻章正文预取（切章不空等）",
           "func warmNextChapter()" in reader
           and "library.paragraphs(for: next)" in reader)
-    check("版本已升到 2.12.0 / build 11",
-          "2.12.0" in (APP / "Info.plist").read_text(encoding="utf-8"))
+    check("版本已升到 2.12.1 / build 12",
+          "2.12.1" in (APP / "Info.plist").read_text(encoding="utf-8"))
 
     print("\n== Z. 本轮：上下菜单栏 + 进度滑杆 + 目录面板 ==")
     bars = (APP / "Views" / "ReaderChromeBars.swift").read_text(encoding="utf-8")
@@ -1506,9 +1506,47 @@ def main():
           and "ForEach(ChapterSplitter.presets)" in rule_sheet)
     check("删书时顺手清掉它的分章规则",
           "Preferences.shared.setChapterRule(nil, for: book.id)" in store)
-    check("版本已升到 2.12.0 / build 11",
-          "<string>2.12.0</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>11</string>" in plist)
+
+    print("\n== U. 全书正文搜索 ==")
+    search_src = all_text.get(APP / "Core" / "BookSearch.swift", "")
+    catalog_src = all_text.get(APP / "Views" / "ReaderCatalogView.swift", "")
+    check("搜索内核独立成文件（不塞进阅读器视图）", bool(search_src))
+    check("扫描跑后台队列，不占主线程",
+          "DispatchQueue.global(qos: .userInitiated).async" in search_src)
+    check("后台不碰 LibraryStore 缓存字典（自己读正文）",
+          "LibraryStore" not in strip_non_code(search_src)
+          and "TextLoader.loadDocument" in search_src
+          and "MediaResolver.resolveChapter" in search_src)
+    check("世代号取消：新搜索 / 关面板能叫停旧任务",
+          "private var generation = 0" in search_src
+          and "func isAlive(" in search_src
+          and "guard self.isAlive(myGeneration) else { return }" in search_src)
+    check("命中上限 500 + 关键词至少 2 字（防止「的」把内存撑爆）",
+          "static let maxHits = 500" in search_src
+          and "static let minKeywordLength = 2" in search_src)
+    check("命中带前后文片段，切在完整字符边界上",
+          "rangeOfComposedCharacterSequences" in search_src
+          and "let padding = 12" in search_src)
+    check("结果分批次回主线程（不逐条刷新界面）",
+          "buffer.count >= 20" in search_src
+          and "hits.append(contentsOf: chunk)" in search_src)
+    check("搜正文开关 + 章节名/正文两种模式",
+          "@State private var searchBody = false" in catalog_src
+          and "showingBodyResults" in catalog_src
+          and 'TextField(searchBody ? "搜索正文" : "搜索章节"' in catalog_src)
+    check("输入防抖 350ms 再扫全文",
+          ".milliseconds(350)" in catalog_src
+          and "searchDebounce?.cancel()" in catalog_src)
+    check("点结果复用精确跳段（锚点连段落一起带回去）",
+          "onSelectParagraph(chapter, hit.paragraph)" in catalog_src)
+    check("面板消失时叫停搜索", "onDisappear {" in catalog_src
+          and "search.cancel()" in catalog_src)
+    check("关键词在结果里高亮", "private func highlighted(" in catalog_src
+          and ".foregroundStyle(Color.accentColor)" in catalog_src)
+
+    check("版本已升到 2.12.1 / build 12",
+          "<string>2.12.1</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>12</string>" in plist)
 
     print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")
     if FAIL:
