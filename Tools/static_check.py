@@ -275,8 +275,8 @@ def main():
           and "@State private var content" not in reader_code
           and "载入章节" not in reader_code)
     check("内容 / 段落全部同步取自缓存，无 nil 等待态",
-          "library.content(for: chapter)" in reader
-          and "library.paragraphs(for: chapter)" in reader
+          "library.content(for: displayChapter)" in reader
+          and "library.paragraphs(for: displayChapter)" in reader
           and "func paragraphs(for chapter: Chapter)" in store)
     check("滚动不再改父级 @State、不再同步写 UserDefaults",
           "currentAnchor" not in reader_code
@@ -350,8 +350,8 @@ def main():
           and "DocumentsBootstrap.guideFileName" in resolver)
     check("切回前台补写说明文件", "DocumentsBootstrap.ensureVisibleInFilesApp()" in store)
     check("版本号提升以刷新系统元数据",
-          "<string>2.16.2</string>" in plist and "CURRENT_PROJECT_VERSION = 22" in pbx
-          and "MARKETING_VERSION = 2.16.2" in pbx)
+          "<string>2.17.0</string>" in plist and "CURRENT_PROJECT_VERSION = 23" in pbx
+          and "MARKETING_VERSION = 2.17.0" in pbx)
     check("UI 给出「文件 App 搜索本地小说」兜底路径",
           "搜索框搜「本地小说」" in welcome and "搜索「本地小说」" in store)
     check("AppIcon asset catalog（1024 + Contents.json）",
@@ -638,9 +638,9 @@ def main():
     check("文字颜色取主题色，绘制时不复制整章文本",
           ".foregroundColor: theme.uiTextColor" in paginator
           and "NSMutableAttributedString(attributedString: attributed)" not in paged)
-    check("翻页记忆沿用段落锚点，与滚动模式互通",
+    check("翻页记忆沿用段落锚点，与滚动模式互通（写入在纯 UIKit 核心里）",
           'restoreParagraph' in paged and 'anchor.hasPrefix("blk-p")' in reader
-          and 'noteAnchor("blk-p\\(paragraph)"' in reader)
+          and 'noteAnchor("blk-p\\(paragraph)"' in (APP / "Core" / "BookReaderCore.swift").read_text(encoding="utf-8"))
     check("点屏幕左右边缘翻页（中间不误触）",
           "width * 0.28" in paged and "width * 0.72" in paged
           and "shouldReceive touch" in paged)
@@ -648,8 +648,7 @@ def main():
           "func advanceToNextChapter" in paged
           and "func handleEdgeSwipe()" in paged
           and "handleSwipeLeft" in paged
-          and "if delta > 0 {" in paged
-          and "if advanceToNextChapter() { return }" in paged
+          and "if delta > 0, advanceToNextChapter() { return }" in paged
           and "if !input.hasNextChapter { list.append(.footer) }" in paged
           and "struct FooterPageView" in paged and "已是最后一章" in paged
           and "Button(action: onOpenNext)" not in paged)
@@ -719,9 +718,9 @@ def main():
     check("文档正文含双格式包一节",
           "### 5. 同一部书按格式分成两个包（PDF 包 + 图片包）"
           in (ROOT / "Docs" / "漫画目录结构说明.md").read_text(encoding="utf-8"))
-    check("版本升到 2.16.2 / build 22",
-          "<string>2.16.2</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>22</string>" in plist)
+    check("版本升到 2.17.0 / build 23",
+          "<string>2.17.0</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>23</string>" in plist)
 
 
     print("\n== N. 本轮：底部三页 / 短剧 / NAS 连接 ==")
@@ -972,9 +971,9 @@ def main():
     check("远端文件缓存有上限并会按最久未修改淘汰",
           "static let byteLimit: Int64 = 512 * 1024 * 1024" in nas_lib
           and "Task.detached(priority: .utility) { trim(folder: folder, limit: byteLimit) }" in nas_lib)
-    check("版本升到 2.16.2 / build 22",
-          "<string>2.16.2</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>22</string>" in plist)
+    check("版本升到 2.17.0 / build 23",
+          "<string>2.17.0</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>23</string>" in plist)
 
     print("\n== S. 本轮：txt 乱码（UTF-16 误判 / GBK / Big5） ==")
     encoding_src = (APP / "Core" / "TextEncoding.swift").read_text(encoding="utf-8")
@@ -1120,10 +1119,10 @@ def main():
           "let chapters: [Chapter]" in reader
           and "let onSelectChapter" in reader
           and "let onExit" in reader)
-    check("翻页引擎中间区域单击回调 onTapCenter",
-          "let onTapCenter: () -> Void" in paged
-          and "controller.onTapCenter = onTapCenter" in paged
-          and "onTapCenter?()" in paged)
+    check("翻页引擎中间区域单击回调 onTapCenter（回调链：引擎 → 核心 → SwiftUI 壳）",
+          "onTapCenter?()" in paged
+          and "var onTapCenter: (() -> Void)?" in (APP / "Core" / "BookReaderCore.swift").read_text(encoding="utf-8")
+          and "fresh.onTapCenter = { [weak self] in self?.onTapCenter?() }" in (APP / "Core" / "BookReaderCore.swift").read_text(encoding="utf-8"))
     check("非翻页模式中间区域单击（坐标 28%~72%）",
           "func centerTappable" in reader
           and "point.x > w * 0.28 && point.x < w * 0.72" in reader)
@@ -1176,8 +1175,7 @@ def main():
           and "@objc private func handleSwipeLeft" in paged
           and "swipe.cancelsTouchesInView = false" in paged)
     check("点击翻页到末页同样进下一章",
-          "if advanceToNextChapter() { return }" in paged
-          and "onReachedEnd?()" in paged)
+          "if delta > 0, advanceToNextChapter() { return }" in paged)
     check("小说上下滚动：到底继续上拉进下一章（整理不受影响，短章也能拉）",
           "onScrollGeometryChange" in reader
           and "advanceIfPulledPastBottom" in reader
@@ -1261,13 +1259,13 @@ def main():
     check("六档翻页模式：滚动 / 仿真 / 平移 / 覆盖 / 上下翻页 / 无动画",
           all(k in prefs_src for k in ["case cover = 3", "case vertical = 4", "case none = 5"])
           and all(k in prefs_src for k in ['return "覆盖"', 'return "上下翻页"', 'return "无动画"']))
-    check("每档映射到独立的呈现引擎",
+    check("每档映射到独立的呈现引擎（映射表下沉到核心 makeEngine）",
           "case .cover:    return .cover" in prefs_src
           and "case .vertical: return .vertical" in prefs_src
           and "case .none:     return .none" in prefs_src
-          and "case .cover:    controller = CoverPageController()" in paged
-          and "case .vertical: controller = VerticalPageController()" in paged
-          and "case .none:     controller = InstantPageController()" in paged)
+          and "case .cover:    return CoverPageController()" in (APP / "Core" / "BookReaderCore.swift").read_text(encoding="utf-8")
+          and "case .vertical: return VerticalPageController()" in (APP / "Core" / "BookReaderCore.swift").read_text(encoding="utf-8")
+          and "case .none:     return InstantPageController()" in (APP / "Core" / "BookReaderCore.swift").read_text(encoding="utf-8"))
     check("覆盖翻页：跟手拖拽 + 位移/速度阈值 + 松手回弹",
           "final class CoverPageController" in paged
           and "dx < -width * 0.28 || velocity < -700" in paged
@@ -1286,11 +1284,11 @@ def main():
           and "if prefs.pageTurn == .cover" in controls)
     check("翻页方式改成菜单选择（六档放不下一排分段）",
           ".pickerStyle(.menu)" in controls)
-    check("相邻章正文预取（切章不空等）",
-          "func warmNextChapter()" in reader
-          and "library.paragraphs(for: target)" in reader)
-    check("版本已升到 2.16.2 / build 22",
-          "2.16.2" in (APP / "Info.plist").read_text(encoding="utf-8"))
+    check("相邻章正文预取（切章不空等；已下沉到纯 UIKit 阅读核心）",
+          "func schedulePrefetch()" in (APP / "Core" / "BookReaderCore.swift").read_text(encoding="utf-8")
+          and "library.paragraphs(for: next)" in (APP / "Core" / "BookReaderCore.swift").read_text(encoding="utf-8"))
+    check("版本已升到 2.17.0 / build 23",
+          "2.17.0" in (APP / "Info.plist").read_text(encoding="utf-8"))
 
     print("\n== Z. 本轮：上下菜单栏 + 进度滑杆 + 目录面板 ==")
     bars = (APP / "Views" / "ReaderChromeBars.swift").read_text(encoding="utf-8")
@@ -1396,7 +1394,7 @@ def main():
     check("净化 → 繁简合并成一条流水线并带缓存",
           "enum ReaderTextPipeline" in purify
           and "PurifyEngine.fingerprint(active)" in purify
-          and "ReaderTextPipeline.paragraphs(chapterId: chapter.id" in reader)
+          and "ReaderTextPipeline.paragraphs(chapterId: displayChapter.id" in reader)
     check("净化只作用于小说正文，且空段落会被清掉",
           "guard category == .novel else { return raw }" in reader
           and "trimmingCharacters(in: .whitespacesAndNewlines).isEmpty" in purify)
@@ -1440,9 +1438,9 @@ def main():
           "onSelectChapter(target, paragraph)" in reader
           and "consumePendingAnchor" not in ann
           and "var pendingJump" not in ann)
-    check("同章跳段就地执行（同章 id 不变，RootView 的 onChange 不会触发）",
-          "guard target.id == chapter.id else" in reader
-          and "jumpSeq += 1" in reader)
+    check("同章跳段就地执行（分页核心里同章不换章、只定位；指令由 handle 下发）",
+          "if index == chapterIndex {" in (APP / "Core" / "BookReaderCore.swift").read_text(encoding="utf-8")
+          and "coreHandle.jumpToParagraph(paragraph)" in reader)
     check("明确的起始段落优先于任何存量锚点",
           "if let startParagraph {" in reader
           and "return max(0, min(startParagraph, max(paragraphs.count - 1, 0)))" in reader)
@@ -1456,7 +1454,7 @@ def main():
 
     check("页码 / 百分比显示是独立开关（不与页脚内容绑定）",
           "var showReadingProgress: Bool = true" in prefs_src
-          and "showsProgress: prefs.showReadingProgress" in reader)
+          and "showsProgress: prefs.showReadingProgress" in (APP / "Core" / "BookReaderCore.swift").read_text(encoding="utf-8"))
     check("关掉后连页脚那一条留白也收掉",
           "let progressOff = input?.showsProgress == false" in paged
           and "guard input?.showsProgress != false else { return \"\" }" in paged)
@@ -1701,9 +1699,9 @@ def main():
           "private func deleteChapters(_ targets: [Chapter])" in reader
           and "if let next = chapters.first(where: { !removed.contains($0.id) })" in reader
           and "onSelectChapter(next, nil)" in reader)
-    check("选章的起始段落由上层明确给出（点目录 = 段 0）",
+    check("选章的起始段落由上层明确给出（点目录 = 段 0；分页核心在 UIKit 层内切章）",
           "let startParagraph: Int?" in reader
-          and "onSelectChapter(picked, nil)   // 点目录 = 从这一章开头" in reader
+          and "open(picked)   // 点目录 = 从这一章开头（分页核心在 UIKit 层内切章）" in reader
           and "startParagraph: startIntent?.chapterId == chapter.id" in root_src)
 
     # ------------------------------------------------------------------
@@ -1785,9 +1783,9 @@ def main():
           and "let waiters = self.splitWaiters.removeValue(forKey: book.id) ?? []" in store
           and "waiters.forEach { $0() }" in store)
 
-    check("版本已升到 2.16.2 / build 22",
-          "<string>2.16.2</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>22</string>" in plist)
+    check("版本已升到 2.17.0 / build 23",
+          "<string>2.17.0</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>23</string>" in plist)
 
     # ------------------------------------------------------------------
     # X4. 2.15.0：删掉字体/简繁/音量键/启动直进/自定义主题 + 修跳转
@@ -1832,58 +1830,62 @@ def main():
           and "for delay in [0.45, 0.9]" in reader_now)
 
     # ------------------------------------------------------------------
-    # X7. 2.16.1：自动阅读（千阅 I 组）
+    # X9. 2.17.0：阅读核心整体下沉为纯 UIKit（千阅 ReaderService 状态模型）
     # ------------------------------------------------------------------
-    print("\n== X7. 本轮：自动阅读（2.16.1） ==")
-    auto_src = (APP / "Core" / "AutoRead.swift").read_text(encoding="utf-8")
-    controls_src = (APP / "Views" / "ReaderControlsView.swift").read_text(encoding="utf-8")
-    bars_src = (APP / "Views" / "ReaderChromeBars.swift").read_text(encoding="utf-8")
-    check("自动滚动按帧推进 contentOffset（SwiftUI 没有按像素滚的接口）",
-          "final class AutoScrollDriver: NSObject" in auto_src
-          and "CADisplayLink(target: self, selector:" in auto_src
-          and "setContentOffset(CGPoint(x: scroll.contentOffset.x" in auto_src
-          and "scroll.isTracking || scroll.isDecelerating" in auto_src)
-    check("滚动正文里挂 0 高度探针拿宿主 UIScrollView",
-          "struct AutoScrollProbe: UIViewRepresentable" in auto_src
-          and "if let scroll = view as? UIScrollView" in auto_src
-          and "AutoScrollProbe()" in reader)
-    check("自动阅读跨章连续：开关在进程级静态位，切章后 onAppear 接着跑",
-          "enum AutoReadFlag" in auto_src
-          and "if AutoReadFlag.isOn, canAutoRead" in reader
-          and "AutoReadFlag.isOn = false" in reader
-          and "AutoReadFlag.isOn = false" in root_view)
-    check("定时翻页走分页器的翻页指令通道（和手势翻页同一条路）",
-          "autoPageSeq += 1" in reader
-          and "pageCommand: autoPageSeq" in reader
-          and "pageCommandDelta: 1" in reader)
-    check("全书最后一页：分页器回调 onReachedEnd，自动阅读据此停下并提示",
-          "var onReachedEnd: (() -> Void)?" in paged
-          and "onReachedEnd?()" in paged
-          and "后面没有内容了，自动阅读已停止" in reader)
-    check("自动阅读中点击 = 暂停 / 继续（不翻页、不弹菜单）",
-          "if input?.isAutoReading == true" in paged
-          and "isAutoReading: autoReading" in reader
-          and "if autoReading { toggleAutoPause(); return }" in reader)
-    check("自动阅读面板：方式 / 速度 / 进度条 / 启停，切模式同步翻页版式",
-          "private var autoReadSection: some View" in controls_src
-          and "AutoReadMode.allCases" in controls_src
-          and "autoReadShowsProgress" in controls_src
-          and "case .scroll: if pageTurn.isPaged { pageTurn = .scroll }" in prefs_src
-          and "case .flip:   if !pageTurn.isPaged { pageTurn = .slide }" in prefs_src)
-    check("自动阅读浮条 + 底栏入口",
-          "struct AutoReadBar: View" in bars_src
-          and 'tool("自动", systemImage: "play.circle", action: onAutoRead)' in bars_src
-          and "AutoReadBar(theme: prefs.theme" in reader)
+    print("\n== X9. 本轮：阅读核心下沉为纯 UIKit，章间导航不再绕 SwiftUI（2.17.0） ==")
+    core_src = (APP / "Core" / "BookReaderCore.swift").read_text(encoding="utf-8")
 
-    # ------------------------------------------------------------------
-    # X8. 2.16.2：选词与相邻章预加载
-    # ------------------------------------------------------------------
-    print("\n== X8. 本轮：滚动模式选词 + 相邻章预加载（2.16.2） ==")
-    check("滚动模式正文可长按选词（系统菜单：拷贝 / 查询 / 翻译）",
-          ".textSelection(.enabled)" in reader)
-    check("上下章双向预加载（正文切段 + 净化预计算）",
-          "let targets = [previousChapter, nextChapter].compactMap { $0 }" in reader
-          and "library.prefetchParagraphs(for: target)" in reader)
+    check("阅读核心是一个纯 UIKit 控制器，状态只有两个整数（千阅 ReaderService 模型）",
+          "final class BookReaderController: UIViewController" in core_src
+          and "private(set) var chapterIndex = 0" in core_src
+          and "private(set) var pageIndex = 0" in core_src)
+    check("章间导航在 UIKit 层内完成：跳章 / 进度条跨章 / 同章跳段 / 上下章都在核心里",
+          "func goChapter(_ chapter: Chapter, paragraph: Int?)" in core_src
+          and "func jumpTo(chapter: Chapter, fraction: Double)" in core_src
+          and "func jumpToParagraph(_ paragraph: Int)" in core_src
+          and "func stepChapter(_ step: Int)" in core_src)
+    check("章末续章由核心直接接手（onOpenNext 不再抛回 SwiftUI 重建阅读页）",
+          "fresh.onOpenNext = { [weak self] in self?.advanceChapter() }" in core_src
+          and "private func advanceChapter()" in core_src
+          and "applyCurrent(restoring: 0)" in core_src)
+    check("五个翻页引擎原样保留，作为核心的 child（只换呈现，不换分页与锚点）",
+          all(name in core_src for name in
+              ["CurlPageController()", "SlidePageController()", "CoverPageController()",
+               "VerticalPageController()", "InstantPageController()"])
+          and "fresh.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]" in core_src)
+    check("越界锚点回章首的约定在核心里同样成立",
+          "value >= 0, value < count else { return 0 }" in core_src)
+    check("SwiftUI 侧命令通道：面板按钮下发指令，核心回传「当前章变了」",
+          "final class ReaderCoreHandle" in core_src
+          and "fileprivate weak var controller: BookReaderController?" in core_src
+          and "struct BookReaderView: UIViewControllerRepresentable" in core_src)
+    check("阅读核心的换章通知丢到下一轮主线程（视图更新期间不改外层 @State）",
+          "DispatchQueue.main.async { [weak self] in" in core_src
+          and "self.onChapterChange?(self.chapters[self.chapterIndex])" in core_src)
+    check("当前章失效（重新分章 / 删章）由核心按「最近读的章」重定位",
+          "private func relocateIfStale()" in core_src
+          and "ProgressStore.shared.lastChapterId(for: bookId)" in core_src)
+    check("ReaderView 分页分支换成核心；指令走 handle，不再走 RootView 换章",
+          "BookReaderView(" in reader_now
+          and "coreHandle.goChapter(target, paragraph: 0)" in reader_now
+          and "coreHandle.jumpToParagraph(paragraph)" in reader_now
+          and "coreHandle.jumpTo(chapter: target, fraction: fraction)" in reader_now
+          and "PagedReaderView(" not in reader_now
+          and "jumpSeq" not in reader_now)
+    check("核心换章后外层同步选中章（标自动恢复，锚点不被重置成章首）",
+          "onCoreChapterChange: { coreChapter in" in root_now
+          and "autoRestoredChapterId = coreChapter.id" in root_now
+          and "selectedChapter = coreChapter" in root_now)
+    check("分页小说整本书一个阅读会话（.id 不再随章变化）",
+          "private var readerIdentity: String" in root_now
+          and ".id(readerIdentity)" in root_now
+          and '"core-\\(book.id)"' in root_now)
+    check("旧 SwiftUI 桥 PagedReaderView 已删除",
+          "struct PagedReaderView: UIViewControllerRepresentable" not in paged_src)
+
+    check("版本已升到 2.17.0 / build 23",
+          "<string>2.17.0</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>23</string>" in plist)
 
     print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")
     if FAIL:

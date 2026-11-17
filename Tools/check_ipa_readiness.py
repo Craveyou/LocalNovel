@@ -86,7 +86,7 @@ def main():
     check("Documents 说明文件引导（Apple 要求目录里至少一个文件）",
           (APP / "Core" / "DocumentsBootstrap.swift").is_file())
     check("版本号提升以刷新系统元数据",
-          plist.get("CFBundleVersion") == "22" and plist.get("CFBundleShortVersionString") == "2.16.2")
+          plist.get("CFBundleVersion") == "23" and plist.get("CFBundleShortVersionString") == "2.17.0")
     check("CFBundleIcons 声明图标文件",
           "CFBundleIconFiles" in plist.get("CFBundleIcons", {})
           .get("CFBundlePrimaryIcon", {}))

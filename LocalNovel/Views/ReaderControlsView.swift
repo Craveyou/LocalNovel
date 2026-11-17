@@ -20,9 +20,6 @@ struct ReaderControlsPanel: View {
     let encodingMenu: AnyView
     let onTOC: () -> Void
     let onSettings: () -> Void
-    /// 面板内直接开 / 停自动阅读（千阅 I3：不离开阅读页就能启动与切模式）
-    let onAutoRead: () -> Void
-    let isAutoReading: Bool
     /// 打开「主题管理」（自定义主题的增删改）
     let onExit: () -> Void
     let onDismiss: () -> Void
@@ -54,8 +51,6 @@ struct ReaderControlsPanel: View {
                         headerFooterSection
                         Divider()
                         themeSection
-                        Divider()
-                        autoReadSection
                         Divider()
                         behaviorSection
                         Divider()
@@ -304,59 +299,6 @@ struct ReaderControlsPanel: View {
             .frame(width: 52)
         }
         .buttonStyle(.plain)
-    }
-
-    // MARK: 自动阅读
-
-    private var autoReadSection: some View {
-        VStack(spacing: 12) {
-            sectionTitle("自动阅读")
-
-            HStack {
-                Text("方式").font(.subheadline)
-                Spacer(minLength: 8)
-                Picker("自动阅读方式", selection: binding(for: \.autoReadMode)) {
-                    ForEach(AutoReadMode.allCases) { mode in
-                        Text(mode.label).tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .frame(maxWidth: 180)
-            }
-            Text(prefs.autoReadMode.detail)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            if prefs.autoReadMode == .flip {
-                sliderRow("停留", value: Binding(
-                    get: { CGFloat(prefs.autoReadFlipSeconds) },
-                    set: { prefs.autoReadFlipSeconds = Double($0) }
-                ), range: 2...60, step: 1, format: { "\(Int($0))s" })
-            } else {
-                sliderRow("速度", value: Binding(
-                    get: { CGFloat(prefs.autoReadScrollSpeed) },
-                    set: { prefs.autoReadScrollSpeed = Double($0) }
-                ), range: 10...200, step: 5, format: { "\(Int($0))" })
-            }
-
-            HStack(spacing: 16) {
-                Toggle("显示进度条", isOn: binding(for: \.autoReadShowsProgress))
-                    .font(.subheadline)
-                Spacer(minLength: 0)
-            }
-
-            Button(action: onAutoRead) {
-                HStack {
-                    Image(systemName: isAutoReading ? "stop.circle" : "play.circle")
-                    Text(isAutoReading ? "停止自动阅读" : "开始自动阅读")
-                    Spacer()
-                }
-                .font(.body)
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(isAutoReading ? Color.red : Color.accentColor)
-        }
     }
 
     // MARK: 翻页 / 外观

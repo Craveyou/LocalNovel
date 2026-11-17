@@ -83,7 +83,6 @@ struct ReaderBottomBar: View {
     let onDayNight: () -> Void
     let onTheme: () -> Void
     let onTypography: () -> Void
-    let onAutoRead: () -> Void
     let onSettings: () -> Void
 
     @State private var dragValue: Double?
@@ -161,7 +160,6 @@ struct ReaderBottomBar: View {
                      action: onDayNight)
                 tool("主题", systemImage: "paintpalette", action: onTheme)
                 tool("排版", systemImage: "textformat.size", action: onTypography)
-                tool("自动", systemImage: "play.circle", action: onAutoRead)
                 tool("设置", systemImage: "gearshape", action: onSettings)
             }
             .padding(.top, 8)
@@ -227,77 +225,5 @@ struct ReaderFloatingActions: View {
                 .shadow(color: .black.opacity(0.12), radius: 4, y: 1)
         }
         .buttonStyle(.plain)
-    }
-}
-
-// MARK: - 自动阅读浮条（千阅 I4 / I7）
-//
-// 自动阅读进行中贴在底部：暂停 / 继续、当前速度、退出，外加一条全书进度细线。
-// 点正文任意处等同于暂停（分页引擎与滚动引擎都走同一条规则），这里只做鼠标可达的入口。
-
-struct AutoReadBar: View {
-    let theme: ReaderTheme
-    /// 「自动阅读 · 8 秒/页」这类说明
-    let label: String
-    let isPaused: Bool
-    /// 全书进度 0...1
-    let progress: Double
-    let showsProgress: Bool
-    let onToggle: () -> Void
-    let onStop: () -> Void
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                Button(action: onToggle) {
-                    HStack(spacing: 6) {
-                        Image(systemName: isPaused ? "play.fill" : "pause.fill")
-                            .font(.system(size: 13, weight: .semibold))
-                        Text(isPaused ? "继续" : "暂停")
-                            .font(.system(size: 13, weight: .medium))
-                    }
-                    .foregroundStyle(theme.uiText)
-                    .padding(.horizontal, 10)
-                    .frame(height: 30)
-                    .background(theme.uiSeparator.opacity(0.35), in: Capsule())
-                }
-                .buttonStyle(.plain)
-
-                Text(label)
-                    .font(.system(size: 12))
-                    .foregroundStyle(theme.uiHeaderFooter)
-                    .lineLimit(1)
-
-                Spacer(minLength: 8)
-
-                Button(action: onStop) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(theme.uiHeaderFooter)
-                        .frame(width: 30, height: 30)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("退出自动阅读")
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 6)
-
-            if showsProgress {
-                GeometryReader { geo in
-                    ZStack(alignment: .leading) {
-                        Rectangle().fill(theme.uiSeparator.opacity(0.5))
-                        Rectangle()
-                            .fill(Color.accentColor)
-                            .frame(width: max(2, geo.size.width * min(max(progress, 0), 1)))
-                    }
-                }
-                .frame(height: 2)
-            }
-        }
-        .background(theme.uiBackground.opacity(0.94))
-        .overlay(alignment: .top) {
-            Rectangle().fill(theme.uiSeparator).frame(height: 0.5)
-        }
     }
 }

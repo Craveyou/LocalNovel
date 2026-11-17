@@ -88,8 +88,6 @@ struct RootView: View {
         // 选书副作用：小说「选书即读」直接进阅读器；
         // 漫画 / 短剧 / 整理停在中间栏的章节列表，等用户点某一话 / 某一集。
         .onChange(of: selectedBook?.id) { _, _ in
-            // 换书 / 回书库：自动阅读必须断掉，否则下次进书会自己翻页
-            AutoReadFlag.isOn = false
             guard let book = selectedBook else {
                 selectedChapter = nil
                 compactColumn = .sidebar      // 回到书库首页
@@ -203,14 +201,19 @@ struct RootView: View {
                        onJumpToChapter: { chapter, fraction in
                            jumpToChapter(chapter, fraction: fraction)
                        },
+                       // 分页核心在 UIKit 层内换章后同步外层：标成「自动恢复」，
+                       // 这样 onChange 不会按主动选章把锚点重置成章首
+                       onCoreChapterChange: { coreChapter in
+                           autoRestoredChapterId = coreChapter.id
+                           selectedChapter = coreChapter
+                       },
                        onExit: {
-                           AutoReadFlag.isOn = false
                            selectedChapter = nil
                            selectedBook = nil   // 回到书库首页，再点同一本也会重新触发「选书即读」
                            preparingBook = nil
                            startIntent = nil
                        })
-                .id(chapter.id) // 切章时重建，重置滚动与播放器
+                .id(readerIdentity) // 分页核心整本书一个会话；其余形态按章重建，重置滚动与播放器
         } else {
             WelcomeView()
         }
@@ -220,6 +223,15 @@ struct RootView: View {
     private func latestBook() -> Book? {
         guard let book = selectedBook else { return nil }
         return library.library?.books.first(where: { $0.id == book.id }) ?? book
+    }
+
+    /// 阅读器身份：小说 + 分页模式走「纯 UIKit 核心」，整本书一个会话，
+    /// 章间导航不重建阅读页（这是「跳到最后一页 / 跳回首页」那类 bug 的根源）；
+    /// 其余形态保持按章重建（重置滚动位置与播放器）。
+    private var readerIdentity: String {
+        let pagedCore = latestBook()?.category == .novel && prefs.pageTurn.isPaged
+        if pagedCore, let book = latestBook() { return "core-\(book.id)" }
+        return selectedChapter?.id ?? "none"
     }
 
     /// 章节集合的指纹：单文件小说首次打开时后台切章，切完 id 全变，

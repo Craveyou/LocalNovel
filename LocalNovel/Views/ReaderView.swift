@@ -38,6 +38,9 @@ struct ReaderView: View {
     let onSelectChapter: (Chapter, Int?) -> Void
     /// 进度条跨章跳转：带章内比例（0-1），由上层换算成段落锚点后再切章
     let onJumpToChapter: (Chapter, Double) -> Void
+    /// 分页核心（纯 UIKit）在层内换章后的回传：外层同步选中章，
+    /// 这样切回滚动模式 / 退出再进时位置不会丢
+    let onCoreChapterChange: (Chapter) -> Void
     /// 退出阅读回到书库
     let onExit: () -> Void
 
@@ -46,6 +49,10 @@ struct ReaderView: View {
 
     @State private var galleryItem: MediaItem?
     @State private var showSettings = false
+    /// 分页核心当前章（纯 UIKit 层内换章后由回调写入）；滚动 / 漫画模式恒为 nil
+    @State private var coreChapter: Chapter?
+    /// 给纯 UIKit 阅读核心下发指令的命令通道（目录 / 上下章 / 进度条 / 书签跳段）
+    @State private var coreHandle = ReaderCoreHandle()
     /// 关闭全屏大图后要滚回的插图锚点（如 "blk-i3"）
     @State private var pendingAnchor: String?
     /// 上下菜单栏（顶部条 + 底部条）
@@ -56,11 +63,6 @@ struct ReaderView: View {
     @State private var showCatalog = false
     /// 拖动进度滑杆时浮出的目标章节名
     @State private var scrubTitle: String?
-    /// 同章内精确跳段：给分页引擎发指令（目标段落 + 序号）。
-    /// 点「属于当前章」的书签 / 笔记时用 —— RootView 那边靠 selectedChapter.id
-    /// 变化驱动，同一章 id 不变，onChange 根本不会触发。
-    @State private var jumpParagraph = 0
-    @State private var jumpSeq = 0
     /// 净化规则管理
     @State private var showPurifyManager = false
     /// 书签 / 笔记数据（右侧浮钮上的书签状态要用）
@@ -69,13 +71,6 @@ struct ReaderView: View {
     @State private var bottomPullArmed = true
     /// 重新分章的即时反馈（切成多少章）
     @State private var resplitNotice: String?
-
-    // 自动阅读（I 组）
-    @State private var autoReading = false
-    @State private var autoPaused = false
-    @State private var autoPageSeq = 0
-    @State private var autoTicker: Timer?
-    @State private var autoNotice: String?
 
     init(chapter: Chapter,
          nextChapter: Chapter? = nil,
@@ -87,6 +82,7 @@ struct ReaderView: View {
          onOpenNext: @escaping (Chapter) -> Void = { _ in },
          onSelectChapter: @escaping (Chapter, Int?) -> Void = { _, _ in },
          onJumpToChapter: ((Chapter, Double) -> Void)? = nil,
+         onCoreChapterChange: @escaping (Chapter) -> Void = {},
          onExit: @escaping () -> Void = {}) {
         self.chapter = chapter
         self.nextChapter = nextChapter
@@ -99,25 +95,35 @@ struct ReaderView: View {
         self.onSelectChapter = onSelectChapter
         // 没传就退回「只切章不定位」（默认参数里不能引用其它参数，只能在这里兜底）
         self.onJumpToChapter = onJumpToChapter ?? { chapter, _ in onSelectChapter(chapter, nil) }
+        self.onCoreChapterChange = onCoreChapterChange
         self.onExit = onExit
     }
+
+    // MARK: 菜单栏数据
 
     /// 只对小说生效：漫画 / 整理 / 短剧仍按原来的样子（不读这些排版与主题设置）
     private var isComic: Bool { category == .comic }
 
-    // MARK: 菜单栏数据
+    /// 界面展示与进度计算用的当前章：分页核心换章后跟核心走，其余形态跟外层选中走
+    private var displayChapter: Chapter { coreChapter ?? chapter }
 
     private var topBarTitle: String {
-        bookTitle.isEmpty ? chapter.title : bookTitle
+        bookTitle.isEmpty ? displayChapter.title : bookTitle
     }
 
     private var chapterIndex: Int? {
-        chapters.firstIndex { $0.id == chapter.id }
+        chapters.firstIndex { $0.id == displayChapter.id }
     }
 
     private var previousChapter: Chapter? {
         guard let index = chapterIndex, index > 0, index <= chapters.count else { return nil }
         return chapters[index - 1]
+    }
+
+    /// 下一章是否存在（分页核心跟章节表走，其余形态跟外层 prop）
+    private var hasNextChapter: Bool {
+        if let index = chapterIndex { return index + 1 < chapters.count }
+        return nextChapter != nil
     }
 
     /// 全书进度：章节位置 + 本章段落位置（取阅读记忆里的锚点，不额外记录状态，
@@ -127,7 +133,7 @@ struct ReaderView: View {
         var ratio = 0.0
         let count = paragraphs.count
         if count > 1,
-           let anchor = ProgressStore.shared.anchor(for: chapter.id),
+           let anchor = ProgressStore.shared.anchor(for: displayChapter.id),
            anchor.hasPrefix("blk-p"),
            let value = Int(anchor.dropFirst("blk-p".count)) {
             ratio = Double(min(max(value, 0), count - 1)) / Double(count - 1)
@@ -157,31 +163,39 @@ struct ReaderView: View {
         fraction = min(max(fraction, 0), 1)
         let target = chapters[index]
 
-        if target.id == chapter.id {
+        if target.id == displayChapter.id {
             jumpWithinChapter(fraction: fraction)
+        } else if usePaging {
+            withAnimation(.easeOut(duration: 0.18)) { showMenu = false }
+            // 分页核心：跨章跳由 UIKit 层直接完成，不回外层重建阅读页
+            coreHandle.jumpTo(chapter: target, fraction: fraction)
         } else {
             withAnimation(.easeOut(duration: 0.18)) { showMenu = false }
             onJumpToChapter(target, fraction)
         }
     }
 
-    /// 同章按比例跳段（分页走 jumpSeq 指令，滚动走 pendingAnchor）
+    /// 同章按比例跳段（分页核心直接定位，滚动走 pendingAnchor）
     private func jumpWithinChapter(fraction: Double) {
         let count = paragraphs.count
         guard count > 0 else { return }
         let paragraph = min(max(Int((Double(count - 1) * fraction).rounded()), 0), count - 1)
         if usePaging {
-            jumpParagraph = paragraph
-            jumpSeq += 1
+            coreHandle.jumpToParagraph(paragraph)
         } else {
             pendingAnchor = "blk-p\(paragraph)"
         }
     }
 
-    /// 切章（菜单栏操作后收起菜单，回到正文）
+    /// 切章（菜单栏操作后收起菜单，回到正文）。
+    /// 分页核心：指令直接下发给 UIKit 层，不在外层换章重建；其余形态走外层。
     private func open(_ target: Chapter) {
         withAnimation(.easeOut(duration: 0.18)) { showMenu = false }
-        onSelectChapter(target, nil)
+        if usePaging {
+            coreHandle.goChapter(target, paragraph: 0)
+        } else {
+            onSelectChapter(target, nil)
+        }
     }
 
     /// 白天 / 夜间一键切：在六套内置主题里挑同类型的第一套
@@ -199,7 +213,7 @@ struct ReaderView: View {
 
     /// 当前段落（阅读记忆里的锚点），书签 / 笔记用它记位置
     private var currentParagraphIndex: Int {
-        guard let anchor = ProgressStore.shared.anchor(for: chapter.id),
+        guard let anchor = ProgressStore.shared.anchor(for: displayChapter.id),
               anchor.hasPrefix("blk-p"),
               let value = Int(anchor.dropFirst("blk-p".count)) else { return 0 }
         return max(0, value)
@@ -208,7 +222,7 @@ struct ReaderView: View {
     /// 当前位置是否已有书签
     private var currentBookmark: ReaderBookmark? {
         annotations.bookmark(in: bookId,
-                             chapterId: chapter.id,
+                             chapterId: displayChapter.id,
                              paragraph: currentParagraphIndex)
     }
 
@@ -230,16 +244,20 @@ struct ReaderView: View {
             showCatalog = false
             showMenu = false
         }
+        // 分页核心：章间 / 章内都由 UIKit 层直接定位，不回外层绕圈
+        if usePaging {
+            if target.id == displayChapter.id {
+                coreHandle.jumpToParagraph(paragraph)
+            } else {
+                coreHandle.goChapter(target, paragraph: paragraph)
+            }
+            return
+        }
         guard target.id == chapter.id else {
             onSelectChapter(target, paragraph)
             return
         }
-        if usePaging {
-            jumpParagraph = paragraph
-            jumpSeq += 1
-        } else {
-            pendingAnchor = "blk-p\(paragraph)"
-        }
+        pendingAnchor = "blk-p\(paragraph)"
     }
 
     /// 加书签：位置 + 当时段落的一小段原文做预览
@@ -249,8 +267,8 @@ struct ReaderView: View {
             ? String(list[paragraph].prefix(40))
             : ""
         AnnotationStore.shared.addBookmark(bookId: bookId,
-                                           chapterId: chapter.id,
-                                           chapterTitle: chapter.displayTitle,
+                                           chapterId: displayChapter.id,
+                                           chapterTitle: displayChapter.displayTitle,
                                            paragraph: paragraph,
                                            preview: preview)
     }
@@ -288,11 +306,12 @@ struct ReaderView: View {
     }
 
     /// 删除 / 隐藏章节（目录面板里的「管理」与长按删除走这里）。
+    /// 分页核心会在章节表更新后自己重定位（relocateIfStale），删光时回传 onSessionEmpty。
     /// 当前章被删掉时必须先切走：否则阅读页会停在一个已经不存在的章节上变成空白。
     private func deleteChapters(_ targets: [Chapter]) {
         guard !targets.isEmpty else { return }
         let removed = Set(targets.map(\.id))
-        if removed.contains(chapter.id) {
+        if !usePaging, removed.contains(displayChapter.id) {
             if let next = chapters.first(where: { !removed.contains($0.id) }) {
                 onSelectChapter(next, nil)
             } else {
@@ -304,22 +323,6 @@ struct ReaderView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 3.4) {
             if resplitNotice == message {
                 withAnimation(.easeIn(duration: 0.2)) { resplitNotice = nil }
-            }
-        }
-    }
-
-    /// 预取下一章正文：本地书不用等网络，但切章要重新读文件 + 分段 + 切章判断，
-    /// 提前在主线程上「空转」一次，翻到下一章时内容已经在缓存里。
-    /// 相邻章预加载（千阅 B8）：上一章 / 下一章的正文切段与净化结果先进缓存。
-    /// 翻到章边时只差一次排版，不用现解码现净化；延迟 0.8s 再跑，先把当前章让出去。
-    private func warmNextChapter() {
-        guard category == .novel else { return }
-        let targets = [previousChapter, nextChapter].compactMap { $0 }
-        guard !targets.isEmpty else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-            for target in targets {
-                _ = library.paragraphs(for: target)
-                library.prefetchParagraphs(for: target)
             }
         }
     }
@@ -350,13 +353,13 @@ struct ReaderView: View {
         }
     }
 
-    private var content: ChapterContent { library.content(for: chapter) }
+    private var content: ChapterContent { library.content(for: displayChapter) }
     /// 正文段落：开了「繁体」就转换一次（带缓存，避免每次 body 重算都跑一遍 ICU）
     private var paragraphs: [String] {
-        let raw = library.paragraphs(for: chapter)
+        let raw = library.paragraphs(for: displayChapter)
         guard category == .novel else { return raw }
         // 净化 → 繁简，一条流水线（带缓存，规则或章节变了才重算）
-        return ReaderTextPipeline.paragraphs(chapterId: chapter.id,
+        return ReaderTextPipeline.paragraphs(chapterId: displayChapter.id,
                                              raw: raw,
                                              rules: prefs.activePurifyRules)
     }
@@ -371,7 +374,7 @@ struct ReaderView: View {
         let style = prefs.titleStyle
         let size = style.fontSize(bodySize: prefs.fontSize)
         let color = style.colorMode == 1 ? Color(hex: style.colorHex) : prefs.theme.uiTitle
-        let title = chapter.displayTitle
+        let title = displayChapter.displayTitle
         let parts = style.splitTwoLines ? TextPaginator.splitTitle(title) : nil
         return VStack(alignment: .leading, spacing: 4) {
             if let parts {
@@ -455,7 +458,7 @@ struct ReaderView: View {
                 centerTappable(mediaOnlyBody(content))
             } else if usePaging {
                 // 翻页引擎自己处理中间点击（UIKit handleTap），这里不重复挂，避免双重触发
-                pagedBody(content)
+                pagedBody()
             } else {
                 centerTappable(scrollBody(content))
             }
@@ -465,7 +468,7 @@ struct ReaderView: View {
         .overlay { brightnessOverlay }
         // 阅读区自己定状态栏明暗，跟主题底色走（否则深色主题配浅色状态栏会看不清）
         .preferredColorScheme(prefs.theme.statusBarIsDarkText ? .light : .dark)
-        .navigationTitle(chapter.title)
+        .navigationTitle(displayChapter.title)
         .navigationBarTitleDisplayMode(.inline)
         // 阅读页自己声明隐藏底部标签栏：只在 TabView / NavigationSplitView 外层改状态，
         // 在 iOS 27 的分栏布局里会被 detail 的导航栏更新覆盖掉（表现就是读书时标签栏还在）。
@@ -488,7 +491,7 @@ struct ReaderView: View {
         .overlay(alignment: .top) {
             if showMenu {
                 ReaderTopBar(title: topBarTitle,
-                             subtitle: chapter.displayTitle,
+                             subtitle: displayChapter.displayTitle,
                              trailing: "净化",
                              theme: prefs.theme,
                              onBack: onExit,
@@ -502,7 +505,7 @@ struct ReaderView: View {
                                 progress: bookProgress,
                                 draggingTitle: scrubTitle,
                                 hasPrevious: previousChapter != nil,
-                                hasNext: nextChapter != nil,
+                                hasNext: hasNextChapter,
                                 isNight: prefs.theme.isNight,
                                 onPreviousChapter: {
                                     if let previous = previousChapter { open(previous) }
@@ -521,38 +524,8 @@ struct ReaderView: View {
                                 onDayNight: toggleDayNight,
                                 onTheme: { showStylePanel = true },
                                 onTypography: { showStylePanel = true },
-                                onAutoRead: {
-                                    if autoReading { stopAutoRead() } else { startAutoRead() }
-                                },
                                 onSettings: { showSettings = true })
                     .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
-        }
-        // 自动阅读浮条：暂停 / 继续、速度说明、退出，外加一条全书进度细线
-        .overlay(alignment: .bottom) {
-            if autoReading, !showMenu {
-                AutoReadBar(theme: prefs.theme,
-                            label: autoReadLabel,
-                            isPaused: autoPaused,
-                            progress: bookProgress,
-                            showsProgress: prefs.autoReadShowsProgress,
-                            onToggle: toggleAutoPause,
-                            onStop: { stopAutoRead() })
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
-        }
-        // 自动阅读的状态提示（已暂停 / 到底了）
-        .overlay(alignment: .bottom) {
-            if let notice = autoNotice {
-                Text(notice)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(prefs.theme.uiText)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 9)
-                    .background(prefs.theme.uiBackground.opacity(0.96), in: Capsule())
-                    .overlay(Capsule().strokeBorder(prefs.theme.uiSeparator, lineWidth: 0.6))
-                    .padding(.bottom, autoReading ? 74 : 44)
-                    .transition(.opacity)
             }
         }
         // 重新分章的即时反馈：切成多少章 / 退回自动分章
@@ -585,14 +558,14 @@ struct ReaderView: View {
         .overlay {
             if showCatalog {
                 ReaderCatalogView(chapters: chapters,
-                                  currentId: chapter.id,
+                                  currentId: displayChapter.id,
                                   bookId: bookId,
                                   bookTitle: bookTitle,
                                   bookURL: currentBook?.folderURL ?? chapter.folderURL,
                                   chapterRule: library.chapterRule(forBookId: bookId) ?? "",
                                   encoding: library.textEncoding(for: chapter),
                                   canResplit: category == .novel,
-                                  currentChapter: chapter,
+                                  currentChapter: displayChapter,
                                   currentParagraph: currentParagraphIndex,
                                   theme: prefs.theme,
                                   onAddBookmark: addBookmark(at:),
@@ -602,7 +575,7 @@ struct ReaderView: View {
                                   onSelect: { picked in
                                       showCatalog = false
                                       showMenu = false
-                                      onSelectChapter(picked, nil)   // 点目录 = 从这一章开头
+                                      open(picked)   // 点目录 = 从这一章开头（分页核心在 UIKit 层内切章）
                                   },
                                   onDeleteChapters: { targets in deleteChapters(targets) },
                                   onResplit: { rule in applyResplit(rule) },
@@ -614,16 +587,11 @@ struct ReaderView: View {
         .overlay {
             if showStylePanel {
                 ReaderControlsPanel(
-                    chapterTitle: chapter.displayTitle,
+                    chapterTitle: displayChapter.displayTitle,
                     showsEncoding: showsEncodingMenu,
                     encodingMenu: AnyView(encodingMenu),
                     onTOC: { showStylePanel = false; showCatalog = true },
                     onSettings: { showSettings = true },
-                    onAutoRead: {
-                        showStylePanel = false
-                        if autoReading { stopAutoRead() } else { startAutoRead() }
-                    },
-                    isAutoReading: autoReading,
                     onExit: onExit,
                     onDismiss: { showStylePanel = false }
                 )
@@ -641,30 +609,9 @@ struct ReaderView: View {
         .onAppear {
             ReadingChrome.shared.enter()
             syncIdleTimer()
-            warmNextChapter()
-            // 自动阅读跨章连续：切章时本视图整棵重建，靠状态位接着跑
-            if AutoReadFlag.isOn, canAutoRead {
-                autoReading = true
-                autoPaused = false
-                restartAutoEngine(starting: true)
-            }
         }
         .onChange(of: prefs.keepScreenOn) { _, _ in syncIdleTimer() }
-        // 面板里改速度 / 模式：立即按新参数重启引擎，不用退出重进
-        .onChange(of: prefs.autoReadMode) { _, _ in
-            restartAutoEngine(starting: autoReading && !autoPaused)
-        }
-        .onChange(of: prefs.autoReadFlipSeconds) { _, _ in
-            restartAutoEngine(starting: autoReading && !autoPaused)
-        }
-        .onChange(of: prefs.autoReadScrollSpeed) { _, _ in
-            restartAutoEngine(starting: autoReading && !autoPaused)
-        }
         .onDisappear {
-            // 只停引擎，不清 AutoReadFlag：清掉就断在章与章之间
-            autoTicker?.invalidate()
-            autoTicker = nil
-            AutoScrollDriver.shared.stop()
             ReadingChrome.shared.leave()
             // 兜底隐藏是在布局阶段强制设置的，退出阅读时显式还原一次，
             // 避免 representable 销毁顺序不同导致标签栏一直不回来
@@ -682,10 +629,6 @@ struct ReaderView: View {
         return ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: prefs.paragraphSpacing) {
-                    // 自动滚动需要拿到宿主 UIScrollView，这个 0 高度探针只做这件事
-                    AutoScrollProbe()
-                        .frame(width: 0, height: 0)
-
                     if isEmptyChapter {
                         ContentUnavailableView {
                             Label("这一章没有可显示的内容", systemImage: "doc.questionmark")
@@ -706,8 +649,6 @@ struct ReaderView: View {
                         Text(paragraphs[index])
                             .font(Font(bodyFont))
                             .kerning(prefs.wordSpacing)
-                            // 千阅 K2 / K3：长按选中即可拷贝 / 查询 / 翻译
-                            .textSelection(.enabled)
                             .lineSpacing(prefs.lineSpacing)
                             .foregroundStyle(prefs.theme.uiText)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -882,55 +823,29 @@ struct ReaderView: View {
         return value
     }
 
-    private func pagedBody(_ content: ChapterContent) -> some View {
-        PagedReaderView(
-            input: PagedReaderInput(chapterId: chapter.id,
-                                    paragraphs: paragraphs,
-                                    images: content.images,
-                                    avMedia: content.avMedia,
-                                    typography: prefs.typography,
-                                    theme: prefs.theme,
-                                    title: chapter.displayTitle,
-                                    bookTitle: bookTitle,
-                                    restoreParagraph: restoreParagraph,
-                                    hasNextChapter: nextChapter != nil,
-                                    isComic: isComic,
-                                    boostRate: prefs.longPressRate,
-                                    style: prefs.pageTurn.flipStyle,
-                                    headerMode: prefs.headerMode,
-                                    footerMode: prefs.footerMode,
-                                    headerTopPadding: prefs.headerTopPadding,
-                                    footerBottomPadding: prefs.footerBottomPadding,
-                                    showsProgress: prefs.showReadingProgress,
-                                    flipDuration: prefs.flipDuration,
-                                    tapLeft: prefs.tapLeft,
-                                    tapCenterAction: prefs.tapCenter,
-                                    tapRight: prefs.tapRight,
-                                    // 外部翻页指令：自动阅读的定时翻页走这条通道
-                                    pageCommand: autoPageSeq,
-                                    pageCommandDelta: 1,
-                                    jumpParagraph: jumpParagraph,
-                                    jumpSeq: jumpSeq,
-                                    contentStamp: ReaderTextPipeline.stamp(
-                                        rules: prefs.activePurifyRules),
-                                    isAutoReading: autoReading),
-            onProgress: { paragraph in
-                ProgressStore.shared.noteAnchor("blk-p\(paragraph)", for: chapter.id)
+    private func pagedBody() -> some View {
+        // 纯 UIKit 阅读核心：章间导航（章末续章 / 目录 / 进度条 / 上下章）全在
+        // UIKit 层内完成，SwiftUI 只下发指令与接收「当前章变了」的通知。
+        BookReaderView(
+            entry: BookReaderEntry(chapterId: displayChapter.id,
+                                   paragraph: restoreParagraph),
+            chapters: chapters,
+            bookId: bookId,
+            bookTitle: bookTitle,
+            contentStamp: ReaderTextPipeline.stamp(
+                rules: prefs.activePurifyRules),
+            handle: coreHandle,
+            library: library,
+            prefs: prefs,
+            onChapterChange: { newChapter in
+                coreChapter = newChapter
+                onCoreChapterChange(newChapter)
             },
             onTapMedia: { item in galleryItem = item },
-            onOpenNext: {
-                if let next = nextChapter { onOpenNext(next) }
-            },
-            onReachedEnd: { stopAutoRead(notice: "后面没有内容了，自动阅读已停止") },
             onTapCenter: {
-                if autoReading {
-                    toggleAutoPause()
-                } else {
-                    withAnimation(.easeOut(duration: 0.2)) { showMenu.toggle() }
-                }
-            }
-        )
-        .id("paged-\(prefs.pageTurn.rawValue)")
+                withAnimation(.easeOut(duration: 0.2)) { showMenu.toggle() }
+            },
+            onSessionEmpty: { onExit() })
     }
 
     /// 非翻页模式：中间 28%~72% 区域单击弹出控制菜单。
@@ -942,92 +857,12 @@ struct ReaderView: View {
                 .frame(width: geo.size.width, height: geo.size.height)
                 .contentShape(Rectangle())
                 .onTapGesture(coordinateSpace: .local) { point in
-                    // 自动阅读中：点哪儿都是暂停 / 继续，不弹菜单
-                    if autoReading { toggleAutoPause(); return }
                     // .local 原点即本视图左上；iPad 分栏下 geo.size.width 是 detail 列真实宽度
                     let w = geo.size.width
                     if point.x > w * 0.28 && point.x < w * 0.72 {
                         withAnimation(.easeOut(duration: 0.2)) { showMenu.toggle() }
                     }
                 }
-        }
-    }
-
-    // MARK: 自动阅读（千阅 I 组）
-
-    /// 只有小说正文能自动阅读：漫画 / 短剧是图与视频，PDF 走另一套渲染
-    private var canAutoRead: Bool {
-        category == .novel && content.pdfURL == nil && !isMediaOnly && !isEmptyChapter
-    }
-
-    private var autoReadLabel: String {
-        prefs.autoReadMode == .flip
-            ? "自动阅读 · \(Int(prefs.autoReadFlipSeconds)) 秒/页"
-            : "自动阅读 · \(Int(prefs.autoReadScrollSpeed)) 点/秒"
-    }
-
-    private func startAutoRead() {
-        guard canAutoRead else {
-            showAutoNotice("这一类书籍不支持自动阅读")
-            return
-        }
-        withAnimation(.easeOut(duration: 0.18)) { showMenu = false }
-        autoReading = true
-        autoPaused = false
-        AutoReadFlag.isOn = true
-        restartAutoEngine(starting: true)
-    }
-
-    private func stopAutoRead(notice: String? = nil) {
-        autoTicker?.invalidate()
-        autoTicker = nil
-        AutoScrollDriver.shared.stop()
-        autoReading = false
-        autoPaused = false
-        AutoReadFlag.isOn = false
-        if let notice { showAutoNotice(notice) }
-    }
-
-    private func toggleAutoPause() {
-        guard autoReading else { return }
-        autoPaused.toggle()
-        restartAutoEngine(starting: !autoPaused)
-    }
-
-    /// 起 / 停底层引擎。暂停时也走这里：停掉驱动但保留 autoReading（浮条还在，能点继续）
-    /// starting 由调用方算好：@State 刚写进去的同一轮里读回来不保证是新值。
-    private func restartAutoEngine(starting: Bool) {
-        autoTicker?.invalidate()
-        autoTicker = nil
-        AutoScrollDriver.shared.stop()
-        guard starting else { return }
-
-        switch prefs.autoReadMode {
-        case .scroll:
-            AutoScrollDriver.shared.speed = CGFloat(prefs.autoReadScrollSpeed)
-            AutoScrollDriver.shared.onReachBottom = {
-                guard autoReading else { return }
-                if let next = nextChapter {
-                    onOpenNext(next)   // 章末接着读：切章后 onAppear 会重新拉起驱动
-                } else {
-                    stopAutoRead(notice: "后面没有内容了，自动阅读已停止")
-                }
-            }
-            AutoScrollDriver.shared.start()
-        case .flip:
-            let interval = max(prefs.autoReadFlipSeconds, 2)
-            autoTicker = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { _ in
-                guard !autoPaused else { return }
-                autoPageSeq += 1   // 序号变化 → 分页器翻一页（与手势翻页同一条路）
-            }
-        }
-    }
-
-    private func showAutoNotice(_ text: String) {
-        withAnimation(.easeOut(duration: 0.18)) { autoNotice = text }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.4) {
-            guard autoNotice == text else { return }
-            withAnimation(.easeOut(duration: 0.25)) { autoNotice = nil }
         }
     }
 

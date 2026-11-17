@@ -81,20 +81,6 @@ enum PageTurnMode: Int, CaseIterable, Identifiable {
 }
 
 /// 页眉内容
-/// 自动阅读的方式（I 组）：翻页 = 每页定时翻；滚动 = 匀速往下推
-enum AutoReadMode: Int, CaseIterable, Identifiable {
-    case flip = 0
-    case scroll = 1
-
-    var id: Int { rawValue }
-    var label: String { self == .flip ? "翻页" : "滚动" }
-    var detail: String {
-        self == .flip
-            ? "每页停留设定秒数后自动翻页，翻到章末自动进下一章。"
-            : "按设定速度匀速向下滚动，滚到底自动进下一章。"
-    }
-}
-
 enum ReaderHeaderMode: Int, CaseIterable, Identifiable {
     case none = 0
     case chapter = 1
@@ -234,33 +220,6 @@ final class Preferences: ObservableObject {
     }
     /// 覆盖翻页的动画时长（秒）。手势驱动的那几种翻页不受它影响。
     @Published var flipDuration: Double = 0.28 {
-        didSet { if loaded { save() } }
-    }
-
-    // MARK: 自动阅读（I 组）
-
-    @Published var autoReadMode: AutoReadMode = .flip {
-        didSet {
-            guard loaded else { return }
-            save()
-            // 模式必须和翻页方式一致：滚动靠推 contentOffset（只有滚动排版有它），
-            // 翻页靠分页引擎的翻页指令。在面板里切模式时顺手把版式也切过去。
-            switch autoReadMode {
-            case .scroll: if pageTurn.isPaged { pageTurn = .scroll }
-            case .flip:   if !pageTurn.isPaged { pageTurn = .slide }
-            }
-        }
-    }
-    /// 翻页模式：每页停留多少秒
-    @Published var autoReadFlipSeconds: Double = 8 {
-        didSet { if loaded { save() } }
-    }
-    /// 滚动模式：每秒推进多少点
-    @Published var autoReadScrollSpeed: Double = 40 {
-        didSet { if loaded { save() } }
-    }
-    /// 自动阅读时在底部显示进度条
-    @Published var autoReadShowsProgress: Bool = true {
         didSet { if loaded { save() } }
     }
 
@@ -449,12 +408,6 @@ final class Preferences: ObservableObject {
             ? true : defaults.bool(forKey: Keys.showProgress)
         readerBrightness = Double(number(Keys.brightness, 1.0, 0.25, 1.0))
         flipDuration = Double(number(Keys.flipDuration, 0.28, 0.05, 0.8))
-        autoReadMode = AutoReadMode(rawValue: defaults.object(forKey: Keys.autoReadMode) == nil
-                                    ? 0 : defaults.integer(forKey: Keys.autoReadMode)) ?? .flip
-        autoReadFlipSeconds = Double(number(Keys.autoFlipSeconds, 8, 2, 60))
-        autoReadScrollSpeed = Double(number(Keys.autoScrollSpeed, 40, 10, 200))
-        autoReadShowsProgress = defaults.object(forKey: Keys.autoProgress) == nil
-            ? true : defaults.bool(forKey: Keys.autoProgress)
         tapLeft = TapZoneAction(rawValue: defaults.object(forKey: Keys.tapLeft) == nil
                                 ? 0 : defaults.integer(forKey: Keys.tapLeft)) ?? .prevPage
         tapCenter = TapZoneAction(rawValue: defaults.object(forKey: Keys.tapCenter) == nil
@@ -543,10 +496,6 @@ final class Preferences: ObservableObject {
         static let purifyRules = "LocalNovel.purifyRules"
         static let chapterRules = "LocalNovel.chapterRules"
         static let keepScreenOn = "LocalNovel.keepScreenOn"
-        static let autoReadMode = "LocalNovel.autoReadMode"
-        static let autoFlipSeconds = "LocalNovel.autoReadFlipSeconds"
-        static let autoScrollSpeed = "LocalNovel.autoReadScrollSpeed"
-        static let autoProgress = "LocalNovel.autoReadShowsProgress"
     }
 
     private func save() {
@@ -597,9 +546,5 @@ final class Preferences: ObservableObject {
             defaults.set(data, forKey: Keys.chapterRules)
         }
         defaults.set(keepScreenOn, forKey: Keys.keepScreenOn)
-        defaults.set(autoReadMode.rawValue, forKey: Keys.autoReadMode)
-        defaults.set(autoReadFlipSeconds, forKey: Keys.autoFlipSeconds)
-        defaults.set(autoReadScrollSpeed, forKey: Keys.autoScrollSpeed)
-        defaults.set(autoReadShowsProgress, forKey: Keys.autoProgress)
     }
 }
