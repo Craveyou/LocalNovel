@@ -28,8 +28,8 @@ struct ReaderCatalogView: View {
     let currentChapter: Chapter
     let currentParagraph: Int
     let theme: ReaderTheme
-    let onSelect: (Chapter) -> Void
     let onAddBookmark: (Int) -> Void
+    let onSelect: (Chapter) -> Void
     let onDismiss: () -> Void
 
     @ObservedObject private var annotations = AnnotationStore.shared
