@@ -22,10 +22,11 @@ struct RootView: View {
     @State private var autoRestoredChapterId: String?
 
     var body: some View {
+        // 两栏：书库 → 阅读器。
+        // 原来中间那层「章节目录」页已删除：小说点书直接读整本 / 上次读到的那一章，
+        // 漫画 / 短剧 / 整理也直接进第一话 / 第一集，换章统一走阅读器里的目录面板。
         NavigationSplitView(columnVisibility: $columnVisibility) {
             LibrarySidebar(selection: $selectedBook)
-        } content: {
-            ChapterListView(book: selectedBook, selection: $selectedChapter)
         } detail: {
             if let chapter = selectedChapter {
                 ReaderView(chapter: chapter,
@@ -34,7 +35,7 @@ struct RootView: View {
                            bookTitle: latestBook()?.title ?? "",
                            bookId: latestBook()?.id ?? "",
                            category: latestBook()?.category ?? .novel,
-                           onOpenNext: { next in selectedChapter = next },
+                           onOpenNext: { next in selectChapter(next) },
                            onSelectChapter: { chapter in selectChapter(chapter) },
                            onExit: {
                                selectedChapter = nil
@@ -63,18 +64,13 @@ struct RootView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { library.refreshOnForeground() }
         }
-        // 小说「选书即读」：点书直接进入阅读器，不再停在章节目录页。
-        // 其它大类维持原来的「选书 → 目录 → 选章」流程。
+        // 选书即读：所有分区都直接进阅读器，不再停在章节目录页。
         .onChange(of: selectedBook?.id) { _, _ in
             guard let book = selectedBook else {
                 selectedChapter = nil
                 return
             }
-            if book.category == .novel {
-                openNovelDirectly(book)
-            } else {
-                selectedChapter = nil
-            }
+            openBook(book)
         }
         // 切章完成（占位章 → 真实章节）后，若当前章已失效或还没选中，重新定位到记忆章节
         .onChange(of: chapterSignature) { _, _ in
@@ -87,10 +83,10 @@ struct RootView: View {
             autoRestoredChapterId = target.id
             selectedChapter = target
         }
-        // 选章副作用统一到 RootView（小说）：记「最近读的章」并区分续读 / 主动选章
+        // 选章副作用统一到 RootView：记「最近读的章」并区分续读 / 主动选章。
+        // 中间那层目录页删掉后，漫画 / 短剧 / 整理也靠这里记忆「上次读到第几话 / 第几集」。
         .onChange(of: selectedChapter?.id) { _, _ in
-            guard let chapter = selectedChapter,
-                  let book = selectedBook, book.category == .novel else { return }
+            guard let chapter = selectedChapter, let book = selectedBook else { return }
             // 占位章（切章前的整本）id 会在切完后失效，不能覆盖记忆里的真实章节 id，
             // 否则下次切完章就找不到上次读的章，被重置到第一章。
             guard !chapter.isPlaceholder else { return }
@@ -158,12 +154,18 @@ struct RootView: View {
         (latestBook()?.chapters ?? []).map(\.id).joined(separator: "|")
     }
 
-    /// 选书即读：先触发切章（若还没切），再选中上次读到的章或第一章。
-    /// 切章前只有一个占位章，读的就是整本文件；切章完成由 chapterSignature 对齐。
-    private func openNovelDirectly(_ book: Book) {
-        library.ensureChapters(for: book)
+    /// 选书即读：直接打开上次读到的那一章（没有记忆就第一章）。
+    /// 小说要先把占位章换成真实章节；其余分区扫描时就已经是真实章节，不需要这一步。
+    private func openBook(_ book: Book) {
+        if book.category == .novel {
+            library.ensureChapters(for: book)
+        }
         let fresh = latestBook() ?? book
-        guard let target = preferredChapter(in: fresh, allowFirst: true) else { return }
+        guard let target = preferredChapter(in: fresh, allowFirst: true) else {
+            // 极少数情况（书是空的 / 文件被移走）：留在欢迎页，别推一个空阅读页
+            selectedChapter = nil
+            return
+        }
         autoRestoredChapterId = target.id
         selectedChapter = target
     }
@@ -179,9 +181,16 @@ struct RootView: View {
         return nil
     }
 
-    /// 目录弹层 / 章末导航主动跳章：清掉自动恢复标记，让 onChange 把锚点重置到章首。
+    /// 目录 / 章末导航主动跳章：清掉自动恢复标记，并把锚点先写回章首。
+    ///
+    /// 锚点必须在这里写、不能等 onChange：ReaderView 一旦重建就先按「这一章上次读到的段落」
+    /// 定位（restoreParagraph），onChange 再写 blk-p0 时页面已经画完、分页器不会二次定位，
+    /// 表现就是「点某一章进去直接停在那一章的最后一页」。
     private func selectChapter(_ chapter: Chapter) {
         autoRestoredChapterId = nil
+        if chapter.id != selectedChapter?.id, !chapter.isPlaceholder {
+            ProgressStore.shared.setAnchor("blk-p0", for: chapter.id)
+        }
         selectedChapter = chapter
     }
 

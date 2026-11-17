@@ -272,6 +272,27 @@ struct ReaderView: View {
         pageCommandSeq += 1
     }
 
+    /// 删除 / 隐藏章节（目录面板里的「管理」与长按删除走这里）。
+    /// 当前章被删掉时必须先切走：否则阅读页会停在一个已经不存在的章节上变成空白。
+    private func deleteChapters(_ targets: [Chapter]) {
+        guard !targets.isEmpty else { return }
+        let removed = Set(targets.map(\.id))
+        if removed.contains(chapter.id) {
+            if let next = chapters.first(where: { !removed.contains($0.id) }) {
+                onSelectChapter(next)
+            } else {
+                onExit()
+            }
+        }
+        let message = library.deleteChapters(targets)
+        withAnimation(.easeOut(duration: 0.2)) { resplitNotice = message }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.4) {
+            if resplitNotice == message {
+                withAnimation(.easeIn(duration: 0.2)) { resplitNotice = nil }
+            }
+        }
+    }
+
     /// 预取下一章正文：本地书不用等网络，但切章要重新读文件 + 分段 + 切章判断，
     /// 提前在主线程上「空转」一次，翻到下一章时内容已经在缓存里。
     private func warmNextChapter() {
@@ -535,6 +556,7 @@ struct ReaderView: View {
                                       showMenu = false
                                       onSelectChapter(picked)
                                   },
+                                  onDeleteChapters: { targets in deleteChapters(targets) },
                                   onResplit: { rule in applyResplit(rule) },
                                   onDismiss: { showCatalog = false })
                     .transition(.opacity)

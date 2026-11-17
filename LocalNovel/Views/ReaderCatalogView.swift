@@ -32,6 +32,13 @@ private enum StaleTarget: Identifiable {
     }
 }
 
+/// 目录里的一段：卷名 / 格式包（漫画的「PDF 包」「图片包」）
+private struct CatalogGroup: Identifiable {
+    let id: String
+    let title: String?
+    let chapters: [Chapter]
+}
+
 struct ReaderCatalogView: View {
     let chapters: [Chapter]
     let currentId: String
@@ -53,11 +60,15 @@ struct ReaderCatalogView: View {
     /// 精确跳段：点书签 / 笔记时连段落一起带回去
     let onSelectParagraph: (Chapter, Int) -> Void
     let onSelect: (Chapter) -> Void
+    /// 删除 / 隐藏章节（原「章节目录页」删掉后，这个能力搬到目录面板里）
+    let onDeleteChapters: ([Chapter]) -> Void
     /// 应用新的分章规则（nil = 恢复自动分章）
     let onResplit: (String?) -> Void
     let onDismiss: () -> Void
 
     @ObservedObject private var annotations = AnnotationStore.shared
+    /// 短剧每集的大小 / 时长（行滚到才读）
+    @ObservedObject private var videoMeta = VideoMetaStore.shared
     @State private var tab: CatalogTab = .catalog
     @State private var query = ""
     @State private var descending = false
@@ -71,6 +82,12 @@ struct ReaderCatalogView: View {
     @StateObject private var search = BookSearchModel()
     /// 输入防抖：停手 350ms 才真去扫全文，边打字边扫纯属浪费
     @State private var searchDebounce: Task<Void, Never>?
+    /// 章节管理（多选删除）：替代原来中间那层目录页
+    @State private var managing = false
+    @State private var selectedIds: Set<String> = []
+    /// 单章删除待确认
+    @State private var pendingDelete: Chapter?
+    @State private var confirmBatchDelete = false
 
     private var keyword: String {
         query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -88,6 +105,23 @@ struct ReaderCatalogView: View {
     private var filtered: [Chapter] {
         guard !keyword.isEmpty else { return sorted }
         return sorted.filter { $0.displayTitle.localizedCaseInsensitiveContains(keyword) }
+    }
+
+    /// 按卷名 / 格式包聚合（与原来中间目录页同一规则），只有一个组时不显示组名
+    private var groups: [CatalogGroup] {
+        var order: [String] = []
+        var buckets: [String: [Chapter]] = [:]
+        for chapter in filtered {
+            let key = chapter.groupName ?? ""
+            if buckets[key] == nil { order.append(key) }
+            buckets[key, default: []].append(chapter)
+        }
+        let hasNamed = order.contains { !$0.isEmpty }
+        return order.map { key in
+            CatalogGroup(id: key,
+                         title: key.isEmpty ? (hasNamed ? "未分组" : nil) : key,
+                         chapters: buckets[key] ?? [])
+        }
     }
 
     private func indexLabel(_ chapter: Chapter) -> String {
@@ -188,6 +222,36 @@ struct ReaderCatalogView: View {
         } message: {
             Text("这条记录指向的章节在重新分章后已经不存在，无法再定位。要删除它吗？")
         }
+        // 单章删除：二次确认（整本切片 / 只读目录只会隐藏，文案要说清）
+        .confirmationDialog("删除章节",
+                            isPresented: Binding(
+                                get: { pendingDelete != nil },
+                                set: { if !$0 { pendingDelete = nil } }
+                            ),
+                            presenting: pendingDelete) { chapter in
+            Button("删除《\(chapter.displayTitle)》", role: .destructive) {
+                onDeleteChapters([chapter])
+                pendingDelete = nil
+                if managing { selectedIds.remove(chapter.id) }
+            }
+            Button("取消", role: .cancel) { pendingDelete = nil }
+        } message: { chapter in
+            Text(deleteHint(for: chapter))
+        }
+        // 批量删除
+        .confirmationDialog("删除选中的 \(selectedIds.count) 章",
+                            isPresented: $confirmBatchDelete,
+                            titleVisibility: .visible) {
+            Button("删除 \(selectedIds.count) 章", role: .destructive) {
+                let targets = chapters.filter { selectedIds.contains($0.id) }
+                selectedIds.removeAll()
+                managing = false
+                onDeleteChapters(targets)
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("源文件会被删除且不可恢复；整本小说里切出来的章节与只读目录则改为隐藏，可在「设置 → 书库」里恢复。")
+        }
     }
 
     // MARK: 局部
@@ -226,6 +290,23 @@ struct ReaderCatalogView: View {
                         .padding(.horizontal, 8)
                         .frame(height: 28)
                         .background(theme.uiSeparator.opacity(0.35), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+
+                    // 删除 / 隐藏章节的入口（原来的章节目录页已经删掉）
+                    Button {
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            managing.toggle()
+                            if !managing { selectedIds.removeAll() }
+                        }
+                    } label: {
+                        Text(managing ? "完成" : "管理")
+                            .font(.system(size: 12, weight: managing ? .semibold : .regular))
+                            .foregroundStyle(managing ? Color.white : theme.uiText)
+                            .padding(.horizontal, 8)
+                            .frame(height: 28)
+                            .background(managing ? Color.accentColor : theme.uiSeparator.opacity(0.35),
+                                        in: Capsule())
                     }
                     .buttonStyle(.plain)
                 }
@@ -430,10 +511,24 @@ struct ReaderCatalogView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 0) {
-                    ForEach(filtered) { chapter in
-                        chapterRow(chapter).id(chapter.id)
+                    if filtered.isEmpty {
+                        emptyHint("没有匹配的章节")
+                    } else if groups.count <= 1 {
+                        ForEach(filtered) { chapter in
+                            chapterRow(chapter).id(chapter.id)
+                        }
+                    } else {
+                        // 有卷名 / 格式包（漫画的「PDF 包」「图片包」）就分段列，
+                        // 与原来中间那层目录页的分段规则一致。
+                        ForEach(groups) { group in
+                            if let title = group.title {
+                                groupHeader(title)
+                            }
+                            ForEach(group.chapters) { chapter in
+                                chapterRow(chapter, showsGroup: false).id(chapter.id)
+                            }
+                        }
                     }
-                    if filtered.isEmpty { emptyHint("没有匹配的章节") }
                 }
                 .padding(.bottom, 8)
             }
@@ -445,23 +540,64 @@ struct ReaderCatalogView: View {
         }
     }
 
-    private func chapterRow(_ chapter: Chapter) -> some View {
+    private func groupHeader(_ title: String) -> some View {
+        HStack {
+            Text(title)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(theme.uiHeaderFooter)
+                .textCase(nil)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 10)
+        .padding(.bottom, 4)
+        .background(theme.uiSeparator.opacity(0.12))
+    }
+
+    private func chapterRow(_ chapter: Chapter, showsGroup: Bool = true) -> some View {
         let isCurrent = chapter.id == currentId
+        let isOn = selectedIds.contains(chapter.id)
         return Button {
-            onSelect(chapter)
+            if managing {
+                if isOn { selectedIds.remove(chapter.id) } else { selectedIds.insert(chapter.id) }
+            } else {
+                onSelect(chapter)
+            }
         } label: {
             HStack(spacing: 8) {
-                Text(indexLabel(chapter))
-                    .font(.system(size: 11).monospacedDigit())
-                    .foregroundStyle(isCurrent ? Color.accentColor : theme.uiHeaderFooter)
-                    .frame(width: 34, alignment: .trailing)
-                Text(chapter.displayTitle)
-                    .font(.system(size: 14, weight: isCurrent ? .medium : .regular))
-                    .foregroundStyle(isCurrent ? Color.accentColor : theme.uiText)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
+                if managing {
+                    Image(systemName: isOn ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 15))
+                        .foregroundStyle(isOn ? Color.accentColor : theme.uiHeaderFooter)
+                        .frame(width: 34, alignment: .center)
+                } else {
+                    Text(indexLabel(chapter))
+                        .font(.system(size: 11).monospacedDigit())
+                        .foregroundStyle(isCurrent ? Color.accentColor : theme.uiHeaderFooter)
+                        .frame(width: 34, alignment: .trailing)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    if showsGroup, let group = chapter.groupName, !group.isEmpty {
+                        Text(group)
+                            .font(.system(size: 10))
+                            .foregroundStyle(theme.uiHeaderFooter)
+                    }
+                    Text(chapter.displayTitle)
+                        .font(.system(size: 14, weight: isCurrent ? .medium : .regular))
+                        .foregroundStyle(isCurrent ? Color.accentColor : theme.uiText)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                    if let line = videoLine(for: chapter) {
+                        Text(line)
+                            .font(.system(size: 10))
+                            .foregroundStyle(theme.uiHeaderFooter)
+                            .monospacedDigit()
+                    }
+                }
                 Spacer(minLength: 6)
-                if isCurrent { Circle().fill(Color.accentColor).frame(width: 6, height: 6) }
+                if isCurrent && !managing {
+                    Circle().fill(Color.accentColor).frame(width: 6, height: 6)
+                }
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 9)
@@ -469,6 +605,29 @@ struct ReaderCatalogView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .task(id: chapter.id) {
+            // 短剧每一集：进目录就把大小 / 时长读出来（和原来目录页一致）
+            guard isVideoChapter(chapter) else { return }
+            await VideoMetaStore.shared.load(chapter.folderURL)
+        }
+        // 长按删单章：ScrollView 里 swipeActions 不生效，用菜单最稳
+        .contextMenu {
+            Button(role: .destructive) {
+                pendingDelete = chapter
+            } label: {
+                Label("删除这一章", systemImage: "trash")
+            }
+        }
+    }
+
+    /// 单文件视频章节（短剧的每一集）
+    private func isVideoChapter(_ chapter: Chapter) -> Bool {
+        chapter.kind == .file && MediaResolver.isVideoFile(chapter.folderURL)
+    }
+
+    private func videoLine(for chapter: Chapter) -> String? {
+        guard isVideoChapter(chapter) else { return nil }
+        return VideoMetaFormat.line(videoMeta.info(for: chapter.folderURL))
     }
 
     private var bookmarkList: some View {
@@ -600,13 +759,21 @@ struct ReaderCatalogView: View {
             HStack(spacing: 0) {
                 switch tab {
                 case .catalog:
-                    footerButton("定位到当前章") {
-                        if let chapter = chapters.first(where: { $0.id == currentId }) {
-                            onSelect(chapter)
+                    if managing {
+                        footerButton(allSelected ? "取消全选" : "全选") { toggleSelectAll() }
+                        footerButton(selectedIds.isEmpty ? "删除" : "删除 \(selectedIds.count) 章",
+                                     disabled: selectedIds.isEmpty) {
+                            confirmBatchDelete = true
                         }
-                    }
-                    if canResplit {
-                        footerButton("重新分章") { showResplit = true }
+                    } else {
+                        footerButton("定位到当前章") {
+                            if let chapter = chapters.first(where: { $0.id == currentId }) {
+                                onSelect(chapter)
+                            }
+                        }
+                        if canResplit {
+                            footerButton("重新分章") { showResplit = true }
+                        }
                     }
                 case .bookmark:
                     footerButton("加书签") { onAddBookmark(currentParagraph) }
@@ -642,16 +809,43 @@ struct ReaderCatalogView: View {
         }
     }
 
-    private func footerButton(_ title: String, action: @escaping () -> Void) -> some View {
+    private func footerButton(_ title: String,
+                              disabled: Bool = false,
+                              action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(title)
                 .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(theme.uiText)
+                .foregroundStyle(disabled ? theme.uiHeaderFooter : theme.uiText)
                 .frame(maxWidth: .infinity)
                 .frame(height: 44)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .disabled(disabled)
+    }
+
+    // MARK: 章节管理
+
+    private var allSelected: Bool {
+        !chapters.isEmpty && selectedIds.count == chapters.count
+    }
+
+    private func toggleSelectAll() {
+        if allSelected {
+            selectedIds.removeAll()
+        } else {
+            selectedIds = Set(chapters.map(\.id))
+        }
+    }
+
+    /// 删除说明：整本切片 / 只读目录只会隐藏，不能承诺「删掉源文件」
+    private func deleteHint(for chapter: Chapter) -> String {
+        if !chapter.canDeleteFromDisk {
+            return "《\(chapter.displayTitle)》是整本文件里切出来的一章，只能隐藏，不会删除原文件；"
+                + "可在「设置 → 书库」里恢复。"
+        }
+        return "《\(chapter.displayTitle)》将从书库移除。若该文件在 App 文档目录内，"
+            + "源文件会被一并删除且不可恢复；若在只读的外部目录，则改为隐藏。"
     }
 }
 

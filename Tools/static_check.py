@@ -109,7 +109,7 @@ EXPECTED_TYPES = [
     "AnimatedFrameView", "AnimatedImageView", "LocalMediaPlayer",
     "PlayerContainerView", "PlayerLayerView", "MediaAttachmentView",
     "InlineMediaView", "MediaGalleryView", "ReaderView", "RootView", "WelcomeView",
-    "LibrarySidebar", "ChapterListView", "SettingsView", "LocalNovelApp",
+    "LibrarySidebar", "ReaderCatalogView", "SettingsView", "LocalNovelApp",
     "RateBoostGesture", "RateBoostCoordinator", "AudioSurfaceView",
     "ZoomableImageView", "FullscreenVideoView", "FullscreenPlayerHost",
     "DocumentsBootstrap", "ImportMode", "BookImporter", "BookImportError",
@@ -264,7 +264,7 @@ def main():
     print("\n== F0-BIS. 本轮修复：章节记忆 / 滑动流畅度 / 章节删除 ==")
     reader = (APP / "Views" / "ReaderView.swift").read_text(encoding="utf-8")
     inline = (APP / "Views" / "InlineMediaView.swift").read_text(encoding="utf-8")
-    chapters = (APP / "Views" / "ChapterListView.swift").read_text(encoding="utf-8")
+    chapters = (APP / "Views" / "ReaderCatalogView.swift").read_text(encoding="utf-8")
     progress = (APP / "Core" / "ProgressStore.swift").read_text(encoding="utf-8")
     settings = (APP / "Views" / "SettingsView.swift").read_text(encoding="utf-8")
     importer = (APP / "Core" / "BookImporter.swift").read_text(encoding="utf-8")
@@ -291,9 +291,10 @@ def main():
           and "onDisappear { onScreen = false }" in inline)
     check("restore 只跑一次，不再每次 onAppear 全量重扫清缓存",
           "didRestore" in welcome)
-    check("章节列表支持左滑删除 + 二次确认",
-          ".swipeActions" in chapters and "confirmationDialog(" in chapters
-          and "deleteChapter(" in store)
+    check("目录面板承接章节删除（长按单章 + 管理多选 + 二次确认）",
+          "onDeleteChapters" in chapters and ".contextMenu" in chapters
+          and "confirmationDialog(\"删除章节\"" in chapters
+          and "deleteChapter(" in store and "deleteChapters(" in store)
     check("书库支持左滑删除整本书 + 二次确认",
           ".swipeActions" in sidebar and "confirmationDialog(" in sidebar
           and "deleteBook(" in store)
@@ -349,8 +350,8 @@ def main():
           and "DocumentsBootstrap.guideFileName" in resolver)
     check("切回前台补写说明文件", "DocumentsBootstrap.ensureVisibleInFilesApp()" in store)
     check("版本号提升以刷新系统元数据",
-          "<string>2.13.0</string>" in plist and "CURRENT_PROJECT_VERSION = 14" in pbx
-          and "MARKETING_VERSION = 2.13.0" in pbx)
+          "<string>2.14.0</string>" in plist and "CURRENT_PROJECT_VERSION = 15" in pbx
+          and "MARKETING_VERSION = 2.14.0" in pbx)
     check("UI 给出「文件 App 搜索本地小说」兜底路径",
           "搜索框搜「本地小说」" in welcome and "搜索「本地小说」" in store)
     check("AppIcon asset catalog（1024 + Contents.json）",
@@ -449,18 +450,18 @@ def main():
           and "advanceIfPulledPastBottom" in reader)
     check("下一章基于最新章节列表计算并直接切换",
           "nextChapter(after: chapter)" in welcome
-          and "onOpenNext: { next in selectedChapter = next }" in welcome
+          and "onOpenNext: { next in selectChapter(next) }" in welcome
           and "func nextChapter(after chapter: Chapter)" in welcome)
     check("章节支持多选批量删除（全选 / 计数 / 二次确认）",
-          "isSelecting" in chapters and "selectedIds" in chapters
-          and "confirmBatchDelete" in chapters and "deleteSelected(in:" in chapters
-          and "toggleSelectAll" in chapters and "已选 \\(selectedIds.count)" in chapters)
+          "@State private var managing" in chapters and "selectedIds" in chapters
+          and "confirmBatchDelete" in chapters and "toggleSelectAll" in chapters
+          and "删除 \\(selectedIds.count) 章" in chapters)
     check("批量删除一次重扫，只读目录同样改为隐藏",
           "func deleteChapters" in store and "hidden += 1" in store
           and "invalidateCaches()" in store)
-    check("章节列表渲染取最新扫描结果（删除后不再显示旧快照）",
-          "private var currentBook: Book?" in chapters
-          and "library.library?.books.first" in chapters)
+    check("目录 / 阅读器渲染取最新扫描结果（删除后不再显示旧快照）",
+          "private var currentBook: Book?" in reader
+          and "library.library?.books.first(where: { $0.id == bookId })" in reader)
 
     print("\n== J. 三分区书库：小说 / 漫画 / 整理（目录即分类） ==")
     models = (APP / "Core" / "LibraryModels.swift").read_text(encoding="utf-8")
@@ -591,7 +592,9 @@ def main():
     check("章节单位：漫画「话」、短剧「集」、其余「章」",
           "case .comic:      return \"话\"" in sidebar
           and "case .shortDrama: return \"集\"" in sidebar
-          and "case .comic:      return \"话\"" in chapters)
+          and 'return "已是最后一话"' in reader
+          and 'return "已是最后一集"' in reader
+          and 'return "已是最后一章"' in reader)
     check("整本切片章节只能隐藏，不误删原文件",
           "var canDeleteFromDisk: Bool" in models
           and "整本文件里切出来的一章" in chapters
@@ -697,12 +700,14 @@ def main():
     check("漫画排序先分组再话名（同组相邻才分得成段）",
           "if ga.isEmpty != gb.isEmpty { return !ga.isEmpty }" in sections
           and 'let ga = a.groupName ?? "", gb = b.groupName ?? ""' in sections)
-    check("章节列表按分组分段，包下列出章节",
-          "private func chapterGroups(of book: Book)" in chapters
-          and "Section {" in chapters and "chapterRow(chapter, showsGroup: false)" in chapters)
+    check("目录按分组分段，包下列出章节",
+          "private var groups: [CatalogGroup]" in chapters
+          and "private struct CatalogGroup" in chapters
+          and "chapterRow(chapter, showsGroup: false)" in chapters
+          and "private func groupHeader(" in chapters)
     check("没有被分组的书仍是一张平铺列表",
           "if groups.count <= 1 {" in chapters
-          and "List(book.chapters, id: \\.id, selection: $selection)" in chapters)
+          and "ForEach(filtered) { chapter in" in chapters)
     check("一个分组时不再重复显示组名",
           "if showsGroup, let group = chapter.groupName" in chapters)
     check("结构说明覆盖双格式包（PDF包 / 图片包）",
@@ -713,9 +718,9 @@ def main():
     check("文档正文含双格式包一节",
           "### 5. 同一部书按格式分成两个包（PDF 包 + 图片包）"
           in (ROOT / "Docs" / "漫画目录结构说明.md").read_text(encoding="utf-8"))
-    check("版本升到 2.13.0 / build 14",
-          "<string>2.13.0</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>14</string>" in plist)
+    check("版本升到 2.14.0 / build 15",
+          "<string>2.14.0</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>15</string>" in plist)
 
 
     print("\n== N. 本轮：底部三页 / 短剧 / NAS 连接 ==")
@@ -966,9 +971,9 @@ def main():
     check("远端文件缓存有上限并会按最久未修改淘汰",
           "static let byteLimit: Int64 = 512 * 1024 * 1024" in nas_lib
           and "Task.detached(priority: .utility) { trim(folder: folder, limit: byteLimit) }" in nas_lib)
-    check("版本升到 2.13.0 / build 14",
-          "<string>2.13.0</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>14</string>" in plist)
+    check("版本升到 2.14.0 / build 15",
+          "<string>2.14.0</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>15</string>" in plist)
 
     print("\n== S. 本轮：txt 乱码（UTF-16 误判 / GBK / Big5） ==")
     encoding_src = (APP / "Core" / "TextEncoding.swift").read_text(encoding="utf-8")
@@ -1048,7 +1053,7 @@ def main():
 
     print("\n== U. 滑动翻页 / 标签栏兜底 / 选章从章首开始 ==")
     pref_src = (APP / "Core" / "Preferences.swift").read_text(encoding="utf-8")
-    chapter_list = (APP / "Views" / "ChapterListView.swift").read_text(encoding="utf-8")
+    chapter_list = (APP / "Views" / "RootView.swift").read_text(encoding="utf-8")
     hider_path = APP / "Views" / "TabBarAutoHide.swift"
     hider = hider_path.read_text(encoding="utf-8") if hider_path.exists() else ""
 
@@ -1078,10 +1083,13 @@ def main():
           and "tab.tabBar.isHidden = hidden" in hider)
     check("阅读页挂上标签栏兜底",
           "TabBarAutoHide()" in reader)
-    check("用户主动在目录选章 → 从章首开始",
-          'ProgressStore.shared.setAnchor("blk-p0", for: chapter.id)' in chapter_list)
+    check("用户主动在目录选章 → 从章首开始（且锚点写在切章之前）",
+          'ProgressStore.shared.setAnchor("blk-p0", for: chapter.id)' in chapter_list
+          and 'selectedChapter = chapter' in chapter_list
+          and chapter_list.index('ProgressStore.shared.setAnchor("blk-p0", for: chapter.id)')
+              < chapter_list.index('selectedChapter = chapter'))
     check("自动恢复上次章节时不重置锚点",
-          "autoRestoredChapterId = chapter.id" in chapter_list
+          "autoRestoredChapterId = target.id" in chapter_list
           and "if autoRestoredChapterId == chapter.id" in chapter_list)
     check("老用户升级后一次性迁移到滑动翻页（只做一次）",
           "Keys.slideMigrated" in pref_src and "if pageTurn == .page" in pref_src)
@@ -1092,18 +1100,19 @@ def main():
     root = (APP / "Views" / "RootView.swift").read_text(encoding="utf-8")
     controls = (APP / "Views" / "ReaderControlsView.swift").read_text(encoding="utf-8")
     models = (APP / "Core" / "LibraryModels.swift").read_text(encoding="utf-8")
-    list_view = (APP / "Views" / "ChapterListView.swift").read_text(encoding="utf-8")
+    list_view = (APP / "Views" / "RootView.swift").read_text(encoding="utf-8")
 
-    check("小说选书即读：选书后直接定位章节进 detail",
-          "openNovelDirectly(book)" in root
-          and "book.category == .novel" in root
-          and "selectedChapter = nil" in root)
+    check("选书即读：所有分区都直接进阅读器（中间目录页已删除）",
+          "openBook(book)" in root
+          and "} content: {" not in root
+          and "selectedChapter = nil" in root
+          and "ChapterListView(" not in root)
     check("切章完成 / 章节失效时重新定位（chapterSignature）",
           "var chapterSignature" in root
           and "contains(where: { $0.id == current.id })" in root)
-    check("选章副作用统一到 RootView，目录页对小说放行",
+    check("选章副作用统一到 RootView（所有分区都记「读到哪一章」）",
           "ProgressStore.shared.setLastChapter(chapter.id, for: book.id)" in root
-          and "guard book.category != .novel else { return }" in list_view)
+          and "guard let chapter = selectedChapter, let book = selectedBook else { return }" in list_view)
     check("阅读器新增 chapters / onSelectChapter / onExit 参数",
           "let chapters: [Chapter]" in reader
           and "let onSelectChapter" in reader
@@ -1274,8 +1283,8 @@ def main():
     check("相邻章正文预取（切章不空等）",
           "func warmNextChapter()" in reader
           and "library.paragraphs(for: next)" in reader)
-    check("版本已升到 2.13.0 / build 14",
-          "2.13.0" in (APP / "Info.plist").read_text(encoding="utf-8"))
+    check("版本已升到 2.14.0 / build 15",
+          "2.14.0" in (APP / "Info.plist").read_text(encoding="utf-8"))
 
     print("\n== Z. 本轮：上下菜单栏 + 进度滑杆 + 目录面板 ==")
     bars = (APP / "Views" / "ReaderChromeBars.swift").read_text(encoding="utf-8")
@@ -1682,9 +1691,36 @@ def main():
           "private func deleteMessage(_ book: Book) -> String" in sidebar_src
           and 'book.category == .novel\n            ? NovelScanner.formatLabel(for: book.folderURL)' in sidebar_src)
 
-    check("版本已升到 2.13.0 / build 14",
-          "<string>2.13.0</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>14</string>" in plist)
+    # ------------------------------------------------------------------
+    # X2. 2.14.0：删掉章节目录中间页 + 选章不再落到末页
+    # ------------------------------------------------------------------
+    print("\n== X2. 本轮：去掉目录中间页 / 选章定位修复（2.14.0） ==")
+    cat_src = (APP / "Views" / "ReaderCatalogView.swift").read_text(encoding="utf-8")
+
+    check("章节目录中间页已删除（书库只留 书库 → 阅读器 两栏）",
+          not (APP / "Views" / "ChapterListView.swift").exists()
+          and "} content: {" not in root_src
+          and "ChapterListView(" not in root_src)
+    check("所有分区选书即读（不再按分类分流到目录页）",
+          "private func openBook(_ book: Book)" in root_src
+          and "openBook(book)" in root_src
+          and "openNovelDirectly" not in root_src)
+    check("删掉的目录页能力搬进目录面板（删除 / 分组 / 集时长）",
+          "onDeleteChapters" in cat_src and "CatalogGroup" in cat_src
+          and "VideoMetaFormat.line" in cat_src
+          and "onDeleteChapters: { targets in deleteChapters(targets) }" in reader)
+    check("删掉当前章时先切走，阅读页不会停在空白章",
+          "private func deleteChapters(_ targets: [Chapter])" in reader
+          and "if let next = chapters.first(where: { !removed.contains($0.id) })" in reader
+          and "onSelectChapter(next)" in reader)
+    check("选章锚点在切章之前写回章首（修「点章节跳到最后一页」）",
+          root_src.index('ProgressStore.shared.setAnchor("blk-p0", for: chapter.id)')
+              < root_src.index("selectedChapter = chapter")
+          and "锚点必须在这里写、不能等 onChange" in root_src)
+
+    check("版本已升到 2.14.0 / build 15",
+          "<string>2.14.0</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>15</string>" in plist)
 
     print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")
     if FAIL:
