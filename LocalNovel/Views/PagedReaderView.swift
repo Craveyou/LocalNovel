@@ -87,6 +87,8 @@ struct PagedReaderInput {
     let jumpSeq: Int
     /// 正文内容指纹（净化规则 + 繁简）：变了必须重建分页，否则屏幕上是旧文本
     let contentStamp: String
+    /// 自动阅读进行中：任何点击都只当「暂停 / 继续」，不翻页也不弹菜单
+    let isAutoReading: Bool
 
     /// 只有影响排版的参数变化才重建；restoreParagraph 故意不参与。
     /// 用 O(1) 的指纹（段数 + 首末段长度 + 正文内容戳），不再遍历全部段落算总长：
@@ -115,6 +117,8 @@ struct PagedReaderView: UIViewControllerRepresentable {
     let onProgress: (Int) -> Void
     let onTapMedia: (MediaItem) -> Void
     let onOpenNext: () -> Void
+    /// 全书最后一页还想往后翻：自动阅读靠它停下并提示
+    let onReachedEnd: () -> Void
     /// 点屏幕中间 28%~72% 区域：弹出 / 收起阅读控制菜单
     let onTapCenter: () -> Void
 
@@ -143,6 +147,7 @@ struct PagedReaderView: UIViewControllerRepresentable {
         controller.onProgress = onProgress
         controller.onTapMedia = onTapMedia
         controller.onOpenNext = onOpenNext
+        controller.onReachedEnd = onReachedEnd
         controller.onTapCenter = onTapCenter
     }
 }
@@ -153,6 +158,8 @@ class PagedBaseController: UIViewController {
     var onProgress: ((Int) -> Void)?
     var onTapMedia: ((MediaItem) -> Void)?
     var onOpenNext: (() -> Void)?
+    /// 本章最后一页、且没有下一章时的回调
+    var onReachedEnd: (() -> Void)?
     var onTapCenter: (() -> Void)?
 
     private(set) var input: PagedReaderInput?
@@ -168,7 +175,7 @@ class PagedBaseController: UIViewController {
 
     private var signature = ""
     /// 已执行的翻页指令序号（音量键翻页用，不触发重排）
-    private var lastPageCommand = -1
+    private var lastPageCommand = 0
     /// 上一次执行的「跳段」序号；初始 0 与上层初值对齐，避免首次 apply 就跳
     private var lastJumpSeq = 0
     private var contentSize: CGSize = .zero
@@ -408,7 +415,14 @@ class PagedBaseController: UIViewController {
 
     func move(by delta: Int) {
         // 章尾继续往后翻：不留在本页，直接进下一章（点右侧翻页也走这里）
-        if delta > 0, advanceToNextChapter() { return }
+        if delta > 0 {
+            if advanceToNextChapter() { return }
+            // 已经是全书最后一页：手动翻页停住不动，自动阅读据此收工
+            if currentIndex >= pages.count - 1 {
+                onReachedEnd?()
+                return
+            }
+        }
         let target = min(max(currentIndex + delta, 0), max(pages.count - 1, 0))
         guard target != currentIndex else { return }
         currentIndex = target
@@ -464,6 +478,11 @@ class PagedBaseController: UIViewController {
     }
 
     private func perform(_ zone: TapZoneAction) {
+        // 自动阅读中：点哪儿都是暂停 / 继续（千阅同款），先停下来再操作
+        if input?.isAutoReading == true {
+            onTapCenter?()
+            return
+        }
         switch zone {
         case .prevPage: move(by: -1)
         case .nextPage: move(by: 1)

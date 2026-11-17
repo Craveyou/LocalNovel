@@ -88,6 +88,8 @@ struct RootView: View {
         // 选书副作用：小说「选书即读」直接进阅读器；
         // 漫画 / 短剧 / 整理停在中间栏的章节列表，等用户点某一话 / 某一集。
         .onChange(of: selectedBook?.id) { _, _ in
+            // 换书 / 回书库：自动阅读必须断掉，否则下次进书会自己翻页
+            AutoReadFlag.isOn = false
             guard let book = selectedBook else {
                 selectedChapter = nil
                 compactColumn = .sidebar      // 回到书库首页
@@ -202,6 +204,7 @@ struct RootView: View {
                            jumpToChapter(chapter, fraction: fraction)
                        },
                        onExit: {
+                           AutoReadFlag.isOn = false
                            selectedChapter = nil
                            selectedBook = nil   // 回到书库首页，再点同一本也会重新触发「选书即读」
                            preparingBook = nil

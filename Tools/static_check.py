@@ -350,8 +350,8 @@ def main():
           and "DocumentsBootstrap.guideFileName" in resolver)
     check("切回前台补写说明文件", "DocumentsBootstrap.ensureVisibleInFilesApp()" in store)
     check("版本号提升以刷新系统元数据",
-          "<string>2.16.0</string>" in plist and "CURRENT_PROJECT_VERSION = 20" in pbx
-          and "MARKETING_VERSION = 2.16.0" in pbx)
+          "<string>2.16.1</string>" in plist and "CURRENT_PROJECT_VERSION = 21" in pbx
+          and "MARKETING_VERSION = 2.16.1" in pbx)
     check("UI 给出「文件 App 搜索本地小说」兜底路径",
           "搜索框搜「本地小说」" in welcome and "搜索「本地小说」" in store)
     check("AppIcon asset catalog（1024 + Contents.json）",
@@ -648,7 +648,8 @@ def main():
           "func advanceToNextChapter" in paged
           and "func handleEdgeSwipe()" in paged
           and "handleSwipeLeft" in paged
-          and "if delta > 0, advanceToNextChapter() { return }" in paged
+          and "if delta > 0 {" in paged
+          and "if advanceToNextChapter() { return }" in paged
           and "if !input.hasNextChapter { list.append(.footer) }" in paged
           and "struct FooterPageView" in paged and "已是最后一章" in paged
           and "Button(action: onOpenNext)" not in paged)
@@ -718,9 +719,9 @@ def main():
     check("文档正文含双格式包一节",
           "### 5. 同一部书按格式分成两个包（PDF 包 + 图片包）"
           in (ROOT / "Docs" / "漫画目录结构说明.md").read_text(encoding="utf-8"))
-    check("版本升到 2.16.0 / build 20",
-          "<string>2.16.0</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>20</string>" in plist)
+    check("版本升到 2.16.1 / build 21",
+          "<string>2.16.1</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>21</string>" in plist)
 
 
     print("\n== N. 本轮：底部三页 / 短剧 / NAS 连接 ==")
@@ -971,9 +972,9 @@ def main():
     check("远端文件缓存有上限并会按最久未修改淘汰",
           "static let byteLimit: Int64 = 512 * 1024 * 1024" in nas_lib
           and "Task.detached(priority: .utility) { trim(folder: folder, limit: byteLimit) }" in nas_lib)
-    check("版本升到 2.16.0 / build 20",
-          "<string>2.16.0</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>20</string>" in plist)
+    check("版本升到 2.16.1 / build 21",
+          "<string>2.16.1</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>21</string>" in plist)
 
     print("\n== S. 本轮：txt 乱码（UTF-16 误判 / GBK / Big5） ==")
     encoding_src = (APP / "Core" / "TextEncoding.swift").read_text(encoding="utf-8")
@@ -1175,7 +1176,8 @@ def main():
           and "@objc private func handleSwipeLeft" in paged
           and "swipe.cancelsTouchesInView = false" in paged)
     check("点击翻页到末页同样进下一章",
-          "if delta > 0, advanceToNextChapter() { return }" in paged)
+          "if advanceToNextChapter() { return }" in paged
+          and "onReachedEnd?()" in paged)
     check("小说上下滚动：到底继续上拉进下一章（整理不受影响，短章也能拉）",
           "onScrollGeometryChange" in reader
           and "advanceIfPulledPastBottom" in reader
@@ -1287,8 +1289,8 @@ def main():
     check("相邻章正文预取（切章不空等）",
           "func warmNextChapter()" in reader
           and "library.paragraphs(for: next)" in reader)
-    check("版本已升到 2.16.0 / build 20",
-          "2.16.0" in (APP / "Info.plist").read_text(encoding="utf-8"))
+    check("版本已升到 2.16.1 / build 21",
+          "2.16.1" in (APP / "Info.plist").read_text(encoding="utf-8"))
 
     print("\n== Z. 本轮：上下菜单栏 + 进度滑杆 + 目录面板 ==")
     bars = (APP / "Views" / "ReaderChromeBars.swift").read_text(encoding="utf-8")
@@ -1783,9 +1785,9 @@ def main():
           and "let waiters = self.splitWaiters.removeValue(forKey: book.id) ?? []" in store
           and "waiters.forEach { $0() }" in store)
 
-    check("版本已升到 2.16.0 / build 20",
-          "<string>2.16.0</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>20</string>" in plist)
+    check("版本已升到 2.16.1 / build 21",
+          "<string>2.16.1</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>21</string>" in plist)
 
     # ------------------------------------------------------------------
     # X4. 2.15.0：删掉字体/简繁/音量键/启动直进/自定义主题 + 修跳转
@@ -1828,6 +1830,50 @@ def main():
     check("滚动模式恢复位置会分批重试（LazyVStack 首屏没建好时也能定位）",
           "for delay in [0.12, 0.4, 0.9]" in reader_now
           and "for delay in [0.45, 0.9]" in reader_now)
+
+    # ------------------------------------------------------------------
+    # X7. 2.16.1：自动阅读（千阅 I 组）
+    # ------------------------------------------------------------------
+    print("\n== X7. 本轮：自动阅读（2.16.1） ==")
+    auto_src = (APP / "Core" / "AutoRead.swift").read_text(encoding="utf-8")
+    controls_src = (APP / "Views" / "ReaderControlsView.swift").read_text(encoding="utf-8")
+    bars_src = (APP / "Views" / "ReaderChromeBars.swift").read_text(encoding="utf-8")
+    check("自动滚动按帧推进 contentOffset（SwiftUI 没有按像素滚的接口）",
+          "final class AutoScrollDriver: NSObject" in auto_src
+          and "CADisplayLink(target: self, selector:" in auto_src
+          and "setContentOffset(CGPoint(x: scroll.contentOffset.x" in auto_src
+          and "scroll.isTracking || scroll.isDecelerating" in auto_src)
+    check("滚动正文里挂 0 高度探针拿宿主 UIScrollView",
+          "struct AutoScrollProbe: UIViewRepresentable" in auto_src
+          and "if let scroll = view as? UIScrollView" in auto_src
+          and "AutoScrollProbe()" in reader)
+    check("自动阅读跨章连续：开关在进程级静态位，切章后 onAppear 接着跑",
+          "enum AutoReadFlag" in auto_src
+          and "if AutoReadFlag.isOn, canAutoRead" in reader
+          and "AutoReadFlag.isOn = false" in reader
+          and "AutoReadFlag.isOn = false" in root_view)
+    check("定时翻页走分页器的翻页指令通道（和手势翻页同一条路）",
+          "autoPageSeq += 1" in reader
+          and "pageCommand: autoPageSeq" in reader
+          and "pageCommandDelta: 1" in reader)
+    check("全书最后一页：分页器回调 onReachedEnd，自动阅读据此停下并提示",
+          "var onReachedEnd: (() -> Void)?" in paged
+          and "onReachedEnd?()" in paged
+          and "后面没有内容了，自动阅读已停止" in reader)
+    check("自动阅读中点击 = 暂停 / 继续（不翻页、不弹菜单）",
+          "if input?.isAutoReading == true" in paged
+          and "isAutoReading: autoReading" in reader
+          and "if autoReading { toggleAutoPause(); return }" in reader)
+    check("自动阅读面板：方式 / 速度 / 进度条 / 启停，切模式同步翻页版式",
+          "private var autoReadSection: some View" in controls_src
+          and "AutoReadMode.allCases" in controls_src
+          and "autoReadShowsProgress" in controls_src
+          and "case .scroll: if pageTurn.isPaged { pageTurn = .scroll }" in prefs_src
+          and "case .flip:   if !pageTurn.isPaged { pageTurn = .slide }" in prefs_src)
+    check("自动阅读浮条 + 底栏入口",
+          "struct AutoReadBar: View" in bars_src
+          and 'tool("自动", systemImage: "play.circle", action: onAutoRead)' in bars_src
+          and "AutoReadBar(theme: prefs.theme" in reader)
 
     print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")
     if FAIL:

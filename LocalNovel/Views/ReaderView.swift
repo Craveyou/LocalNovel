@@ -70,6 +70,13 @@ struct ReaderView: View {
     /// 重新分章的即时反馈（切成多少章）
     @State private var resplitNotice: String?
 
+    // 自动阅读（I 组）
+    @State private var autoReading = false
+    @State private var autoPaused = false
+    @State private var autoPageSeq = 0
+    @State private var autoTicker: Timer?
+    @State private var autoNotice: String?
+
     init(chapter: Chapter,
          nextChapter: Chapter? = nil,
          chapters: [Chapter] = [],
@@ -507,8 +514,38 @@ struct ReaderView: View {
                                 onDayNight: toggleDayNight,
                                 onTheme: { showStylePanel = true },
                                 onTypography: { showStylePanel = true },
+                                onAutoRead: {
+                                    if autoReading { stopAutoRead() } else { startAutoRead() }
+                                },
                                 onSettings: { showSettings = true })
                     .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        // 自动阅读浮条：暂停 / 继续、速度说明、退出，外加一条全书进度细线
+        .overlay(alignment: .bottom) {
+            if autoReading, !showMenu {
+                AutoReadBar(theme: prefs.theme,
+                            label: autoReadLabel,
+                            isPaused: autoPaused,
+                            progress: bookProgress,
+                            showsProgress: prefs.autoReadShowsProgress,
+                            onToggle: toggleAutoPause,
+                            onStop: { stopAutoRead() })
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        // 自动阅读的状态提示（已暂停 / 到底了）
+        .overlay(alignment: .bottom) {
+            if let notice = autoNotice {
+                Text(notice)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(prefs.theme.uiText)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 9)
+                    .background(prefs.theme.uiBackground.opacity(0.96), in: Capsule())
+                    .overlay(Capsule().strokeBorder(prefs.theme.uiSeparator, lineWidth: 0.6))
+                    .padding(.bottom, autoReading ? 74 : 44)
+                    .transition(.opacity)
             }
         }
         // 重新分章的即时反馈：切成多少章 / 退回自动分章
@@ -575,6 +612,11 @@ struct ReaderView: View {
                     encodingMenu: AnyView(encodingMenu),
                     onTOC: { showStylePanel = false; showCatalog = true },
                     onSettings: { showSettings = true },
+                    onAutoRead: {
+                        showStylePanel = false
+                        if autoReading { stopAutoRead() } else { startAutoRead() }
+                    },
+                    isAutoReading: autoReading,
                     onExit: onExit,
                     onDismiss: { showStylePanel = false }
                 )
@@ -593,9 +635,29 @@ struct ReaderView: View {
             ReadingChrome.shared.enter()
             syncIdleTimer()
             warmNextChapter()
+            // 自动阅读跨章连续：切章时本视图整棵重建，靠状态位接着跑
+            if AutoReadFlag.isOn, canAutoRead {
+                autoReading = true
+                autoPaused = false
+                restartAutoEngine(starting: true)
+            }
         }
         .onChange(of: prefs.keepScreenOn) { _, _ in syncIdleTimer() }
+        // 面板里改速度 / 模式：立即按新参数重启引擎，不用退出重进
+        .onChange(of: prefs.autoReadMode) { _, _ in
+            restartAutoEngine(starting: autoReading && !autoPaused)
+        }
+        .onChange(of: prefs.autoReadFlipSeconds) { _, _ in
+            restartAutoEngine(starting: autoReading && !autoPaused)
+        }
+        .onChange(of: prefs.autoReadScrollSpeed) { _, _ in
+            restartAutoEngine(starting: autoReading && !autoPaused)
+        }
         .onDisappear {
+            // 只停引擎，不清 AutoReadFlag：清掉就断在章与章之间
+            autoTicker?.invalidate()
+            autoTicker = nil
+            AutoScrollDriver.shared.stop()
             ReadingChrome.shared.leave()
             // 兜底隐藏是在布局阶段强制设置的，退出阅读时显式还原一次，
             // 避免 representable 销毁顺序不同导致标签栏一直不回来
@@ -613,6 +675,10 @@ struct ReaderView: View {
         return ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: prefs.paragraphSpacing) {
+                    // 自动滚动需要拿到宿主 UIScrollView，这个 0 高度探针只做这件事
+                    AutoScrollProbe()
+                        .frame(width: 0, height: 0)
+
                     if isEmptyChapter {
                         ContentUnavailableView {
                             Label("这一章没有可显示的内容", systemImage: "doc.questionmark")
@@ -831,13 +897,14 @@ struct ReaderView: View {
                                     tapLeft: prefs.tapLeft,
                                     tapCenterAction: prefs.tapCenter,
                                     tapRight: prefs.tapRight,
-                                    // 音量键翻页已移除；指令通道保留给引擎内部，恒为 0（不触发）
-                                    pageCommand: 0,
-                                    pageCommandDelta: 0,
+                                    // 外部翻页指令：自动阅读的定时翻页走这条通道
+                                    pageCommand: autoPageSeq,
+                                    pageCommandDelta: 1,
                                     jumpParagraph: jumpParagraph,
                                     jumpSeq: jumpSeq,
                                     contentStamp: ReaderTextPipeline.stamp(
-                                        rules: prefs.activePurifyRules)),
+                                        rules: prefs.activePurifyRules),
+                                    isAutoReading: autoReading),
             onProgress: { paragraph in
                 ProgressStore.shared.noteAnchor("blk-p\(paragraph)", for: chapter.id)
             },
@@ -845,8 +912,13 @@ struct ReaderView: View {
             onOpenNext: {
                 if let next = nextChapter { onOpenNext(next) }
             },
+            onReachedEnd: { stopAutoRead(notice: "后面没有内容了，自动阅读已停止") },
             onTapCenter: {
-                withAnimation(.easeOut(duration: 0.2)) { showMenu.toggle() }
+                if autoReading {
+                    toggleAutoPause()
+                } else {
+                    withAnimation(.easeOut(duration: 0.2)) { showMenu.toggle() }
+                }
             }
         )
         .id("paged-\(prefs.pageTurn.rawValue)")
@@ -861,12 +933,92 @@ struct ReaderView: View {
                 .frame(width: geo.size.width, height: geo.size.height)
                 .contentShape(Rectangle())
                 .onTapGesture(coordinateSpace: .local) { point in
+                    // 自动阅读中：点哪儿都是暂停 / 继续，不弹菜单
+                    if autoReading { toggleAutoPause(); return }
                     // .local 原点即本视图左上；iPad 分栏下 geo.size.width 是 detail 列真实宽度
                     let w = geo.size.width
                     if point.x > w * 0.28 && point.x < w * 0.72 {
                         withAnimation(.easeOut(duration: 0.2)) { showMenu.toggle() }
                     }
                 }
+        }
+    }
+
+    // MARK: 自动阅读（千阅 I 组）
+
+    /// 只有小说正文能自动阅读：漫画 / 短剧是图与视频，PDF 走另一套渲染
+    private var canAutoRead: Bool {
+        category == .novel && content.pdfURL == nil && !isMediaOnly && !isEmptyChapter
+    }
+
+    private var autoReadLabel: String {
+        prefs.autoReadMode == .flip
+            ? "自动阅读 · \(Int(prefs.autoReadFlipSeconds)) 秒/页"
+            : "自动阅读 · \(Int(prefs.autoReadScrollSpeed)) 点/秒"
+    }
+
+    private func startAutoRead() {
+        guard canAutoRead else {
+            showAutoNotice("这一类书籍不支持自动阅读")
+            return
+        }
+        withAnimation(.easeOut(duration: 0.18)) { showMenu = false }
+        autoReading = true
+        autoPaused = false
+        AutoReadFlag.isOn = true
+        restartAutoEngine(starting: true)
+    }
+
+    private func stopAutoRead(notice: String? = nil) {
+        autoTicker?.invalidate()
+        autoTicker = nil
+        AutoScrollDriver.shared.stop()
+        autoReading = false
+        autoPaused = false
+        AutoReadFlag.isOn = false
+        if let notice { showAutoNotice(notice) }
+    }
+
+    private func toggleAutoPause() {
+        guard autoReading else { return }
+        autoPaused.toggle()
+        restartAutoEngine(starting: !autoPaused)
+    }
+
+    /// 起 / 停底层引擎。暂停时也走这里：停掉驱动但保留 autoReading（浮条还在，能点继续）
+    /// starting 由调用方算好：@State 刚写进去的同一轮里读回来不保证是新值。
+    private func restartAutoEngine(starting: Bool) {
+        autoTicker?.invalidate()
+        autoTicker = nil
+        AutoScrollDriver.shared.stop()
+        guard starting else { return }
+
+        switch prefs.autoReadMode {
+        case .scroll:
+            AutoScrollDriver.shared.speed = CGFloat(prefs.autoReadScrollSpeed)
+            AutoScrollDriver.shared.onReachBottom = {
+                guard autoReading else { return }
+                if let next = nextChapter {
+                    onOpenNext(next)   // 章末接着读：切章后 onAppear 会重新拉起驱动
+                } else {
+                    stopAutoRead(notice: "后面没有内容了，自动阅读已停止")
+                }
+            }
+            AutoScrollDriver.shared.start()
+        case .flip:
+            let interval = max(prefs.autoReadFlipSeconds, 2)
+            autoTicker = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { _ in
+                guard !autoPaused else { return }
+                autoPageSeq += 1   // 序号变化 → 分页器翻一页（与手势翻页同一条路）
+            }
+        }
+    }
+
+    private func showAutoNotice(_ text: String) {
+        withAnimation(.easeOut(duration: 0.18)) { autoNotice = text }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.4) {
+            guard autoNotice == text else { return }
+            withAnimation(.easeOut(duration: 0.25)) { autoNotice = nil }
         }
     }
 
