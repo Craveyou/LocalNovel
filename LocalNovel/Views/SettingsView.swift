@@ -26,6 +26,54 @@ struct SettingsView: View {
         )
     }
 
+    /// 设置页里的「标题 + 滑杆 + 数值」行
+    private func valueSlider(_ title: String,
+                             _ value: Binding<CGFloat>,
+                             _ range: ClosedRange<CGFloat>,
+                             _ step: CGFloat,
+                             format: @escaping (CGFloat) -> String) -> some View {
+        HStack {
+            Text(title)
+            Slider(value: value, in: range, step: step)
+            Text(format(value.wrappedValue))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .frame(width: 48, alignment: .trailing)
+        }
+    }
+
+    /// 主题色块
+    private func themeSwatch(_ theme: ReaderTheme) -> some View {
+        Button {
+            prefs.themeId = theme.id
+        } label: {
+            VStack(spacing: 4) {
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(theme.uiBackground)
+                    .frame(width: 44, height: 44)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .strokeBorder(theme.uiText.opacity(0.35), lineWidth: 1)
+                    }
+                    .overlay {
+                        if theme.id == prefs.themeId {
+                            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                .strokeBorder(Color.accentColor, lineWidth: 2)
+                        }
+                    }
+                    .overlay {
+                        Text("文").font(.system(size: 15, weight: .medium))
+                            .foregroundStyle(theme.uiText)
+                    }
+                Text(theme.name)
+                    .font(.caption2)
+                    .foregroundStyle(theme.id == prefs.themeId ? Color.accentColor : .secondary)
+            }
+            .frame(width: 54)
+        }
+        .buttonStyle(.plain)
+    }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -44,21 +92,95 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                Section("排版") {
-                    HStack {
-                        Text("字号")
-                        Slider(value: binding(for: \.fontSize), in: 14...30, step: 1)
-                        Text("\(Int(prefs.fontSize))")
-                            .monospacedDigit()
-                            .frame(width: 28)
+                Section("排版（仅小说）") {
+                    valueSlider("字号", binding(for: \.fontSize), 14...34, 1) { "\(Int($0))" }
+                    valueSlider("行距", binding(for: \.lineSpacing), 4...24, 1) { "\(Int($0))" }
+                    valueSlider("段距", binding(for: \.paragraphSpacing), 0...24, 1) { "\(Int($0))" }
+                    valueSlider("字距", binding(for: \.wordSpacing), 0...6, 0.5) { String(format: "%.1f", $0) }
+                    valueSlider("左右边距", binding(for: \.horizontalPadding), 12...40, 2) { "\(Int($0))" }
+                    Picker("字体", selection: binding(for: \.fontFamily)) {
+                        ForEach(prefs.fontOptions) { option in
+                            Text(option.label).tag(option.id)
+                        }
                     }
-                    HStack {
-                        Text("行距")
-                        Slider(value: binding(for: \.lineSpacing), in: 4...24, step: 1)
-                        Text("\(Int(prefs.lineSpacing))")
-                            .monospacedDigit()
-                            .frame(width: 28)
+                    Picker("字重", selection: binding(for: \.fontWeight)) {
+                        ForEach(ReaderFontWeight.allCases) { weight in
+                            Text(weight.label).tag(weight)
+                        }
                     }
+                    .pickerStyle(.segmented)
+                    Picker("对齐", selection: binding(for: \.textAlign)) {
+                        ForEach(ReaderTextAlign.allCases) { align in
+                            Text(align.label).tag(align)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    Toggle("首行缩进两字", isOn: binding(for: \.firstLineIndent))
+                    Toggle("繁体正文", isOn: binding(for: \.isTraditional))
+                }
+
+                Section("章节标题（仅小说）") {
+                    Toggle("固定字号（与正文脱钩）", isOn: binding(for: \.titleFixedSize))
+                    if prefs.titleFixedSize {
+                        valueSlider("标题字号", binding(for: \.titleFixedValue), 12...40, 1) { "\(Int($0))" }
+                    } else {
+                        valueSlider("字号比例", Binding(get: { CGFloat(prefs.titleScale) },
+                                                        set: { prefs.titleScale = Double($0) }),
+                                    0.8...2.4, 0.1) { String(format: "%.1f×", $0) }
+                    }
+                    Picker("字重", selection: binding(for: \.titleWeight)) {
+                        ForEach(ReaderFontWeight.allCases) { weight in
+                            Text(weight.label).tag(weight)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    valueSlider("上间距", binding(for: \.titleTopPadding), 0...60, 2) { "\(Int($0))" }
+                    valueSlider("下间距", binding(for: \.titleBottomPadding), 0...60, 2) { "\(Int($0))" }
+                    Toggle("斜体", isOn: binding(for: \.titleItalic))
+                    Toggle("标题下方细线", isOn: binding(for: \.titleShowBottomLine))
+                    Toggle("分成两行显示（如「第10章 / 夜行」）", isOn: binding(for: \.titleSplitTwoLines))
+                }
+
+                Section("页眉页脚（仅小说）") {
+                    Picker("页眉", selection: binding(for: \.headerMode)) {
+                        ForEach(ReaderHeaderMode.allCases) { mode in
+                            Text(mode.label).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    Picker("页脚", selection: binding(for: \.footerMode)) {
+                        ForEach(ReaderFooterMode.allCases) { mode in
+                            Text(mode.label).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    if prefs.headerMode != .none {
+                        valueSlider("页眉间距", binding(for: \.headerTopPadding), 0...40, 2) { "\(Int($0))" }
+                    }
+                    if prefs.footerMode != .none {
+                        valueSlider("页脚间距", binding(for: \.footerBottomPadding), 0...40, 2) { "\(Int($0))" }
+                    }
+                }
+
+                Section("阅读主题（仅小说）") {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 12) {
+                            ForEach(ReaderTheme.builtIns) { theme in
+                                themeSwatch(theme)
+                            }
+                            ForEach(prefs.customThemes) { theme in
+                                themeSwatch(theme)
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+                    valueSlider("阅读亮度", Binding(get: { CGFloat(prefs.readerBrightness) },
+                                                    set: { prefs.readerBrightness = Double($0) }),
+                                0.25...1.0, 0.05) { "\(Int($0 * 100))%" }
+                    Toggle("阅读时常亮（不自动锁屏）", isOn: binding(for: \.keepScreenOn))
+                    Text("亮度只压阅读页，不修改系统亮度。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
 
                 Section("外观") {

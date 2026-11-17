@@ -623,15 +623,16 @@ def main():
           "guard visible.length > 0 else { return (0, nil) }" in paginator
           and "guard step.advance > 0 else { break }" in paginator)
     check("分页与绘制共用同一套排版参数",
-          "static func attributes(fontSize" in paginator
-          and "TextPaginator.attributed(" in paged)
+          "static func attributes(_ type: ReaderTypography" in paginator
+          and "TextPaginator.attributed(paragraphs:" in paged
+          and "typography: input.typography" in paged)
     check("翻页用 UIPageViewController 仿真翻页",
           "transitionStyle: .pageCurl" in paged and "UIPageViewControllerDataSource" in paged)
     check("文字页用 CoreText 绘制同一段区间",
           "class CoreTextPageView" in paged and "CTFrameDraw(frame, context)" in paged
           and "NSIntersectionRange(textRange, full)" in paged)
-    check("文字用动态色，绘制时不复制整章文本",
-          ".foregroundColor: UIColor.label" in paginator
+    check("文字颜色取主题色，绘制时不复制整章文本",
+          ".foregroundColor: theme.uiTextColor" in paginator
           and "NSMutableAttributedString(attributedString: attributed)" not in paged)
     check("翻页记忆沿用段落锚点，与滚动模式互通",
           'restoreParagraph' in paged and 'anchor.hasPrefix("blk-p")' in reader
@@ -1013,7 +1014,7 @@ def main():
           "func evict(except range: ClosedRange<Int>)" in paged
           and "abs(key - index) > 2" in paged)
     check("绘制不再复制整章文本上色",
-          ".foregroundColor: UIColor.label" in paginator
+          ".foregroundColor: theme.uiTextColor" in paginator
           and "NSMutableAttributedString(attributedString: attributed)" not in paged)
     check("大文件读取用内存映射，不整份拷贝进堆",
           "Data(contentsOf: url, options: .mappedIfSafe)" in loader_src)
@@ -1106,11 +1107,11 @@ def main():
           "struct ReaderControlsPanel" in controls
           and 'binding(for: \\.pageTurn)' in controls
           and 'binding(for: \\.appearance)' in controls
-          and "prefs.fontSize - 1" in controls
-          and "prefs.lineSpacing - 1" in controls)
+          and 'sliderRow("字号"' in controls
+          and 'sliderRow("行距"' in controls)
     check("控制菜单含目录入口与退出阅读",
           "onTOC: { showTOC = true }" in reader
-          and 'Label("目录", systemImage: "list.bullet")' in controls
+          and 'entryButton("目录", systemImage: "list.bullet"' in controls
           and "onExit" in controls)
     check("目录弹层列出全部章节、当前章高亮、点击跳转",
           "struct ReaderTOCView" in controls
@@ -1121,7 +1122,7 @@ def main():
           and ".sheet(isPresented: $showTOC)" in reader)
     check("控制菜单含「全部设置」入口（复用设置页）",
           "let onSettings: () -> Void" in controls
-          and 'Label("全部设置", systemImage: "gearshape")' in controls
+          and 'entryButton("全部设置", systemImage: "gearshape"' in controls
           and "onSettings: { showSettings = true }" in reader)
 
     print("\n== W. 本轮：章末去掉「下一章」按钮，翻到底直接续章 ==")
@@ -1153,6 +1154,69 @@ def main():
           and "advanceIfPulledPastBottom" in reader
           and "guard category == .novel" in reader
           and ".scrollBounceBehavior(.always" in reader)
+
+    print("\n== X. 本轮：小说阅读显示效果（排版 / 标题 / 页眉页脚 / 主题） ==")
+    style = (APP / "Core" / "ReaderStyle.swift").read_text(encoding="utf-8")
+    prefs_src = (APP / "Core" / "Preferences.swift").read_text(encoding="utf-8")
+    paginator = (APP / "Core" / "TextPaginator.swift").read_text(encoding="utf-8")
+    controls = (APP / "Views" / "ReaderControlsView.swift").read_text(encoding="utf-8")
+    settings = (APP / "Views" / "SettingsView.swift").read_text(encoding="utf-8")
+    paged = (APP / "Views" / "PagedReaderView.swift").read_text(encoding="utf-8")
+    reader = (APP / "Views" / "ReaderView.swift").read_text(encoding="utf-8")
+
+    check("排版参数集中成 ReaderTypography（字号/字重/行距/段距/字距/边距/对齐/缩进/繁简/标题）",
+          "struct ReaderTypography" in style
+          and all(k in style for k in ["var fontSize", "var fontFamily", "var weight",
+                                       "var lineSpacing", "var paragraphSpacing", "var wordSpacing",
+                                       "var horizontalPadding", "var alignment",
+                                       "var firstLineIndent", "var isTraditional"]))
+    check("主题模型含正文/背景/标题/页码/页眉页脚/分隔线 6 色 + 背景图",
+          "struct ReaderTheme: Identifiable, Codable" in style
+          and all(k in style for k in ["var textColor", "var backgroundColor", "var titleColor",
+                                       "var pageIndexColor", "var headerFooterColor",
+                                       "var separatorColor", "var backgroundImage"]))
+    check("内置 6 套主题 + 自定义主题可持久化（JSON）",
+          style.count("isBuiltIn: true") >= 6
+          and "static let builtIns" in style
+          and "JSONEncoder().encode(customThemes)" in prefs_src)
+    check("章节标题作为标题块排进正文第一页（不是另起一页）",
+          "static func titleAttributed" in paginator
+          and "titleOffset: Int = 0" in paginator
+          and "combined.append(titleAttr)" in paged)
+    check("标题样式可调：字号比例/固定字号/字重/斜体/上下间距/下划线/分两行",
+          all(k in style for k in ["var scale", "var isFixed", "var fixedSize", "var weight",
+                                   "var isItalic", "var topPadding", "var bottomPadding",
+                                   "var showBottomLine", "var splitTwoLines"])
+          and "static func splitTitle" in paginator)
+    check("页眉页脚按设置渲染（内容 / 开关 / 间距）",
+          "ReaderHeaderMode" in prefs_src and "ReaderFooterMode" in prefs_src
+          and "private let headerLabel" in paged
+          and "headerLabel.frame" in paged
+          and "TextPaginator.percentText" in paged)
+    check("滚动模式与分页共用同一套字体与标题样式",
+          "private var bodyFont: UIFont" in reader
+          and "private var chapterTitleBlock" in reader
+          and "chapterTitleBlock" in reader)
+    check("繁简用 ICU 转换，不维护映射表",
+          "simplifiedChineseToTraditional" in style
+          and "ChineseScript.paragraphs(chapter.id" in reader)
+    check("阅读亮度只压阅读层 + 常亮退出即还原",
+          "brightnessOverlay" in reader
+          and "(1 - prefs.readerBrightness) * 0.8" in reader
+          and "isIdleTimerDisabled = prefs.keepScreenOn" in reader
+          and "UIApplication.shared.isIdleTimerDisabled = false" in reader)
+    check("只作用于小说：滚动模式的排版/标题/边距都按分区拦一道",
+          "guard prefs.isTraditional, category == .novel else" in reader
+          and "category == .novel ? prefs.horizontalPadding : 20" in reader
+          and "if category == .novel {\n                        chapterTitleBlock" in reader)
+    check("设置页与阅读面板都能调这些项（两处互通）",
+          'Section("排版（仅小说）")' in settings
+          and 'Section("章节标题（仅小说）")' in settings
+          and 'Section("页眉页脚（仅小说）")' in settings
+          and 'Section("阅读主题（仅小说）")' in settings
+          and 'sliderRow("段距"' in controls
+          and 'sliderRow("字距"' in controls
+          and 'sliderRow("边距"' in controls)
 
     print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")
     if FAIL:

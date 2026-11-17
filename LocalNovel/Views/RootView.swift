@@ -29,6 +29,7 @@ struct RootView: View {
                 ReaderView(chapter: chapter,
                            nextChapter: nextChapter(after: chapter),
                            chapters: (latestBook()?.chapters ?? []).filter { !$0.isPlaceholder },
+                           bookTitle: latestBook()?.title ?? "",
                            category: latestBook()?.category ?? .novel,
                            onOpenNext: { next in selectedChapter = next },
                            onSelectChapter: { chapter in selectChapter(chapter) },

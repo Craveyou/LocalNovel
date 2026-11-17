@@ -11,6 +11,9 @@ import UIKit
 //
 // 段落切分沿用 TextLoader.paragraphs，与滚动模式共用一份文本，
 // 因此两种模式的阅读记忆都是「第几段」（锚点 blk-pN），可以互相切换而不丢位置。
+//
+// 排版参数全部来自 ReaderTypography（字号 / 字体 / 字重 / 行距 / 段距 / 字距 / 对齐 / 缩进），
+// 颜色来自 ReaderTheme，所以换主题、换字号都只需要重建这一份 attributed。
 
 /// 一页：字符区间 + 该页起始字符所属的段落下标
 struct ReaderPageSlice: Equatable {
@@ -39,52 +42,133 @@ enum TextPaginator {
         paragraphs.joined(separator: "\n")
     }
 
-    /// 排版属性：字号 + 行距 + 段间距。段间距取 lineSpacing，
-    /// 与滚动模式里 LazyVStack(spacing: lineSpacing) 的视觉一致。
+    /// 排版属性：字号 + 字体 + 字重 + 行距 + 段距 + 字距 + 对齐 + 首行缩进，颜色取主题正文色。
     ///
-    /// 颜色写成动态色 UIColor.label：绘制时按当前 trait 解析，深浅色切换只需重绘。
-    /// 这样逐页绘制就不用再为「上色」复制一份整章文本（大文件的内存杀手之一）。
-    static func attributes(fontSize: CGFloat, lineSpacing: CGFloat) -> [NSAttributedString.Key: Any] {
+    /// 颜色写成具体的 UIColor（主题固定色）：不再依赖 UIColor.label 的动态解析——
+    /// 主题背景可能是米黄 / 护眼绿，label 的自动反色反而会看不清。
+    static func attributes(_ type: ReaderTypography, _ theme: ReaderTheme) -> [NSAttributedString.Key: Any] {
         let style = NSMutableParagraphStyle()
-        style.lineSpacing = lineSpacing
-        style.paragraphSpacing = lineSpacing
+        style.lineSpacing = type.lineSpacing
+        style.paragraphSpacing = type.paragraphSpacing
+        style.alignment = type.alignment.nsAlignment
         style.lineBreakMode = .byWordWrapping
-        return [
-            .font: UIFont.systemFont(ofSize: fontSize),
+        if type.firstLineIndent {
+            // 中文习惯缩进两个字
+            style.firstLineHeadIndent = type.fontSize * 2
+            style.headIndent = 0
+        }
+        var attrs: [NSAttributedString.Key: Any] = [
+            .font: ReaderFonts.font(size: type.fontSize,
+                                    family: type.fontFamily,
+                                    weight: type.weight),
             .paragraphStyle: style,
-            .foregroundColor: UIColor.label
+            .foregroundColor: theme.uiTextColor
         ]
+        if type.wordSpacing > 0 {
+            attrs[.kern] = type.wordSpacing
+        }
+        return attrs
     }
 
-    /// 注意：这里刻意不写 .foregroundColor。
-    /// 颜色要在绘制时按当前 trait（浅色 / 深色）决定，不能在分页阶段固化。
     static func attributed(paragraphs: [String],
-                           fontSize: CGFloat,
-                           lineSpacing: CGFloat) -> NSAttributedString {
+                           typography: ReaderTypography,
+                           theme: ReaderTheme) -> NSAttributedString {
         NSAttributedString(string: joinedText(paragraphs),
-                           attributes: attributes(fontSize: fontSize, lineSpacing: lineSpacing))
+                           attributes: attributes(typography, theme))
+    }
+
+    /// 章节标题块：渲染成正文前面的一段，带自己的字号 / 字重 / 颜色 / 上下间距。
+    /// 返回的字符串已带结尾换行，直接拼在正文前面即可。
+    static func titleAttributed(title: String,
+                                typography: ReaderTypography,
+                                theme: ReaderTheme) -> NSAttributedString? {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        let style = typography.title
+        let size = style.fontSize(bodySize: typography.fontSize)
+        let color = style.colorMode == 1 ? UIColor(hex: style.colorHex) : theme.uiTitleColor
+
+        let para = NSMutableParagraphStyle()
+        para.alignment = typography.alignment.nsAlignment
+        para.lineSpacing = max(2, typography.lineSpacing * 0.4)
+        para.paragraphSpacingBefore = style.topPadding
+        para.paragraphSpacing = style.bottomPadding
+        para.lineBreakMode = .byWordWrapping
+
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: ReaderFonts.font(size: size,
+                                    family: typography.fontFamily,
+                                    weight: style.weight,
+                                    italic: style.isItalic),
+            .foregroundColor: color,
+            .paragraphStyle: para
+        ]
+
+        if style.splitTwoLines, let split = splitTitle(trimmed) {
+            // 「第10章 夜行」→ 第一行标题字号，第二行缩到 0.72 倍并弱化
+            let first = NSMutableAttributedString(string: split.0 + "\n", attributes: attrs)
+            var secondAttrs = attrs
+            let small = NSMutableParagraphStyle()
+            small.alignment = typography.alignment.nsAlignment
+            small.lineSpacing = max(2, typography.lineSpacing * 0.4)
+            small.paragraphSpacing = style.bottomPadding
+            small.paragraphSpacingBefore = 2
+            secondAttrs[.font] = ReaderFonts.font(size: max(12, size * 0.72),
+                                                  family: typography.fontFamily,
+                                                  weight: .regular,
+                                                  italic: style.isItalic)
+            secondAttrs[.paragraphStyle] = small
+            first.append(NSAttributedString(string: split.1, attributes: secondAttrs))
+            return first
+        }
+
+        let result = NSMutableAttributedString(string: trimmed, attributes: attrs)
+        if style.showBottomLine {
+            // 用下划线模拟标题下方细线，不额外插图形页
+            result.addAttribute(.underlineStyle,
+                                value: NSUnderlineStyle.single.rawValue,
+                                range: NSRange(location: 0, length: result.length))
+            result.addAttribute(.underlineColor, value: theme.uiSeparatorColor,
+                                range: NSRange(location: 0, length: result.length))
+        }
+        return result
+    }
+
+    /// 把「第10章 夜行」拆成两段；拆不出来（没有空白）就返回 nil。
+    /// 滚动模式与分页模式共用同一套拆分规则，保证两种阅读方式标题排法一致。
+    static func splitTitle(_ title: String) -> (String, String)? {
+        guard let space = title.firstIndex(where: { $0 == " " || $0 == "\u{3000}" }) else { return nil }
+        let head = String(title[title.startIndex..<space]).trimmingCharacters(in: .whitespaces)
+        let tail = String(title[title.index(after: space)...]).trimmingCharacters(in: .whitespaces)
+        guard !head.isEmpty, !tail.isEmpty else { return nil }
+        return (head, tail)
     }
 
     /// 按容器尺寸分页
     static func paginate(paragraphs: [String],
-                         fontSize: CGFloat,
-                         lineSpacing: CGFloat,
+                         typography: ReaderTypography,
+                         theme: ReaderTheme,
                          size: CGSize) -> [ReaderPageSlice] {
         guard !paragraphs.isEmpty, size.width > 40, size.height > 60 else { return [] }
-        let attr = attributed(paragraphs: paragraphs, fontSize: fontSize, lineSpacing: lineSpacing)
+        let attr = attributed(paragraphs: paragraphs, typography: typography, theme: theme)
         return paginate(attributed: attr, paragraphs: paragraphs, size: size)
     }
 
     /// 分页（复用外部建好的 attributed）：翻页阅读器整章只建一份排版文本，
     /// 测量与逐页绘制共用，避免「每页一份全文」把内存放大几十倍。
+    ///
+    /// `titleOffset` = 拼在正文前面的标题块长度：段落起始偏移整体后移，
+    /// 落在标题区的页仍然算第 0 段（阅读锚点不受影响）。
     static func paginate(attributed attr: NSAttributedString,
                          paragraphs: [String],
-                         size: CGSize) -> [ReaderPageSlice] {
+                         size: CGSize,
+                         titleOffset: Int = 0) -> [ReaderPageSlice] {
         guard !paragraphs.isEmpty, size.width > 40, size.height > 60 else { return [] }
         let length = attr.length
         guard length > 0 else { return [] }
 
-        let starts = paragraphStarts(paragraphs)
+        let starts = paragraphStarts(paragraphs).map { $0 + titleOffset }
         let framesetter = CTFramesetterCreateWithAttributedString(attr as CFAttributedString)
         let path = CGPath(rect: CGRect(origin: .zero, size: size), transform: nil)
         let text = attr.string as NSString
@@ -151,5 +235,12 @@ enum TextPaginator {
     static func progressText(page: Int, total: Int) -> String {
         guard total > 0 else { return "" }
         return "\(min(max(page, 0) + 1, total)) / \(total)"
+    }
+
+    /// 百分比文案：页脚选「百分比」时用
+    static func percentText(page: Int, total: Int) -> String {
+        guard total > 0 else { return "" }
+        let value = Double(min(max(page, 0) + 1, total)) / Double(total) * 100
+        return String(format: "%.0f%%", value)
     }
 }

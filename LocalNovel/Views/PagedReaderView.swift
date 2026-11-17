@@ -35,14 +35,24 @@ struct PagedReaderInput {
     let paragraphs: [String]
     let images: [MediaItem]
     let avMedia: [MediaItem]
-    let fontSize: CGFloat
-    let lineSpacing: CGFloat
+    /// 一次排版的全套参数（字号 / 字体 / 字重 / 各种间距 / 对齐 / 缩进 / 标题样式）
+    let typography: ReaderTypography
+    /// 当前主题（正文色 / 背景色 / 页码色 / 背景图）
+    let theme: ReaderTheme
+    /// 本章标题（作为正文前的标题块参与排版）
+    let title: String
+    /// 书名（页眉可选展示）
+    let bookTitle: String
     let restoreParagraph: Int
     /// 本章后面还有没有章：决定「末页继续翻」是切下一章还是停住
     let hasNextChapter: Bool
     let isComic: Bool
     let boostRate: Double
     let style: PageFlipStyle
+    let headerMode: ReaderHeaderMode
+    let footerMode: ReaderFooterMode
+    let headerTopPadding: CGFloat
+    let footerBottomPadding: CGFloat
 
     /// 只有影响排版的参数变化才重建；restoreParagraph 故意不参与。
     /// 用 O(1) 的指纹（段数 + 首末段长度），不再遍历全部段落算总长：
@@ -50,7 +60,9 @@ struct PagedReaderInput {
     var signature: String {
         let head = paragraphs.first?.utf16.count ?? 0
         let tail = paragraphs.last?.utf16.count ?? 0
-        return "\(chapterId)|\(paragraphs.count)|\(head)|\(tail)|\(fontSize)|\(lineSpacing)"
+        return "\(chapterId)|\(paragraphs.count)|\(head)|\(tail)|\(typography.identity)"
+            + "|\(theme.hashValue)|\(title)|\(bookTitle)"
+            + "|\(headerMode.rawValue)|\(footerMode.rawValue)|\(headerTopPadding)|\(footerBottomPadding)"
             + "|\(images.count)|\(avMedia.count)|\(hasNextChapter)|\(style == .curl ? "curl" : "slide")"
     }
 }
@@ -106,6 +118,10 @@ class PagedBaseController: UIViewController {
     private(set) var pages: [ReaderPage] = []
     private(set) var slices: [ReaderPageSlice] = []
     private(set) var currentIndex = 0
+    /// 主题底色：子类容器与每个页面都用它，避免分页容器露出系统白/黑底
+    var themeBackgroundColor: UIColor {
+        input?.theme.uiBackgroundColor ?? .systemBackground
+    }
     /// 整章唯一的排版文本：所有文字页共用这一份，不再每页各建一份全文
     private(set) var measureAttributed: NSAttributedString?
 
@@ -118,7 +134,12 @@ class PagedBaseController: UIViewController {
     private var didNavigate = false
     /// 是否已经把「翻到底」换成切章：一次翻页只切一次，等上层重建本控制器
     private var nextTriggered = false
+    /// 页脚：页码 / 百分比
     private let pageLabel = UILabel()
+    /// 页眉：章节名 / 书名
+    private let headerLabel = UILabel()
+    /// 主题背景图（只有主题配了图才加）
+    private let backgroundImageView = UIImageView()
 
     // MARK: 子类扩展点
 
@@ -126,21 +147,26 @@ class PagedBaseController: UIViewController {
     func presentPage(at index: Int, animated: Bool) { _ = animated }
     /// 页面数组重建完成（子类在这里重排自己的容器）
     func didRebuildPages() {}
+    /// 主题换色（子类把容器底色也一起刷掉，否则换主题时容器会闪一下系统色）
+    func themeDidChange() {}
 
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .systemBackground
 
+        backgroundImageView.contentMode = .scaleAspectFill
+        backgroundImageView.clipsToBounds = true
+        backgroundImageView.isHidden = true
+        view.addSubview(backgroundImageView)
+
+        for label in [headerLabel, pageLabel] {
+            label.font = .systemFont(ofSize: 12, weight: .regular)
+            label.textAlignment = .center
+            label.numberOfLines = 1
+            label.lineBreakMode = .byTruncatingTail
+            view.addSubview(label)
+        }
         pageLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
-        pageLabel.textColor = .secondaryLabel
-        pageLabel.textAlignment = .center
-        pageLabel.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(pageLabel)
-        NSLayoutConstraint.activate([
-            pageLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            pageLabel.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor,
-                                             constant: -8)
-        ])
 
         let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
         tap.delegate = self
@@ -150,11 +176,51 @@ class PagedBaseController: UIViewController {
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        layoutChrome()
         if contentRect.size != contentSize {
             contentSize = contentRect.size
             needsRebuild = true
         }
         rebuildIfNeeded()
+    }
+
+    /// 页眉 / 页脚 / 背景图的位置（跟 safeArea 与用户设的间距走）
+    private func layoutChrome() {
+        backgroundImageView.frame = view.bounds
+        let safe = view.safeAreaInsets
+        let side = max(input?.typography.horizontalPadding ?? 20, 8)
+        let width = max(view.bounds.width - side * 2, 10)
+        let headerTop = max(safe.top, 0) + (input?.headerTopPadding ?? 8)
+        let footerBottom = max(safe.bottom, 0) + (input?.footerBottomPadding ?? 6)
+        headerLabel.frame = CGRect(x: side, y: headerTop, width: width, height: 16)
+        pageLabel.frame = CGRect(x: side,
+                                 y: view.bounds.height - footerBottom - 16,
+                                 width: width,
+                                 height: 16)
+    }
+
+    /// 主题换色：容器底色 / 页眉页脚色 / 背景图
+    private func applyThemeChrome() {
+        guard let theme = input?.theme else { return }
+        view.backgroundColor = theme.uiBackgroundColor
+        headerLabel.textColor = theme.uiHeaderFooterColor
+        pageLabel.textColor = theme.uiPageIndexColor
+
+        if let name = theme.backgroundImage,
+           let image = ReaderBackgroundImage.load(name) {
+            backgroundImageView.image = image
+            backgroundImageView.isHidden = false
+            switch theme.backgroundImageMode {
+            case 1: backgroundImageView.contentMode = .scaleAspectFit
+            case 2: backgroundImageView.contentMode = .scaleToFill
+            default: backgroundImageView.contentMode = .scaleAspectFill
+            }
+            view.sendSubviewToBack(backgroundImageView)
+        } else {
+            backgroundImageView.image = nil
+            backgroundImageView.isHidden = true
+        }
+        themeDidChange()
     }
 
     // MARK: 输入
@@ -167,20 +233,27 @@ class PagedBaseController: UIViewController {
             nextTriggered = false
         }
         input = new
+        applyThemeChrome()
         if new.signature != signature {
             signature = new.signature
             needsRebuild = true
             rebuildIfNeeded()
         }
+        updateLabel()
     }
 
-    /// 正文区域：与滚动模式同样的留白（左右 20），底部给页码让位
+    /// 正文区域：左右留白 / 页眉页脚高度都跟设置走
     private var contentRect: CGRect {
         let safe = view.safeAreaInsets
-        return view.bounds.inset(by: UIEdgeInsets(top: max(safe.top, 0) + 12,
-                                                  left: 20,
-                                                  bottom: max(safe.bottom, 0) + 34,
-                                                  right: 20))
+        let side = max(input?.typography.horizontalPadding ?? 20, 4)
+        let headerExtra: CGFloat = (input?.headerMode ?? .none) == .none
+            ? 0 : 16 + (input?.headerTopPadding ?? 8) + 4
+        let footerExtra: CGFloat = (input?.footerMode ?? .page) == .none
+            ? 0 : 16 + (input?.footerBottomPadding ?? 6) + 4
+        return view.bounds.inset(by: UIEdgeInsets(top: max(safe.top, 0) + 12 + headerExtra,
+                                                  left: side,
+                                                  bottom: max(safe.bottom, 0) + 8 + footerExtra,
+                                                  right: side))
     }
 
     private func rebuildIfNeeded() {
@@ -194,15 +267,28 @@ class PagedBaseController: UIViewController {
     private func rebuild(_ rect: CGRect) {
         guard let input else { return }
 
-        // 整章只建一份 attributed：分页测量与逐页绘制共用，内存从「页数 × 全文」降到「1 × 全文」
-        let attributed = TextPaginator.attributed(paragraphs: input.paragraphs,
-                                                  fontSize: input.fontSize,
-                                                  lineSpacing: input.lineSpacing)
-        measureAttributed = attributed
+        // 整章只建一份 attributed：分页测量与逐页绘制共用，内存从「页数 × 全文」降到「1 × 全文」。
+        // 章节标题作为正文前的标题块拼进来（有自己的字号 / 颜色 / 上下间距），
+        // 这样标题会自然出现在第一页顶部，而不是另起一页或干脆不显示。
+        let body = TextPaginator.attributed(paragraphs: input.paragraphs,
+                                            typography: input.typography,
+                                            theme: input.theme)
+        let combined = NSMutableAttributedString()
+        var titleOffset = 0
+        if let titleAttr = TextPaginator.titleAttributed(title: input.title,
+                                                         typography: input.typography,
+                                                         theme: input.theme) {
+            combined.append(titleAttr)
+            combined.append(NSAttributedString(string: "\n"))
+            titleOffset = combined.length
+        }
+        combined.append(body)
+        measureAttributed = combined
 
-        slices = TextPaginator.paginate(attributed: attributed,
+        slices = TextPaginator.paginate(attributed: combined,
                                         paragraphs: input.paragraphs,
-                                        size: rect.size)
+                                        size: rect.size,
+                                        titleOffset: titleOffset)
 
         var list: [ReaderPage] = slices.map { .text($0) }
         // 保持与滚动模式完全一致的内容顺序：正文 → 插图（含动图）→ 音视频
@@ -288,17 +374,32 @@ class PagedBaseController: UIViewController {
     }
 
     func updateLabel() {
-        guard !pages.isEmpty else {
-            pageLabel.text = ""
-            return
-        }
-        pageLabel.text = TextPaginator.progressText(page: currentIndex, total: pages.count)
+        headerLabel.text = headerText
+        pageLabel.text = pages.isEmpty ? "" : footerText(page: currentIndex)
     }
 
     /// 拖动过程中按滚动偏移实时显示页码（松手后再校准）
     func previewLabel(page: Int) {
         guard !pages.isEmpty else { return }
-        pageLabel.text = TextPaginator.progressText(page: page, total: pages.count)
+        pageLabel.text = footerText(page: page)
+    }
+
+    private var headerText: String {
+        guard let mode = input?.headerMode else { return "" }
+        switch mode {
+        case .chapter: return input?.title ?? ""
+        case .book:    return input?.bookTitle ?? ""
+        case .none:    return ""
+        }
+    }
+
+    private func footerText(page: Int) -> String {
+        guard let mode = input?.footerMode else { return "" }
+        switch mode {
+        case .percent: return TextPaginator.percentText(page: page, total: pages.count)
+        case .none:    return ""
+        case .page:    return TextPaginator.progressText(page: page, total: pages.count)
+        }
     }
 
     /// 当前页对应的段落；插图 / 音视频 / 章末页不产生段落锚点。
@@ -334,11 +435,12 @@ class PagedBaseController: UIViewController {
             // 共用 rebuild 时建好的那一份全文；缺失才兜底重建（正常不会走到）
             let attributed = measureAttributed
                 ?? TextPaginator.attributed(paragraphs: input?.paragraphs ?? [],
-                                            fontSize: input?.fontSize ?? 18,
-                                            lineSpacing: input?.lineSpacing ?? 10)
+                                            typography: input?.typography ?? ReaderTypography.fallback,
+                                            theme: input?.theme ?? ReaderTheme.fallback)
             vc = TextPageController(attributed: attributed,
                                     slice: slice,
-                                    textFrame: contentRect)
+                                    textFrame: contentRect,
+                                    background: themeBackgroundColor)
         case .image(let item):
             vc = hosting(ImagePageView(item: item) { [weak self] in
                 self?.onTapMedia?(item)
@@ -350,7 +452,7 @@ class PagedBaseController: UIViewController {
         case .footer:
             vc = hosting(FooterPageView(isComic: input?.isComic ?? false))
         }
-        vc.view.backgroundColor = .systemBackground
+        vc.view.backgroundColor = input?.theme.uiBackgroundColor ?? .systemBackground
         // 用 tag 记住页码：容器淘汰页面后仍要能认出它是第几页
         vc.view.tag = index + 1
         return vc
@@ -358,7 +460,7 @@ class PagedBaseController: UIViewController {
 
     private func hosting<V: View>(_ content: V) -> UIViewController {
         let controller = UIHostingController(rootView: content)
-        controller.view.backgroundColor = .systemBackground
+        controller.view.backgroundColor = input?.theme.uiBackgroundColor ?? .systemBackground
         return controller
     }
 }
@@ -398,7 +500,7 @@ final class CurlPageController: PagedBaseController {
         pager.isDoubleSided = false
         pager.dataSource = self
         pager.delegate = self
-        pager.view.backgroundColor = .systemBackground
+        pager.view.backgroundColor = themeBackgroundColor
         pager.view.clipsToBounds = true
 
         addChild(pager)
@@ -426,6 +528,10 @@ final class CurlPageController: PagedBaseController {
     override func didRebuildPages() {
         cache.removeAll()
         show(index: currentIndex, animated: false)
+    }
+
+    override func themeDidChange() {
+        pager.view.backgroundColor = themeBackgroundColor
     }
 
     override func presentPage(at index: Int, animated: Bool) {
@@ -513,7 +619,7 @@ final class SlidePageController: PagedBaseController {
         scroller.showsHorizontalScrollIndicator = false
         scroller.contentInsetAdjustmentBehavior = .never
         scroller.delegate = self
-        scroller.backgroundColor = .systemBackground
+        scroller.backgroundColor = themeBackgroundColor
         scroller.frame = view.bounds
         scroller.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         view.insertSubview(scroller, at: 0)
@@ -555,6 +661,11 @@ final class SlidePageController: PagedBaseController {
         updateLabel()
     }
 
+    override func themeDidChange() {
+        scroller.backgroundColor = themeBackgroundColor
+        for host in hosts.values { host.backgroundColor = themeBackgroundColor }
+    }
+
     override func presentPage(at index: Int, animated: Bool) {
         guard index >= 0, index < pages.count else { return }
         load(around: index)
@@ -588,7 +699,7 @@ final class SlidePageController: PagedBaseController {
                             y: 0,
                             width: pageWidth,
                             height: max(view.bounds.height, 1))
-        host.backgroundColor = .systemBackground
+        host.backgroundColor = themeBackgroundColor
 
         let vc = makeController(at: index)
         addChild(vc)
@@ -736,12 +847,15 @@ final class TextPageController: UIViewController {
     private let attributed: NSAttributedString
     private let slice: ReaderPageSlice
     private let textFrame: CGRect
+    private let background: UIColor
     private let pageView = CoreTextPageView(frame: .zero)
 
-    init(attributed: NSAttributedString, slice: ReaderPageSlice, textFrame: CGRect) {
+    init(attributed: NSAttributedString, slice: ReaderPageSlice, textFrame: CGRect,
+         background: UIColor = .systemBackground) {
         self.attributed = attributed
         self.slice = slice
         self.textFrame = textFrame
+        self.background = background
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -749,7 +863,8 @@ final class TextPageController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = .systemBackground
+        // 底色跟主题走：主题底色 + 主题正文色，不再依赖系统的动态色
+        view.backgroundColor = background
         pageView.backgroundColor = .clear
         pageView.isOpaque = false
         pageView.attributed = attributed

@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 // MARK: - 第三栏：阅读器
 // 四种形态：
@@ -23,6 +24,8 @@ struct ReaderView: View {
     let nextChapter: Chapter?
     /// 本书全部章节（供控制菜单里的目录弹层跳转）
     let chapters: [Chapter]
+    /// 书名：页眉可以选「书名」（小说专属排版）
+    let bookTitle: String
     /// 所在分区。翻页只给「小说」；漫画连排、整理图文混排，都必须滚动
     let category: BookCategory
     let onOpenNext: (Chapter) -> Void
@@ -48,6 +51,7 @@ struct ReaderView: View {
     init(chapter: Chapter,
          nextChapter: Chapter? = nil,
          chapters: [Chapter] = [],
+         bookTitle: String = "",
          category: BookCategory = .novel,
          onOpenNext: @escaping (Chapter) -> Void = { _ in },
          onSelectChapter: @escaping (Chapter) -> Void = { _ in },
@@ -55,13 +59,20 @@ struct ReaderView: View {
         self.chapter = chapter
         self.nextChapter = nextChapter
         self.chapters = chapters
+        self.bookTitle = bookTitle
         self.category = category
         self.onOpenNext = onOpenNext
         self.onSelectChapter = onSelectChapter
         self.onExit = onExit
     }
 
+    /// 只对小说生效：漫画 / 整理 / 短剧仍按原来的样子（不读这些排版与主题设置）
     private var isComic: Bool { category == .comic }
+
+    /// 阅读时常亮（小说设置项，退出阅读自动还原）
+    private func syncIdleTimer() {
+        UIApplication.shared.isIdleTimerDisabled = prefs.keepScreenOn
+    }
 
     /// 这一章只有媒体、没有正文（短剧的每一集视频 / 单集音频）
     private var isMediaOnly: Bool {
@@ -90,7 +101,69 @@ struct ReaderView: View {
     }
 
     private var content: ChapterContent { library.content(for: chapter) }
-    private var paragraphs: [String] { library.paragraphs(for: chapter) }
+    /// 正文段落：开了「繁体」就转换一次（带缓存，避免每次 body 重算都跑一遍 ICU）
+    private var paragraphs: [String] {
+        let raw = library.paragraphs(for: chapter)
+        guard prefs.isTraditional, category == .novel else { return raw }
+        return ChineseScript.paragraphs(chapter.id, raw)
+    }
+
+    /// 滚动模式的正文字体（家族 / 字重 / 字号都跟面板设置）
+    private var bodyFont: UIFont {
+        ReaderFonts.font(size: prefs.fontSize, family: prefs.fontFamily, weight: prefs.fontWeight)
+    }
+
+    /// 章节标题块（滚动模式）。分页模式由 TextPaginator 排版到第一页顶部，两边样式同源。
+    private var chapterTitleBlock: some View {
+        let style = prefs.titleStyle
+        let size = style.fontSize(bodySize: prefs.fontSize)
+        let color = style.colorMode == 1 ? Color(hex: style.colorHex) : prefs.theme.uiTitle
+        let title = chapter.displayTitle
+        let parts = style.splitTwoLines ? TextPaginator.splitTitle(title) : nil
+        return VStack(alignment: .leading, spacing: 4) {
+            if let parts {
+                Text(parts.0)
+                    .font(Font(ReaderFonts.font(size: size,
+                                                family: prefs.fontFamily,
+                                                weight: style.weight,
+                                                italic: style.isItalic)))
+                    .foregroundStyle(color)
+                Text(parts.1)
+                    .font(Font(ReaderFonts.font(size: max(12, size * 0.72),
+                                                family: prefs.fontFamily,
+                                                weight: .regular,
+                                                italic: style.isItalic)))
+                    .foregroundStyle(color.opacity(0.82))
+            } else {
+                Text(title)
+                    .font(Font(ReaderFonts.font(size: size,
+                                                family: prefs.fontFamily,
+                                                weight: style.weight,
+                                                italic: style.isItalic)))
+                    .foregroundStyle(color)
+            }
+            if style.showBottomLine {
+                Rectangle()
+                    .fill(prefs.theme.uiSeparator)
+                    .frame(height: 1)
+                    .padding(.top, 2)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.top, style.topPadding)
+        .padding(.bottom, style.bottomPadding)
+    }
+
+    /// 阅读亮度：只在阅读层压一层黑，不改系统亮度，退出阅读自动恢复
+    @ViewBuilder
+    private var brightnessOverlay: some View {
+        if prefs.readerBrightness < 0.999 {
+            Color.black
+                .opacity((1 - prefs.readerBrightness) * 0.8)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+        }
+    }
     private var ignoredHint: String? { library.ignoredHint(for: chapter) }
 
     /// 只有读文字的章节才需要编码开关；pdf 按页渲染、漫画/短剧没有正文
@@ -137,6 +210,11 @@ struct ReaderView: View {
                 centerTappable(scrollBody(content))
             }
         }
+        // 主题底色铺满整页：分页引擎自己也会铺，这里是滚动模式与插图页的底
+        .background(prefs.theme.uiBackground)
+        .overlay { brightnessOverlay }
+        // 阅读区自己定状态栏明暗，跟主题底色走（否则深色主题配浅色状态栏会看不清）
+        .preferredColorScheme(prefs.theme.statusBarIsDarkText ? .light : .dark)
         .navigationTitle(chapter.title)
         .navigationBarTitleDisplayMode(.inline)
         // 阅读页自己声明隐藏底部标签栏：只在 TabView / NavigationSplitView 外层改状态，
@@ -185,12 +263,17 @@ struct ReaderView: View {
                 pendingAnchor = imageAnchor(for: closed, in: content)
             }
         }
-        .onAppear { ReadingChrome.shared.enter() }
+        .onAppear {
+            ReadingChrome.shared.enter()
+            syncIdleTimer()
+        }
+        .onChange(of: prefs.keepScreenOn) { _, _ in syncIdleTimer() }
         .onDisappear {
             ReadingChrome.shared.leave()
             // 兜底隐藏是在布局阶段强制设置的，退出阅读时显式还原一次，
             // 避免 representable 销毁顺序不同导致标签栏一直不回来
             TabBarVisibility.setHidden(false, animated: false)
+            UIApplication.shared.isIdleTimerDisabled = false
             ProgressStore.shared.flushAnchors()
         }
     }
@@ -202,7 +285,7 @@ struct ReaderView: View {
         let hint = self.ignoredHint
         return ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: prefs.lineSpacing) {
+                LazyVStack(alignment: .leading, spacing: prefs.paragraphSpacing) {
                     if isEmptyChapter {
                         ContentUnavailableView {
                             Label("这一章没有可显示的内容", systemImage: "doc.questionmark")
@@ -213,11 +296,18 @@ struct ReaderView: View {
                         .padding(.top, 40)
                     }
 
+                    // 0. 章节标题（小说专属排版：字号 / 字重 / 颜色 / 上下间距都可在面板里调）
+                    if category == .novel {
+                        chapterTitleBlock
+                    }
+
                     // 1. 正文（逐段懒加载）
                     ForEach(paragraphs.indices, id: \.self) { index in
                         Text(paragraphs[index])
-                            .font(.system(size: prefs.fontSize))
+                            .font(Font(bodyFont))
+                            .kerning(prefs.wordSpacing)
                             .lineSpacing(prefs.lineSpacing)
+                            .foregroundStyle(prefs.theme.uiText)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .id("blk-p\(index)")
                             .onAppear {
@@ -262,7 +352,7 @@ struct ReaderView: View {
 
                     Color.clear.frame(height: 40)
                 }
-                .padding(.horizontal, 20)
+                .padding(.horizontal, category == .novel ? prefs.horizontalPadding : 20)
                 .padding(.vertical, 16)
             }
             // 小说上下滚动：读到底还继续上拉 = 下一章（章末不再有「下一章」按钮）。
@@ -393,13 +483,19 @@ struct ReaderView: View {
                                     paragraphs: paragraphs,
                                     images: content.images,
                                     avMedia: content.avMedia,
-                                    fontSize: prefs.fontSize,
-                                    lineSpacing: prefs.lineSpacing,
+                                    typography: prefs.typography,
+                                    theme: prefs.theme,
+                                    title: chapter.displayTitle,
+                                    bookTitle: bookTitle,
                                     restoreParagraph: restoreParagraph,
                                     hasNextChapter: nextChapter != nil,
                                     isComic: isComic,
                                     boostRate: prefs.longPressRate,
-                                    style: prefs.pageTurn.flipStyle),
+                                    style: prefs.pageTurn.flipStyle,
+                                    headerMode: prefs.headerMode,
+                                    footerMode: prefs.footerMode,
+                                    headerTopPadding: prefs.headerTopPadding,
+                                    footerBottomPadding: prefs.footerBottomPadding),
             onProgress: { paragraph in
                 ProgressStore.shared.noteAnchor("blk-p\(paragraph)", for: chapter.id)
             },
