@@ -251,6 +251,22 @@ final class Preferences: ObservableObject {
         didSet { if loaded { save() } }
     }
 
+    // MARK: 净化（K 组）
+
+    /// 净化总开关（关掉后规则保留但不生效）
+    @Published var purifyEnabled: Bool = true {
+        didSet { if loaded { save(); ReaderTextPipeline.reset() } }
+    }
+    /// 正则替换规则
+    @Published var purifyRules: [PurifyRule] = [] {
+        didSet { if loaded { save(); ReaderTextPipeline.reset() } }
+    }
+
+    /// 真正生效的规则（总开关关掉时为空）
+    var activePurifyRules: [PurifyRule] {
+        purifyEnabled ? purifyRules : []
+    }
+
     // MARK: 全局外观
 
     @Published var appearance: AppearanceMode = .system {
@@ -403,6 +419,12 @@ final class Preferences: ObservableObject {
         tapRight = TapZoneAction(rawValue: defaults.object(forKey: Keys.tapRight) == nil
                                  ? 1 : defaults.integer(forKey: Keys.tapRight)) ?? .nextPage
         volumeKeyFlip = defaults.bool(forKey: Keys.volumeKeyFlip)
+        purifyEnabled = defaults.object(forKey: Keys.purifyEnabled) == nil
+            ? true : defaults.bool(forKey: Keys.purifyEnabled)
+        if let data = defaults.data(forKey: Keys.purifyRules),
+           let list = try? JSONDecoder().decode([PurifyRule].self, from: data) {
+            purifyRules = list
+        }
         autoOpenLastBook = defaults.bool(forKey: Keys.autoOpenLastBook)
         firstLineIndent = defaults.object(forKey: Keys.indent) == nil
             ? true : defaults.bool(forKey: Keys.indent)
@@ -479,6 +501,8 @@ final class Preferences: ObservableObject {
         static let tapRight = "LocalNovel.tapRight"
         static let volumeKeyFlip = "LocalNovel.volumeKeyFlip"
         static let autoOpenLastBook = "LocalNovel.autoOpenLastBook"
+        static let purifyEnabled = "LocalNovel.purifyEnabled"
+        static let purifyRules = "LocalNovel.purifyRules"
         static let keepScreenOn = "LocalNovel.keepScreenOn"
     }
 
@@ -529,6 +553,10 @@ final class Preferences: ObservableObject {
         defaults.set(tapRight.rawValue, forKey: Keys.tapRight)
         defaults.set(volumeKeyFlip, forKey: Keys.volumeKeyFlip)
         defaults.set(autoOpenLastBook, forKey: Keys.autoOpenLastBook)
+        defaults.set(purifyEnabled, forKey: Keys.purifyEnabled)
+        if let data = try? JSONEncoder().encode(purifyRules) {
+            defaults.set(data, forKey: Keys.purifyRules)
+        }
         defaults.set(keepScreenOn, forKey: Keys.keepScreenOn)
     }
 }

@@ -57,6 +57,8 @@ struct ReaderView: View {
     @State private var volumePager: VolumeKeyPager?
     /// 主题管理（自定义主题增删改）
     @State private var showThemeManager = false
+    /// 净化规则管理
+    @State private var showPurifyManager = false
     /// 滚动模式：到底之后的上拉是否还有效（切过章或松手回弹后重新武装，保证一次一记）
     @State private var bottomPullArmed = true
 
@@ -228,8 +230,12 @@ struct ReaderView: View {
     /// 正文段落：开了「繁体」就转换一次（带缓存，避免每次 body 重算都跑一遍 ICU）
     private var paragraphs: [String] {
         let raw = library.paragraphs(for: chapter)
-        guard prefs.isTraditional, category == .novel else { return raw }
-        return ChineseScript.paragraphs(chapter.id, raw)
+        guard category == .novel else { return raw }
+        // 净化 → 繁简，一条流水线（带缓存，规则或章节变了才重算）
+        return ReaderTextPipeline.paragraphs(chapterId: chapter.id,
+                                             raw: raw,
+                                             rules: prefs.activePurifyRules,
+                                             traditional: prefs.isTraditional)
     }
 
     /// 滚动模式的正文字体（家族 / 字重 / 字号都跟面板设置）
@@ -363,12 +369,10 @@ struct ReaderView: View {
             if showMenu {
                 ReaderTopBar(title: topBarTitle,
                              subtitle: chapter.displayTitle,
-                             trailing: showsEncodingMenu ? "文本编码" : nil,
+                             trailing: "净化",
                              theme: prefs.theme,
                              onBack: onExit,
-                             onTrailing: {
-                                 showStylePanel = true
-                             })
+                             onTrailing: { showPurifyManager = true })
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
@@ -439,6 +443,7 @@ struct ReaderView: View {
         }
         .sheet(isPresented: $showSettings) { SettingsView() }
         .sheet(isPresented: $showThemeManager) { ThemeManagerView() }
+        .sheet(isPresented: $showPurifyManager) { PurifyManagerView() }
         .fullScreenCover(item: $galleryItem) { item in
             // 关闭时回传当前图片 → 换算成插图锚点，滚动定位回这张
             MediaGalleryView(items: content.images, initial: item) { closed in

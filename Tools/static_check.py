@@ -349,8 +349,8 @@ def main():
           and "DocumentsBootstrap.guideFileName" in resolver)
     check("切回前台补写说明文件", "DocumentsBootstrap.ensureVisibleInFilesApp()" in store)
     check("版本号提升以刷新系统元数据",
-          "<string>2.11.5</string>" in plist and "CURRENT_PROJECT_VERSION = 6" in pbx
-          and "MARKETING_VERSION = 2.11.5" in pbx)
+          "<string>2.11.6</string>" in plist and "CURRENT_PROJECT_VERSION = 7" in pbx
+          and "MARKETING_VERSION = 2.11.6" in pbx)
     check("UI 给出「文件 App 搜索本地小说」兜底路径",
           "搜索框搜「本地小说」" in welcome and "搜索「本地小说」" in store)
     check("AppIcon asset catalog（1024 + Contents.json）",
@@ -713,9 +713,9 @@ def main():
     check("文档正文含双格式包一节",
           "### 5. 同一部书按格式分成两个包（PDF 包 + 图片包）"
           in (ROOT / "Docs" / "漫画目录结构说明.md").read_text(encoding="utf-8"))
-    check("版本升到 2.11.5 / build 6",
-          "<string>2.11.5</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>6</string>" in plist)
+    check("版本升到 2.11.6 / build 7",
+          "<string>2.11.6</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>7</string>" in plist)
 
 
     print("\n== N. 本轮：底部三页 / 短剧 / NAS 连接 ==")
@@ -956,9 +956,9 @@ def main():
     check("NAS 书目录里直接放文件时仍当作一本书",
           "把目录本身当成一本书" in nas_lib_views
           and "hasMedia ? 1 : nil" in nas_lib)
-    check("版本升到 2.11.5 / build 6",
-          "<string>2.11.5</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>6</string>" in plist)
+    check("版本升到 2.11.6 / build 7",
+          "<string>2.11.6</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>7</string>" in plist)
 
     print("\n== S. 本轮：txt 乱码（UTF-16 误判 / GBK / Big5） ==")
     encoding_src = (APP / "Core" / "TextEncoding.swift").read_text(encoding="utf-8")
@@ -1207,14 +1207,15 @@ def main():
     check("繁简用 ICU 转换，不维护映射表",
           'StringTransform(rawValue: id)' in style
           and '"Simplified-Traditional"' in style
-          and "ChineseScript.paragraphs(chapter.id" in reader)
+          and "ReaderTextPipeline.paragraphs(chapterId: chapter.id" in reader
+          and "ChineseScript.toTraditional" in (APP / "Core" / "PurifyEngine.swift").read_text(encoding="utf-8"))
     check("阅读亮度只压阅读层 + 常亮退出即还原",
           "brightnessOverlay" in reader
           and "(1 - prefs.readerBrightness) * 0.8" in reader
           and "isIdleTimerDisabled = prefs.keepScreenOn" in reader
           and "UIApplication.shared.isIdleTimerDisabled = false" in reader)
     check("只作用于小说：滚动模式的排版/标题/边距都按分区拦一道",
-          "guard prefs.isTraditional, category == .novel else" in reader
+          "guard category == .novel else { return raw }" in reader
           and "category == .novel ? prefs.horizontalPadding : 20" in reader
           and "if category == .novel {\n                        chapterTitleBlock" in reader)
     check("设置页与阅读面板都能调这些项（两处互通）",
@@ -1263,8 +1264,8 @@ def main():
     check("相邻章正文预取（切章不空等）",
           "func warmNextChapter()" in reader
           and "library.paragraphs(for: next)" in reader)
-    check("版本已升到 2.11.5 / build 6",
-          "2.11.5" in (APP / "Info.plist").read_text(encoding="utf-8"))
+    check("版本已升到 2.11.6 / build 7",
+          "2.11.6" in (APP / "Info.plist").read_text(encoding="utf-8"))
 
     print("\n== Z. 本轮：上下菜单栏 + 进度滑杆 + 目录面板 ==")
     bars = (APP / "Views" / "ReaderChromeBars.swift").read_text(encoding="utf-8")
@@ -1372,6 +1373,34 @@ def main():
           and "showThemeManager = true" in settings)
     check("自定义主题随 Preferences 一起持久化（JSON）",
           "JSONEncoder().encode(customThemes)" in prefs_src)
+
+    print("\n== AC. 本轮：净化（正则替换） ==")
+    purify = (APP / "Core" / "PurifyEngine.swift").read_text(encoding="utf-8")
+    manager = (APP / "Views" / "PurifyManagerView.swift").read_text(encoding="utf-8")
+    reader = (APP / "Views" / "ReaderView.swift").read_text(encoding="utf-8")
+    prefs_src = (APP / "Core" / "Preferences.swift").read_text(encoding="utf-8")
+
+    check("净化规则：正则 + 替换文本 + 开关 + 纯文本模式",
+          "struct PurifyRule" in purify
+          and all(k in purify for k in ["var pattern", "var replacement", "var isEnabled", "var isRegex"]))
+    check("正则可编译、写错就跳过（不吞正文）",
+          "NSRegularExpression(pattern: pattern" in purify
+          and "continue   // 正则写错了" in purify)
+    check("净化 → 繁简合并成一条流水线并带缓存",
+          "enum ReaderTextPipeline" in purify
+          and "PurifyEngine.fingerprint(active)" in purify
+          and "ReaderTextPipeline.paragraphs(chapterId: chapter.id" in reader)
+    check("净化只作用于小说正文，且空段落会被清掉",
+          "guard category == .novel else { return raw }" in reader
+          and "trimmingCharacters(in: .whitespacesAndNewlines).isEmpty" in purify)
+    check("顶部右侧就是「净化」，改完立即生效（缓存按规则指纹失效）",
+          'trailing: "净化"' in reader
+          and "onTrailing: { showPurifyManager = true }" in reader
+          and "ReaderTextPipeline.reset()" in prefs_src)
+    check("规则管理页可增删改、带样例预览",
+          "struct PurifyManagerView" in manager
+          and "PurifyRuleEditor" in manager
+          and "样例预览" in manager)
 
     print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")
     if FAIL:
