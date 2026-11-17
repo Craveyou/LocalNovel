@@ -1718,6 +1718,11 @@ def main():
               < root_src.index("selectedChapter = chapter")
           and "锚点必须在这里写、不能等 onChange" in root_src)
 
+    clist_src = (APP / "Views" / "ChapterListView.swift").read_text(encoding="utf-8")
+    check("目录页只负责跳转，不再重复写 lastChapter / 锚点（避免覆盖书签跳段）",
+          "ProgressStore.shared.setAnchor" not in clist_src
+          and "ProgressStore.shared.setLastChapter" not in clist_src)
+
     check("版本已升到 2.14.1 / build 16",
           "<string>2.14.1</string>" in plist
           and "<key>CFBundleVersion</key>\n\t<string>16</string>" in plist)
