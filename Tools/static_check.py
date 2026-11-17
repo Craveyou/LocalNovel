@@ -350,8 +350,8 @@ def main():
           and "DocumentsBootstrap.guideFileName" in resolver)
     check("切回前台补写说明文件", "DocumentsBootstrap.ensureVisibleInFilesApp()" in store)
     check("版本号提升以刷新系统元数据",
-          "<string>2.14.0</string>" in plist and "CURRENT_PROJECT_VERSION = 15" in pbx
-          and "MARKETING_VERSION = 2.14.0" in pbx)
+          "<string>2.14.1</string>" in plist and "CURRENT_PROJECT_VERSION = 16" in pbx
+          and "MARKETING_VERSION = 2.14.1" in pbx)
     check("UI 给出「文件 App 搜索本地小说」兜底路径",
           "搜索框搜「本地小说」" in welcome and "搜索「本地小说」" in store)
     check("AppIcon asset catalog（1024 + Contents.json）",
@@ -718,9 +718,9 @@ def main():
     check("文档正文含双格式包一节",
           "### 5. 同一部书按格式分成两个包（PDF 包 + 图片包）"
           in (ROOT / "Docs" / "漫画目录结构说明.md").read_text(encoding="utf-8"))
-    check("版本升到 2.14.0 / build 15",
-          "<string>2.14.0</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>15</string>" in plist)
+    check("版本升到 2.14.1 / build 16",
+          "<string>2.14.1</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>16</string>" in plist)
 
 
     print("\n== N. 本轮：底部三页 / 短剧 / NAS 连接 ==")
@@ -971,9 +971,9 @@ def main():
     check("远端文件缓存有上限并会按最久未修改淘汰",
           "static let byteLimit: Int64 = 512 * 1024 * 1024" in nas_lib
           and "Task.detached(priority: .utility) { trim(folder: folder, limit: byteLimit) }" in nas_lib)
-    check("版本升到 2.14.0 / build 15",
-          "<string>2.14.0</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>15</string>" in plist)
+    check("版本升到 2.14.1 / build 16",
+          "<string>2.14.1</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>16</string>" in plist)
 
     print("\n== S. 本轮：txt 乱码（UTF-16 误判 / GBK / Big5） ==")
     encoding_src = (APP / "Core" / "TextEncoding.swift").read_text(encoding="utf-8")
@@ -1102,11 +1102,10 @@ def main():
     models = (APP / "Core" / "LibraryModels.swift").read_text(encoding="utf-8")
     list_view = (APP / "Views" / "RootView.swift").read_text(encoding="utf-8")
 
-    check("选书即读：所有分区都直接进阅读器（中间目录页已删除）",
+    check("小说选书即读：直接进阅读器，不经过章节目录页",
           "openBook(book)" in root
-          and "} content: {" not in root
-          and "selectedChapter = nil" in root
-          and "ChapterListView(" not in root)
+          and "if book.category == .novel {" in root
+          and "selectedChapter = nil" in root)
     check("切章完成 / 章节失效时重新定位（chapterSignature）",
           "var chapterSignature" in root
           and "contains(where: { $0.id == current.id })" in root)
@@ -1283,8 +1282,8 @@ def main():
     check("相邻章正文预取（切章不空等）",
           "func warmNextChapter()" in reader
           and "library.paragraphs(for: next)" in reader)
-    check("版本已升到 2.14.0 / build 15",
-          "2.14.0" in (APP / "Info.plist").read_text(encoding="utf-8"))
+    check("版本已升到 2.14.1 / build 16",
+          "2.14.1" in (APP / "Info.plist").read_text(encoding="utf-8"))
 
     print("\n== Z. 本轮：上下菜单栏 + 进度滑杆 + 目录面板 ==")
     bars = (APP / "Views" / "ReaderChromeBars.swift").read_text(encoding="utf-8")
@@ -1697,11 +1696,12 @@ def main():
     print("\n== X2. 本轮：去掉目录中间页 / 选章定位修复（2.14.0） ==")
     cat_src = (APP / "Views" / "ReaderCatalogView.swift").read_text(encoding="utf-8")
 
-    check("章节目录中间页已删除（书库只留 书库 → 阅读器 两栏）",
-          not (APP / "Views" / "ChapterListView.swift").exists()
-          and "} content: {" not in root_src
-          and "ChapterListView(" not in root_src)
-    check("所有分区选书即读（不再按分类分流到目录页）",
+    check("小说没有章节目录中间页，其他分类保留中间栏",
+          (APP / "Views" / "ChapterListView.swift").exists()
+          and "private var showsCatalogColumn: Bool" in root_src
+          and "return book.category != .novel" in root_src
+          and "ChapterListView(book: selectedBook, selection: $selectedChapter)" in root_src)
+    check("小说选书即读（不再按分类分流到目录页）",
           "private func openBook(_ book: Book)" in root_src
           and "openBook(book)" in root_src
           and "openNovelDirectly" not in root_src)
@@ -1718,9 +1718,9 @@ def main():
               < root_src.index("selectedChapter = chapter")
           and "锚点必须在这里写、不能等 onChange" in root_src)
 
-    check("版本已升到 2.14.0 / build 15",
-          "<string>2.14.0</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>15</string>" in plist)
+    check("版本已升到 2.14.1 / build 16",
+          "<string>2.14.1</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>16</string>" in plist)
 
     print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")
     if FAIL:

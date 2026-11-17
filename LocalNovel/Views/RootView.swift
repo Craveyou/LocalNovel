@@ -22,28 +22,23 @@ struct RootView: View {
     @State private var autoRestoredChapterId: String?
 
     var body: some View {
-        // 两栏：书库 → 阅读器。
-        // 原来中间那层「章节目录」页已删除：小说点书直接读整本 / 上次读到的那一章，
-        // 漫画 / 短剧 / 整理也直接进第一话 / 第一集，换章统一走阅读器里的目录面板。
-        NavigationSplitView(columnVisibility: $columnVisibility) {
-            LibrarySidebar(selection: $selectedBook)
-        } detail: {
-            if let chapter = selectedChapter {
-                ReaderView(chapter: chapter,
-                           nextChapter: nextChapter(after: chapter),
-                           chapters: (latestBook()?.chapters ?? []).filter { !$0.isPlaceholder },
-                           bookTitle: latestBook()?.title ?? "",
-                           bookId: latestBook()?.id ?? "",
-                           category: latestBook()?.category ?? .novel,
-                           onOpenNext: { next in selectChapter(next) },
-                           onSelectChapter: { chapter in selectChapter(chapter) },
-                           onExit: {
-                               selectedChapter = nil
-                               selectedBook = nil   // 回到书库首页，再点同一本也会重新触发「选书即读」
-                           })
-                    .id(chapter.id) // 切章时重建，重置滚动与播放器
+        // 小说只有两栏：书库 → 阅读器（小说没有「章节目录」中间页，换章走阅读器目录面板）。
+        // 漫画 / 短剧 / 整理仍是三栏：书库 → 章节列表 → 正文，点章节在中间栏切换。
+        Group {
+            if showsCatalogColumn {
+                NavigationSplitView(columnVisibility: $columnVisibility) {
+                    LibrarySidebar(selection: $selectedBook)
+                } content: {
+                    ChapterListView(book: selectedBook, selection: $selectedChapter)
+                } detail: {
+                    readerDetail
+                }
             } else {
-                WelcomeView()
+                NavigationSplitView(columnVisibility: $columnVisibility) {
+                    LibrarySidebar(selection: $selectedBook)
+                } detail: {
+                    readerDetail
+                }
             }
         }
         .navigationSplitViewStyle(.balanced)
@@ -64,13 +59,18 @@ struct RootView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { library.refreshOnForeground() }
         }
-        // 选书即读：所有分区都直接进阅读器，不再停在章节目录页。
+        // 选书副作用：小说「选书即读」直接进阅读器；
+        // 漫画 / 短剧 / 整理停在中间栏的章节列表，等用户点某一话 / 某一集。
         .onChange(of: selectedBook?.id) { _, _ in
             guard let book = selectedBook else {
                 selectedChapter = nil
                 return
             }
-            openBook(book)
+            if book.category == .novel {
+                openBook(book)
+            } else {
+                selectedChapter = nil
+            }
         }
         // 切章完成（占位章 → 真实章节）后，若当前章已失效或还没选中，重新定位到记忆章节
         .onChange(of: chapterSignature) { _, _ in
@@ -142,6 +142,33 @@ struct RootView: View {
         selectedBook = target
     }
 
+    /// 是否保留中间「章节列表」栏：只有小说不要。
+    private var showsCatalogColumn: Bool {
+        guard let book = selectedBook else { return false }
+        return book.category != .novel
+    }
+
+    @ViewBuilder
+    private var readerDetail: some View {
+        if let chapter = selectedChapter {
+            ReaderView(chapter: chapter,
+                       nextChapter: nextChapter(after: chapter),
+                       chapters: (latestBook()?.chapters ?? []).filter { !$0.isPlaceholder },
+                       bookTitle: latestBook()?.title ?? "",
+                       bookId: latestBook()?.id ?? "",
+                       category: latestBook()?.category ?? .novel,
+                       onOpenNext: { next in selectChapter(next) },
+                       onSelectChapter: { chapter in selectChapter(chapter) },
+                       onExit: {
+                           selectedChapter = nil
+                           selectedBook = nil   // 回到书库首页，再点同一本也会重新触发「选书即读」
+                       })
+                .id(chapter.id) // 切章时重建，重置滚动与播放器
+        } else {
+            WelcomeView()
+        }
+    }
+
     /// 用最新扫描结果里的书：删除章节后 selectedBook 仍是旧快照
     private func latestBook() -> Book? {
         guard let book = selectedBook else { return nil }
@@ -154,8 +181,8 @@ struct RootView: View {
         (latestBook()?.chapters ?? []).map(\.id).joined(separator: "|")
     }
 
-    /// 选书即读：直接打开上次读到的那一章（没有记忆就第一章）。
-    /// 小说要先把占位章换成真实章节；其余分区扫描时就已经是真实章节，不需要这一步。
+    /// 选书即读（仅小说）：直接打开上次读到的那一章（没有记忆就第一章）。
+    /// 小说要先把占位章换成真实章节；漫画 / 短剧 / 整理扫描时就是真实章节，走中间栏选章。
     private func openBook(_ book: Book) {
         if book.category == .novel {
             library.ensureChapters(for: book)
