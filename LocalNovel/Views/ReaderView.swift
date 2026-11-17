@@ -59,6 +59,8 @@ struct ReaderView: View {
     @State private var showThemeManager = false
     /// 净化规则管理
     @State private var showPurifyManager = false
+    /// 书签 / 笔记数据（右侧浮钮上的书签状态要用）
+    @ObservedObject private var annotations = AnnotationStore.shared
     /// 滚动模式：到底之后的上拉是否还有效（切过章或松手回弹后重新武装，保证一次一记）
     @State private var bottomPullArmed = true
 
@@ -171,6 +173,22 @@ struct ReaderView: View {
               anchor.hasPrefix("blk-p"),
               let value = Int(anchor.dropFirst("blk-p".count)) else { return 0 }
         return max(0, value)
+    }
+
+    /// 当前位置是否已有书签
+    private var currentBookmark: ReaderBookmark? {
+        annotations.bookmark(in: bookId,
+                             chapterId: chapter.id,
+                             paragraph: currentParagraphIndex)
+    }
+
+    /// 浮钮上的书签：有就取消，没有就加上（同一个位置不重复记）
+    private func toggleBookmark() {
+        if let mark = currentBookmark {
+            annotations.remove(mark)
+        } else {
+            addBookmark(at: currentParagraphIndex)
+        }
     }
 
     /// 加书签：位置 + 当时段落的一小段原文做预览
@@ -403,6 +421,17 @@ struct ReaderView: View {
                                 onTypography: { showStylePanel = true },
                                 onSettings: { showSettings = true })
                     .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        // 右侧浮动圆钮：书签 / 目录 / 主题（只在菜单展开时出现）
+        .overlay(alignment: .trailing) {
+            if showMenu {
+                ReaderFloatingActions(theme: prefs.theme,
+                                      isBookmarked: currentBookmark != nil,
+                                      onBookmark: toggleBookmark,
+                                      onCatalog: { showCatalog = true },
+                                      onTheme: { showStylePanel = true })
+                    .transition(.opacity)
             }
         }
         // 目录面板：从下方浮出，自带半透明遮罩，点遮罩收起

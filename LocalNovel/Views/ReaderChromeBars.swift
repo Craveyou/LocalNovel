@@ -188,3 +188,42 @@ struct ReaderBottomBar: View {
         .buttonStyle(.plain)
     }
 }
+
+// MARK: - 右侧浮动圆钮（对齐千阅：书签 / 目录 / 主题）
+//
+// 只在菜单栏展开时出现，贴在右边、底部工具行之上；不挡正文时完全不可见，
+// 也不吃点击（外层 allowsHitTesting 由调用方控制）。
+
+struct ReaderFloatingActions: View {
+    let theme: ReaderTheme
+    let isBookmarked: Bool
+    let onBookmark: () -> Void
+    let onCatalog: () -> Void
+    let onTheme: () -> Void
+
+    var body: some View {
+        VStack(spacing: 12) {
+            circle(isBookmarked ? "bookmark.fill" : "bookmark",
+                   tint: isBookmarked ? Color.accentColor : theme.uiText,
+                   action: onBookmark)
+            circle("list.bullet", tint: theme.uiText, action: onCatalog)
+            circle("paintpalette", tint: theme.uiText, action: onTheme)
+        }
+        .padding(.trailing, 10)
+    }
+
+    private func circle(_ systemImage: String, tint: Color, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(tint)
+                .frame(width: 38, height: 38)
+                .background(theme.uiBackground.opacity(0.92), in: Circle())
+                .overlay {
+                    Circle().strokeBorder(theme.uiSeparator, lineWidth: 0.5)
+                }
+                .shadow(color: .black.opacity(0.12), radius: 4, y: 1)
+        }
+        .buttonStyle(.plain)
+    }
+}

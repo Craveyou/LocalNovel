@@ -349,8 +349,8 @@ def main():
           and "DocumentsBootstrap.guideFileName" in resolver)
     check("切回前台补写说明文件", "DocumentsBootstrap.ensureVisibleInFilesApp()" in store)
     check("版本号提升以刷新系统元数据",
-          "<string>2.11.6</string>" in plist and "CURRENT_PROJECT_VERSION = 7" in pbx
-          and "MARKETING_VERSION = 2.11.6" in pbx)
+          "<string>2.11.7</string>" in plist and "CURRENT_PROJECT_VERSION = 8" in pbx
+          and "MARKETING_VERSION = 2.11.7" in pbx)
     check("UI 给出「文件 App 搜索本地小说」兜底路径",
           "搜索框搜「本地小说」" in welcome and "搜索「本地小说」" in store)
     check("AppIcon asset catalog（1024 + Contents.json）",
@@ -713,9 +713,9 @@ def main():
     check("文档正文含双格式包一节",
           "### 5. 同一部书按格式分成两个包（PDF 包 + 图片包）"
           in (ROOT / "Docs" / "漫画目录结构说明.md").read_text(encoding="utf-8"))
-    check("版本升到 2.11.6 / build 7",
-          "<string>2.11.6</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>7</string>" in plist)
+    check("版本升到 2.11.7 / build 7",
+          "<string>2.11.7</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>8</string>" in plist)
 
 
     print("\n== N. 本轮：底部三页 / 短剧 / NAS 连接 ==")
@@ -956,9 +956,9 @@ def main():
     check("NAS 书目录里直接放文件时仍当作一本书",
           "把目录本身当成一本书" in nas_lib_views
           and "hasMedia ? 1 : nil" in nas_lib)
-    check("版本升到 2.11.6 / build 7",
-          "<string>2.11.6</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>7</string>" in plist)
+    check("版本升到 2.11.7 / build 7",
+          "<string>2.11.7</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>8</string>" in plist)
 
     print("\n== S. 本轮：txt 乱码（UTF-16 误判 / GBK / Big5） ==")
     encoding_src = (APP / "Core" / "TextEncoding.swift").read_text(encoding="utf-8")
@@ -1264,8 +1264,8 @@ def main():
     check("相邻章正文预取（切章不空等）",
           "func warmNextChapter()" in reader
           and "library.paragraphs(for: next)" in reader)
-    check("版本已升到 2.11.6 / build 7",
-          "2.11.6" in (APP / "Info.plist").read_text(encoding="utf-8"))
+    check("版本已升到 2.11.7 / build 7",
+          "2.11.7" in (APP / "Info.plist").read_text(encoding="utf-8"))
 
     print("\n== Z. 本轮：上下菜单栏 + 进度滑杆 + 目录面板 ==")
     bars = (APP / "Views" / "ReaderChromeBars.swift").read_text(encoding="utf-8")
@@ -1401,6 +1401,23 @@ def main():
           "struct PurifyManagerView" in manager
           and "PurifyRuleEditor" in manager
           and "样例预览" in manager)
+
+    print("\n== AD. 本轮：右侧浮动圆钮 ==")
+    bars = (APP / "Views" / "ReaderChromeBars.swift").read_text(encoding="utf-8")
+    reader = (APP / "Views" / "ReaderView.swift").read_text(encoding="utf-8")
+
+    check("右侧浮钮：书签 / 目录 / 主题三个圆钮",
+          "struct ReaderFloatingActions" in bars
+          and bars.count('circle(') >= 3
+          and "bookmark.fill" in bars)
+    check("只在菜单展开时出现，书签状态实时反映当前位置",
+          ".overlay(alignment: .trailing)" in reader
+          and "if showMenu {" in reader
+          and "isBookmarked: currentBookmark != nil" in reader)
+    check("书签浮钮是开关：同位置不重复记，再点即取消",
+          "private func toggleBookmark()" in reader
+          and "annotations.remove(mark)" in reader
+          and "addBookmark(at: currentParagraphIndex)" in reader)
 
     print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")
     if FAIL:
