@@ -730,6 +730,7 @@ struct ReaderView: View {
                                     footerMode: prefs.footerMode,
                                     headerTopPadding: prefs.headerTopPadding,
                                     footerBottomPadding: prefs.footerBottomPadding,
+                                    showsProgress: prefs.showReadingProgress,
                                     flipDuration: prefs.flipDuration,
                                     tapLeft: prefs.tapLeft,
                                     tapCenterAction: prefs.tapCenter,

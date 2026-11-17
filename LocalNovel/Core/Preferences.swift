@@ -208,6 +208,10 @@ final class Preferences: ObservableObject {
     @Published var footerBottomPadding: CGFloat = 6 {
         didSet { if loaded { save() } }
     }
+    /// 是否显示页码 / 百分比（与「页脚内容」解耦：关掉就是纯正文，不留空白条）
+    @Published var showReadingProgress: Bool = true {
+        didSet { if loaded { save() } }
+    }
 
     // MARK: 主题与亮度（F 组）
 
@@ -410,6 +414,8 @@ final class Preferences: ObservableObject {
         titleBottomPadding = number(Keys.titleBottom, 16, 0, 60)
         headerTopPadding = number(Keys.headerTop, 8, 0, 40)
         footerBottomPadding = number(Keys.footerBottom, 6, 0, 40)
+        showReadingProgress = defaults.object(forKey: Keys.showProgress) == nil
+            ? true : defaults.bool(forKey: Keys.showProgress)
         readerBrightness = Double(number(Keys.brightness, 1.0, 0.25, 1.0))
         flipDuration = Double(number(Keys.flipDuration, 0.28, 0.05, 0.8))
         tapLeft = TapZoneAction(rawValue: defaults.object(forKey: Keys.tapLeft) == nil
@@ -491,6 +497,7 @@ final class Preferences: ObservableObject {
         static let footerMode = "LocalNovel.footerMode"
         static let headerTop = "LocalNovel.headerTopPadding"
         static let footerBottom = "LocalNovel.footerBottomPadding"
+        static let showProgress = "LocalNovel.showReadingProgress"
 
         static let themeId = "LocalNovel.themeId"
         static let customThemes = "LocalNovel.customThemes"
@@ -541,6 +548,7 @@ final class Preferences: ObservableObject {
         defaults.set(footerMode.rawValue, forKey: Keys.footerMode)
         defaults.set(Double(headerTopPadding), forKey: Keys.headerTop)
         defaults.set(Double(footerBottomPadding), forKey: Keys.footerBottom)
+        defaults.set(showReadingProgress, forKey: Keys.showProgress)
 
         defaults.set(themeId, forKey: Keys.themeId)
         if let data = try? JSONEncoder().encode(customThemes) {

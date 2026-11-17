@@ -266,7 +266,9 @@ struct ReaderControlsPanel: View {
                 sliderRow("页眉间距", value: binding(for: \.headerTopPadding),
                           range: 0...40, step: 2, format: { "\(Int($0))" })
             }
-            if prefs.footerMode != .none {
+            Toggle("显示页码 / 百分比", isOn: binding(for: \.showReadingProgress))
+                .font(.subheadline)
+            if prefs.showReadingProgress, prefs.footerMode != .none {
                 sliderRow("页脚间距", value: binding(for: \.footerBottomPadding),
                           range: 0...40, step: 2, format: { "\(Int($0))" })
             }

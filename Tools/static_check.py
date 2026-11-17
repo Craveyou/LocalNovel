@@ -349,8 +349,8 @@ def main():
           and "DocumentsBootstrap.guideFileName" in resolver)
     check("切回前台补写说明文件", "DocumentsBootstrap.ensureVisibleInFilesApp()" in store)
     check("版本号提升以刷新系统元数据",
-          "<string>2.11.8</string>" in plist and "CURRENT_PROJECT_VERSION = 9" in pbx
-          and "MARKETING_VERSION = 2.11.8" in pbx)
+          "<string>2.11.9</string>" in plist and "CURRENT_PROJECT_VERSION = 10" in pbx
+          and "MARKETING_VERSION = 2.11.9" in pbx)
     check("UI 给出「文件 App 搜索本地小说」兜底路径",
           "搜索框搜「本地小说」" in welcome and "搜索「本地小说」" in store)
     check("AppIcon asset catalog（1024 + Contents.json）",
@@ -713,9 +713,9 @@ def main():
     check("文档正文含双格式包一节",
           "### 5. 同一部书按格式分成两个包（PDF 包 + 图片包）"
           in (ROOT / "Docs" / "漫画目录结构说明.md").read_text(encoding="utf-8"))
-    check("版本升到 2.11.8 / build 7",
-          "<string>2.11.8</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>9</string>" in plist)
+    check("版本升到 2.11.9 / build 7",
+          "<string>2.11.9</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>10</string>" in plist)
 
 
     print("\n== N. 本轮：底部三页 / 短剧 / NAS 连接 ==")
@@ -956,9 +956,9 @@ def main():
     check("NAS 书目录里直接放文件时仍当作一本书",
           "把目录本身当成一本书" in nas_lib_views
           and "hasMedia ? 1 : nil" in nas_lib)
-    check("版本升到 2.11.8 / build 7",
-          "<string>2.11.8</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>9</string>" in plist)
+    check("版本升到 2.11.9 / build 7",
+          "<string>2.11.9</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>10</string>" in plist)
 
     print("\n== S. 本轮：txt 乱码（UTF-16 误判 / GBK / Big5） ==")
     encoding_src = (APP / "Core" / "TextEncoding.swift").read_text(encoding="utf-8")
@@ -1264,8 +1264,8 @@ def main():
     check("相邻章正文预取（切章不空等）",
           "func warmNextChapter()" in reader
           and "library.paragraphs(for: next)" in reader)
-    check("版本已升到 2.11.8 / build 7",
-          "2.11.8" in (APP / "Info.plist").read_text(encoding="utf-8"))
+    check("版本已升到 2.11.9 / build 7",
+          "2.11.9" in (APP / "Info.plist").read_text(encoding="utf-8"))
 
     print("\n== Z. 本轮：上下菜单栏 + 进度滑杆 + 目录面板 ==")
     bars = (APP / "Views" / "ReaderChromeBars.swift").read_text(encoding="utf-8")
@@ -1436,6 +1436,18 @@ def main():
           and "consumePendingAnchor(for: chapter.id)" in root)
     check("笔记列表可左滑编辑（点条目仍是跳转）",
           'Button("编辑") { editingNote = note }' in cat)
+
+    print("\n== AF. 本轮：进度显示独立开关 ==")
+    prefs_src = (APP / "Core" / "Preferences.swift").read_text(encoding="utf-8")
+    paged = (APP / "Views" / "PagedReaderView.swift").read_text(encoding="utf-8")
+    reader = (APP / "Views" / "ReaderView.swift").read_text(encoding="utf-8")
+
+    check("页码 / 百分比显示是独立开关（不与页脚内容绑定）",
+          "var showReadingProgress: Bool = true" in prefs_src
+          and "showsProgress: prefs.showReadingProgress" in reader)
+    check("关掉后连页脚那一条留白也收掉",
+          "let progressOff = input?.showsProgress == false" in paged
+          and "guard input?.showsProgress != false else { return \"\" }" in paged)
 
     print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")
     if FAIL:

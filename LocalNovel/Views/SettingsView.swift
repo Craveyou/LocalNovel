@@ -208,6 +208,7 @@ struct SettingsView: View {
                         }
                     }
                     .pickerStyle(.segmented)
+                    Toggle("显示页码 / 百分比", isOn: binding(for: \.showReadingProgress))
                     Picker("页脚", selection: binding(for: \.footerMode)) {
                         ForEach(ReaderFooterMode.allCases) { mode in
                             Text(mode.label).tag(mode)

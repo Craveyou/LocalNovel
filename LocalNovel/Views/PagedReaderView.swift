@@ -67,6 +67,8 @@ struct PagedReaderInput {
     let footerMode: ReaderFooterMode
     let headerTopPadding: CGFloat
     let footerBottomPadding: CGFloat
+    /// 页码 / 百分比是否显示（关掉后正文可以多吃掉底部那一条）
+    let showsProgress: Bool
     /// 覆盖翻页的动画时长（秒）；0 = 不动画
     let flipDuration: Double
     /// 三块点击区的动作（左 / 中 / 右）
@@ -85,7 +87,7 @@ struct PagedReaderInput {
         let tail = paragraphs.last?.utf16.count ?? 0
         return "\(chapterId)|\(paragraphs.count)|\(head)|\(tail)|\(typography.identity)"
             + "|\(theme.hashValue)|\(title)|\(bookTitle)"
-            + "|\(headerMode.rawValue)|\(footerMode.rawValue)|\(headerTopPadding)|\(footerBottomPadding)"
+            + "|\(headerMode.rawValue)|\(footerMode.rawValue)|\(headerTopPadding)|\(footerBottomPadding)|" + "\(showsProgress)"
             + "|\(tapLeft.rawValue)|\(tapCenterAction.rawValue)|\(tapRight.rawValue)"
             + "|\(images.count)|\(avMedia.count)|\(hasNextChapter)|\(style.key)"
     }
@@ -294,7 +296,8 @@ class PagedBaseController: UIViewController {
         let side = max(input?.typography.horizontalPadding ?? 20, 4)
         let headerExtra: CGFloat = (input?.headerMode ?? .none) == .none
             ? 0 : 16 + (input?.headerTopPadding ?? 8) + 4
-        let footerExtra: CGFloat = (input?.footerMode ?? .page) == .none
+        let progressOff = input?.showsProgress == false
+        let footerExtra: CGFloat = progressOff || (input?.footerMode ?? .page) == .none
             ? 0 : 16 + (input?.footerBottomPadding ?? 6) + 4
         return view.bounds.inset(by: UIEdgeInsets(top: max(safe.top, 0) + 12 + headerExtra,
                                                   left: side,
@@ -450,6 +453,7 @@ class PagedBaseController: UIViewController {
     }
 
     private func footerText(page: Int) -> String {
+        guard input?.showsProgress != false else { return "" }
         guard let mode = input?.footerMode else { return "" }
         switch mode {
         case .percent: return TextPaginator.percentText(page: page, total: pages.count)
