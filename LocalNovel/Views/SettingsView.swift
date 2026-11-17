@@ -42,6 +42,12 @@ struct SettingsView: View {
         }
     }
 
+    private func removeFont(_ family: String) {
+        ReaderFontLibrary.remove(family: family)
+        prefs.customFontFamilies = ReaderFontLibrary.registerInstalled()
+        if prefs.fontFamily == family { prefs.fontFamily = "" }
+    }
+
     /// 主题色块
     private func themeSwatch(_ theme: ReaderTheme) -> some View {
         Button {
@@ -121,6 +127,55 @@ struct SettingsView: View {
                     .pickerStyle(.segmented)
                     Toggle("首行缩进两字", isOn: binding(for: \.firstLineIndent))
                     Toggle("繁体正文", isOn: binding(for: \.isTraditional))
+                }
+
+                Section("手势（仅小说，分页模式）") {
+                    Picker("左侧点击", selection: binding(for: \.tapLeft)) {
+                        ForEach(TapZoneAction.allCases) { action in
+                            Text(action.label).tag(action)
+                        }
+                    }
+                    Picker("中间点击", selection: binding(for: \.tapCenter)) {
+                        ForEach(TapZoneAction.allCases) { action in
+                            Text(action.label).tag(action)
+                        }
+                    }
+                    Picker("右侧点击", selection: binding(for: \.tapRight)) {
+                        ForEach(TapZoneAction.allCases) { action in
+                            Text(action.label).tag(action)
+                        }
+                    }
+                    Toggle("音量键翻页", isOn: binding(for: \.volumeKeyFlip))
+                    Text("开启后音量键不再调音量，改为翻页；其他 App 的音频可能被暂停。滚动模式不受影响。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section("启动") {
+                    Toggle("打开 App 直接进入上次读的书", isOn: binding(for: \.autoOpenLastBook))
+                }
+
+                Section("自定义字体") {
+                    Button {
+                        library.activeImport = .font
+                    } label: {
+                        Label("导入字体文件（ttf / otf）", systemImage: "plus.circle")
+                    }
+                    if prefs.customFontFamilies.isEmpty {
+                        Text("还没有导入字体。导入后可在「排版 → 字体」里选。")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(prefs.customFontFamilies, id: \.self) { family in
+                            HStack {
+                                Text(family)
+                                Spacer()
+                                Button("删除") { removeFont(family) }
+                                    .font(.footnote)
+                                    .foregroundStyle(.red)
+                            }
+                        }
+                    }
                 }
 
                 Section("章节标题（仅小说）") {

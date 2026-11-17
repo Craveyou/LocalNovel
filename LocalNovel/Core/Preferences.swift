@@ -230,6 +230,27 @@ final class Preferences: ObservableObject {
         didSet { if loaded { save() } }
     }
 
+    // MARK: 手势与启动（A 组）
+
+    /// 三块点击区各自的动作（默认左=上一页、中=菜单、右=下一页）
+    @Published var tapLeft: TapZoneAction = .prevPage {
+        didSet { if loaded { save() } }
+    }
+    @Published var tapCenter: TapZoneAction = .menu {
+        didSet { if loaded { save() } }
+    }
+    @Published var tapRight: TapZoneAction = .nextPage {
+        didSet { if loaded { save() } }
+    }
+    /// 音量键翻页（开启后其他 App 的音频可能被抢占，默认关）
+    @Published var volumeKeyFlip: Bool = false {
+        didSet { if loaded { save() } }
+    }
+    /// 启动直接打开上次在读的那本书
+    @Published var autoOpenLastBook: Bool = false {
+        didSet { if loaded { save() } }
+    }
+
     // MARK: 全局外观
 
     @Published var appearance: AppearanceMode = .system {
@@ -375,6 +396,14 @@ final class Preferences: ObservableObject {
         footerBottomPadding = number(Keys.footerBottom, 6, 0, 40)
         readerBrightness = Double(number(Keys.brightness, 1.0, 0.25, 1.0))
         flipDuration = Double(number(Keys.flipDuration, 0.28, 0.05, 0.8))
+        tapLeft = TapZoneAction(rawValue: defaults.object(forKey: Keys.tapLeft) == nil
+                                ? 0 : defaults.integer(forKey: Keys.tapLeft)) ?? .prevPage
+        tapCenter = TapZoneAction(rawValue: defaults.object(forKey: Keys.tapCenter) == nil
+                                  ? 2 : defaults.integer(forKey: Keys.tapCenter)) ?? .menu
+        tapRight = TapZoneAction(rawValue: defaults.object(forKey: Keys.tapRight) == nil
+                                 ? 1 : defaults.integer(forKey: Keys.tapRight)) ?? .nextPage
+        volumeKeyFlip = defaults.bool(forKey: Keys.volumeKeyFlip)
+        autoOpenLastBook = defaults.bool(forKey: Keys.autoOpenLastBook)
         firstLineIndent = defaults.object(forKey: Keys.indent) == nil
             ? true : defaults.bool(forKey: Keys.indent)
         keepScreenOn = defaults.bool(forKey: Keys.keepScreenOn)
@@ -445,6 +474,11 @@ final class Preferences: ObservableObject {
         static let customThemes = "LocalNovel.customThemes"
         static let brightness = "LocalNovel.readerBrightness"
         static let flipDuration = "LocalNovel.flipDuration"
+        static let tapLeft = "LocalNovel.tapLeft"
+        static let tapCenter = "LocalNovel.tapCenter"
+        static let tapRight = "LocalNovel.tapRight"
+        static let volumeKeyFlip = "LocalNovel.volumeKeyFlip"
+        static let autoOpenLastBook = "LocalNovel.autoOpenLastBook"
         static let keepScreenOn = "LocalNovel.keepScreenOn"
     }
 
@@ -490,6 +524,11 @@ final class Preferences: ObservableObject {
         }
         defaults.set(readerBrightness, forKey: Keys.brightness)
         defaults.set(flipDuration, forKey: Keys.flipDuration)
+        defaults.set(tapLeft.rawValue, forKey: Keys.tapLeft)
+        defaults.set(tapCenter.rawValue, forKey: Keys.tapCenter)
+        defaults.set(tapRight.rawValue, forKey: Keys.tapRight)
+        defaults.set(volumeKeyFlip, forKey: Keys.volumeKeyFlip)
+        defaults.set(autoOpenLastBook, forKey: Keys.autoOpenLastBook)
         defaults.set(keepScreenOn, forKey: Keys.keepScreenOn)
     }
 }

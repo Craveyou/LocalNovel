@@ -69,6 +69,13 @@ struct PagedReaderInput {
     let footerBottomPadding: CGFloat
     /// 覆盖翻页的动画时长（秒）；0 = 不动画
     let flipDuration: Double
+    /// 三块点击区的动作（左 / 中 / 右）
+    let tapLeft: TapZoneAction
+    let tapCenterAction: TapZoneAction
+    let tapRight: TapZoneAction
+    /// 外部翻页指令（音量键）：序号变化即执行一次 delta；不参与排版指纹
+    let pageCommand: Int
+    let pageCommandDelta: Int
 
     /// 只有影响排版的参数变化才重建；restoreParagraph 故意不参与。
     /// 用 O(1) 的指纹（段数 + 首末段长度），不再遍历全部段落算总长：
@@ -79,6 +86,7 @@ struct PagedReaderInput {
         return "\(chapterId)|\(paragraphs.count)|\(head)|\(tail)|\(typography.identity)"
             + "|\(theme.hashValue)|\(title)|\(bookTitle)"
             + "|\(headerMode.rawValue)|\(footerMode.rawValue)|\(headerTopPadding)|\(footerBottomPadding)"
+            + "|\(tapLeft.rawValue)|\(tapCenterAction.rawValue)|\(tapRight.rawValue)"
             + "|\(images.count)|\(avMedia.count)|\(hasNextChapter)|\(style.key)"
     }
 }
@@ -147,6 +155,8 @@ class PagedBaseController: UIViewController {
     private(set) var measureAttributed: NSAttributedString?
 
     private var signature = ""
+    /// 已执行的翻页指令序号（音量键翻页用，不触发重排）
+    private var lastPageCommand = -1
     private var contentSize: CGSize = .zero
     private var needsRebuild = true
     /// 记忆段落：用户翻页之前，每次 rebuild 都用它定位
@@ -262,6 +272,13 @@ class PagedBaseController: UIViewController {
             nextTriggered = false
         }
         input = new
+        // 音量键翻页：序号变了才动，避免每次 SwiftUI 更新都多翻一页
+        if new.pageCommand != lastPageCommand {
+            if lastPageCommand >= 0, new.pageCommandDelta != 0 {
+                move(by: new.pageCommandDelta)
+            }
+            lastPageCommand = new.pageCommand
+        }
         applyThemeChrome()
         if new.signature != signature {
             signature = new.signature
@@ -385,14 +402,24 @@ class PagedBaseController: UIViewController {
     @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
         let point = gesture.location(in: view)
         let width = max(view.bounds.width, 1)
-        let x = point.x
-        if x < width * 0.28 {
-            move(by: -1)
-        } else if x > width * 0.72 {
-            move(by: 1)
+        // 三块点击区可自由配（上一页 / 下一页 / 菜单 / 无），默认左翻右翻中间出菜单
+        let zone: TapZoneAction
+        if point.x < width * 0.28 {
+            zone = input?.tapLeft ?? .prevPage
+        } else if point.x > width * 0.72 {
+            zone = input?.tapRight ?? .nextPage
         } else {
-            // 中间区域：弹出 / 收起控制菜单（字号、行距、翻页、外观、目录）
-            onTapCenter?()
+            zone = input?.tapCenterAction ?? .menu
+        }
+        perform(zone)
+    }
+
+    private func perform(_ zone: TapZoneAction) {
+        switch zone {
+        case .prevPage: move(by: -1)
+        case .nextPage: move(by: 1)
+        case .menu:     onTapCenter?()
+        case .none:     break
         }
     }
 

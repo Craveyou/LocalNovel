@@ -106,6 +106,27 @@ enum ReaderFonts {
     }
 }
 
+// MARK: 点击区域
+
+/// 屏幕左 / 中 / 右三块区域各自做什么（对齐千阅的可配置点击区）
+enum TapZoneAction: Int, CaseIterable, Identifiable {
+    case prevPage = 0
+    case nextPage = 1
+    case menu = 2
+    case none = 3
+
+    var id: Int { rawValue }
+
+    var label: String {
+        switch self {
+        case .prevPage: return "上一页"
+        case .nextPage: return "下一页"
+        case .menu:     return "菜单"
+        case .none:     return "无"
+        }
+    }
+}
+
 // MARK: 章节标题样式
 
 struct ChapterTitleStyle: Equatable {

@@ -349,8 +349,8 @@ def main():
           and "DocumentsBootstrap.guideFileName" in resolver)
     check("切回前台补写说明文件", "DocumentsBootstrap.ensureVisibleInFilesApp()" in store)
     check("版本号提升以刷新系统元数据",
-          "<string>2.11.2</string>" in plist and "CURRENT_PROJECT_VERSION = 3" in pbx
-          and "MARKETING_VERSION = 2.11.2" in pbx)
+          "<string>2.11.3</string>" in plist and "CURRENT_PROJECT_VERSION = 4" in pbx
+          and "MARKETING_VERSION = 2.11.3" in pbx)
     check("UI 给出「文件 App 搜索本地小说」兜底路径",
           "搜索框搜「本地小说」" in welcome and "搜索「本地小说」" in store)
     check("AppIcon asset catalog（1024 + Contents.json）",
@@ -713,9 +713,9 @@ def main():
     check("文档正文含双格式包一节",
           "### 5. 同一部书按格式分成两个包（PDF 包 + 图片包）"
           in (ROOT / "Docs" / "漫画目录结构说明.md").read_text(encoding="utf-8"))
-    check("版本升到 2.11.2 / build 3",
-          "<string>2.11.2</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>3</string>" in plist)
+    check("版本升到 2.11.3 / build 4",
+          "<string>2.11.3</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>4</string>" in plist)
 
 
     print("\n== N. 本轮：底部三页 / 短剧 / NAS 连接 ==")
@@ -956,9 +956,9 @@ def main():
     check("NAS 书目录里直接放文件时仍当作一本书",
           "把目录本身当成一本书" in nas_lib_views
           and "hasMedia ? 1 : nil" in nas_lib)
-    check("版本升到 2.11.2 / build 3",
-          "<string>2.11.2</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>3</string>" in plist)
+    check("版本升到 2.11.3 / build 4",
+          "<string>2.11.3</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>4</string>" in plist)
 
     print("\n== S. 本轮：txt 乱码（UTF-16 误判 / GBK / Big5） ==")
     encoding_src = (APP / "Core" / "TextEncoding.swift").read_text(encoding="utf-8")
@@ -1263,8 +1263,8 @@ def main():
     check("相邻章正文预取（切章不空等）",
           "func warmNextChapter()" in reader
           and "library.paragraphs(for: next)" in reader)
-    check("版本已升到 2.11.2 / build 3",
-          "2.11.2" in (APP / "Info.plist").read_text(encoding="utf-8"))
+    check("版本已升到 2.11.3 / build 4",
+          "2.11.3" in (APP / "Info.plist").read_text(encoding="utf-8"))
 
     print("\n== Z. 本轮：上下菜单栏 + 进度滑杆 + 目录面板 ==")
     bars = (APP / "Views" / "ReaderChromeBars.swift").read_text(encoding="utf-8")
@@ -1302,6 +1302,41 @@ def main():
     check("白天 / 夜间一键切换（按主题的 isNight 挑）",
           "private func toggleDayNight()" in reader
           and "$0.isNight == wantNight" in reader)
+
+    print("\n== AA. 本轮：点击区可配 / 音量键翻页 / 启动进上次书 / 字体导入 ==")
+    paged = (APP / "Views" / "PagedReaderView.swift").read_text(encoding="utf-8")
+    reader = (APP / "Views" / "ReaderView.swift").read_text(encoding="utf-8")
+    prefs_src = (APP / "Core" / "Preferences.swift").read_text(encoding="utf-8")
+    settings = (APP / "Views" / "SettingsView.swift").read_text(encoding="utf-8")
+    root = (APP / "Views" / "RootView.swift").read_text(encoding="utf-8")
+    fontlib = (APP / "Core" / "ReaderFontLibrary.swift").read_text(encoding="utf-8")
+    vol = (APP / "Core" / "VolumeKeyPager.swift").read_text(encoding="utf-8")
+
+    check("三块点击区各自可选「上一页 / 下一页 / 菜单 / 无」",
+          "enum TapZoneAction" in (APP / "Core" / "ReaderStyle.swift").read_text(encoding="utf-8")
+          and all(k in prefs_src for k in ["var tapLeft", "var tapCenter", "var tapRight"])
+          and "zone = input?.tapLeft ?? .prevPage" in paged
+          and "private func perform(_ zone: TapZoneAction)" in paged)
+    check("音量键翻页：KVO 监听系统音量 + 隐藏 MPVolumeView + 拨回基准值",
+          "outputVolume" in vol and "MPVolumeView" in vol
+          and "slider.value = target" in vol
+          and "setCategory(.ambient" in vol)
+    check("音量键只给小说分页模式，且用指令号驱动（不触发重排）",
+          "guard category == .novel, prefs.pageTurn.isPaged, prefs.volumeKeyFlip" in reader
+          and "let pageCommand: Int" in paged
+          and "if new.pageCommand != lastPageCommand" in paged)
+    check("启动可直接进入上次读的书（书库到位后再跳）",
+          "autoOpenLastBookIfNeeded" in root
+          and "ProgressStore.shared.lastChapterId(for: book.id)" in root
+          and "didAutoOpen" in root)
+    check("字体导入复用唯一的 fileImporter（不新增第二个）",
+          "case font" in (APP / "Core" / "LibraryStore.swift").read_text(encoding="utf-8")
+          and "library.activeImport = .font" in settings
+          and "handleFontImport" in root
+          and ".fileImporter" not in settings)
+    check("字体落在沙盒并幂等注册，启动时刷新列表",
+          "CTFontManagerRegisterFontsForURL" in fontlib
+          and "ReaderFontLibrary.registerInstalled()" in (APP / "App" / "LocalNovelApp.swift").read_text(encoding="utf-8"))
 
     print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")
     if FAIL:

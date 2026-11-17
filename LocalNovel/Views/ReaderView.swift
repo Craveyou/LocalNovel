@@ -49,6 +49,11 @@ struct ReaderView: View {
     @State private var showCatalog = false
     /// 拖动进度滑杆时浮出的目标章节名
     @State private var scrubTitle: String?
+    /// 音量键翻页：给分页引擎发指令（序号 + 方向）
+    @State private var pageCommandSeq = 0
+    @State private var pageCommandDelta = 0
+    /// 音量键监听器（开启时才创建）
+    @State private var volumePager: VolumeKeyPager?
     /// 滚动模式：到底之后的上拉是否还有效（切过章或松手回弹后重新武装，保证一次一记）
     @State private var bottomPullArmed = true
 
@@ -135,6 +140,27 @@ struct ReaderView: View {
     /// 阅读时常亮（小说设置项，退出阅读自动还原）
     private func syncIdleTimer() {
         UIApplication.shared.isIdleTimerDisabled = prefs.keepScreenOn
+    }
+
+    /// 音量键翻页：只给小说开，且必须是分页模式（滚动模式没有「翻一页」的概念）
+    private func syncVolumePager() {
+        guard category == .novel, prefs.pageTurn.isPaged, prefs.volumeKeyFlip else {
+            volumePager?.stop()
+            volumePager = nil
+            return
+        }
+        if volumePager == nil {
+            let pager = VolumeKeyPager()
+            pager.onUp = { sendPageCommand(1) }
+            pager.onDown = { sendPageCommand(-1) }
+            pager.start()
+            volumePager = pager
+        }
+    }
+
+    private func sendPageCommand(_ delta: Int) {
+        pageCommandDelta = delta
+        pageCommandSeq += 1
     }
 
     /// 预取下一章正文：本地书不用等网络，但切章要重新读文件 + 分段 + 切章判断，
@@ -389,15 +415,19 @@ struct ReaderView: View {
         .onAppear {
             ReadingChrome.shared.enter()
             syncIdleTimer()
+            syncVolumePager()
             warmNextChapter()
         }
         .onChange(of: prefs.keepScreenOn) { _, _ in syncIdleTimer() }
+        .onChange(of: prefs.volumeKeyFlip) { _, _ in syncVolumePager() }
         .onDisappear {
             ReadingChrome.shared.leave()
             // 兜底隐藏是在布局阶段强制设置的，退出阅读时显式还原一次，
             // 避免 representable 销毁顺序不同导致标签栏一直不回来
             TabBarVisibility.setHidden(false, animated: false)
             UIApplication.shared.isIdleTimerDisabled = false
+            volumePager?.stop()
+            volumePager = nil
             ProgressStore.shared.flushAnchors()
         }
     }
@@ -620,7 +650,12 @@ struct ReaderView: View {
                                     footerMode: prefs.footerMode,
                                     headerTopPadding: prefs.headerTopPadding,
                                     footerBottomPadding: prefs.footerBottomPadding,
-                                    flipDuration: prefs.flipDuration),
+                                    flipDuration: prefs.flipDuration,
+                                    tapLeft: prefs.tapLeft,
+                                    tapCenterAction: prefs.tapCenter,
+                                    tapRight: prefs.tapRight,
+                                    pageCommand: pageCommandSeq,
+                                    pageCommandDelta: pageCommandDelta),
             onProgress: { paragraph in
                 ProgressStore.shared.noteAnchor("blk-p\(paragraph)", for: chapter.id)
             },
