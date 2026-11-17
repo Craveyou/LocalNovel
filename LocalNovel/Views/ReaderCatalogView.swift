@@ -30,6 +30,8 @@ struct ReaderCatalogView: View {
     let theme: ReaderTheme
     let onAddBookmark: (Int) -> Void
     let onSelect: (Chapter) -> Void
+    /// 精确跳段：点书签 / 笔记时连段落一起带回去
+    let onSelectParagraph: (Chapter, Int) -> Void
     let onDismiss: () -> Void
 
     @ObservedObject private var annotations = AnnotationStore.shared
@@ -253,7 +255,7 @@ struct ReaderCatalogView: View {
                 ForEach(list) { mark in
                     Button {
                         if let chapter = chapters.first(where: { $0.id == mark.chapterId }) {
-                            onSelect(chapter)
+                            onSelectParagraph(chapter, mark.paragraph)
                         }
                     } label: {
                         VStack(alignment: .leading, spacing: 4) {
@@ -296,7 +298,9 @@ struct ReaderCatalogView: View {
                 if list.isEmpty { emptyHint("还没有笔记。下方「记笔记」会记录当前章节与段落。") }
                 ForEach(list) { note in
                     Button {
-                        editingNote = note
+                        if let chapter = chapters.first(where: { $0.id == note.chapterId }) {
+                            onSelectParagraph(chapter, note.paragraph)
+                        }
                     } label: {
                         VStack(alignment: .leading, spacing: 4) {
                             HStack {
@@ -328,6 +332,7 @@ struct ReaderCatalogView: View {
                     }
                     .buttonStyle(.plain)
                     .swipeActions {
+                        Button("编辑") { editingNote = note }
                         Button("删除", role: .destructive) { annotations.remove(note) }
                     }
                 }

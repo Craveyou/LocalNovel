@@ -349,8 +349,8 @@ def main():
           and "DocumentsBootstrap.guideFileName" in resolver)
     check("切回前台补写说明文件", "DocumentsBootstrap.ensureVisibleInFilesApp()" in store)
     check("版本号提升以刷新系统元数据",
-          "<string>2.11.7</string>" in plist and "CURRENT_PROJECT_VERSION = 8" in pbx
-          and "MARKETING_VERSION = 2.11.7" in pbx)
+          "<string>2.11.8</string>" in plist and "CURRENT_PROJECT_VERSION = 9" in pbx
+          and "MARKETING_VERSION = 2.11.8" in pbx)
     check("UI 给出「文件 App 搜索本地小说」兜底路径",
           "搜索框搜「本地小说」" in welcome and "搜索「本地小说」" in store)
     check("AppIcon asset catalog（1024 + Contents.json）",
@@ -713,9 +713,9 @@ def main():
     check("文档正文含双格式包一节",
           "### 5. 同一部书按格式分成两个包（PDF 包 + 图片包）"
           in (ROOT / "Docs" / "漫画目录结构说明.md").read_text(encoding="utf-8"))
-    check("版本升到 2.11.7 / build 7",
-          "<string>2.11.7</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>8</string>" in plist)
+    check("版本升到 2.11.8 / build 7",
+          "<string>2.11.8</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>9</string>" in plist)
 
 
     print("\n== N. 本轮：底部三页 / 短剧 / NAS 连接 ==")
@@ -956,9 +956,9 @@ def main():
     check("NAS 书目录里直接放文件时仍当作一本书",
           "把目录本身当成一本书" in nas_lib_views
           and "hasMedia ? 1 : nil" in nas_lib)
-    check("版本升到 2.11.7 / build 7",
-          "<string>2.11.7</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>8</string>" in plist)
+    check("版本升到 2.11.8 / build 7",
+          "<string>2.11.8</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>9</string>" in plist)
 
     print("\n== S. 本轮：txt 乱码（UTF-16 误判 / GBK / Big5） ==")
     encoding_src = (APP / "Core" / "TextEncoding.swift").read_text(encoding="utf-8")
@@ -1264,8 +1264,8 @@ def main():
     check("相邻章正文预取（切章不空等）",
           "func warmNextChapter()" in reader
           and "library.paragraphs(for: next)" in reader)
-    check("版本已升到 2.11.7 / build 7",
-          "2.11.7" in (APP / "Info.plist").read_text(encoding="utf-8"))
+    check("版本已升到 2.11.8 / build 7",
+          "2.11.8" in (APP / "Info.plist").read_text(encoding="utf-8"))
 
     print("\n== Z. 本轮：上下菜单栏 + 进度滑杆 + 目录面板 ==")
     bars = (APP / "Views" / "ReaderChromeBars.swift").read_text(encoding="utf-8")
@@ -1418,6 +1418,24 @@ def main():
           "private func toggleBookmark()" in reader
           and "annotations.remove(mark)" in reader
           and "addBookmark(at: currentParagraphIndex)" in reader)
+
+    print("\n== AE. 本轮：书签 / 笔记精确跳段 ==")
+    ann = (APP / "Core" / "ReaderAnnotations.swift").read_text(encoding="utf-8")
+    cat = (APP / "Views" / "ReaderCatalogView.swift").read_text(encoding="utf-8")
+    reader = (APP / "Views" / "ReaderView.swift").read_text(encoding="utf-8")
+    root = (APP / "Views" / "RootView.swift").read_text(encoding="utf-8")
+
+    check("书签 / 笔记带上段落下标跳转",
+          "let onSelectParagraph: (Chapter, Int) -> Void" in cat
+          and "onSelectParagraph(chapter, mark.paragraph)" in cat
+          and "onSelectParagraph(chapter, note.paragraph)" in cat)
+    check("待应用锚点先暂存、选章时再消费（不被「主动选章」重置）",
+          "var pendingJump: (chapterId: String, anchor: String)?" in ann
+          and "func consumePendingAnchor(for chapterId: String)" in ann
+          and 'AnnotationStore.shared.pendingJump = (target.id, "blk-p\\(paragraph)")' in reader
+          and "consumePendingAnchor(for: chapter.id)" in root)
+    check("笔记列表可左滑编辑（点条目仍是跳转）",
+          'Button("编辑") { editingNote = note }' in cat)
 
     print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")
     if FAIL:

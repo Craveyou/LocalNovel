@@ -97,6 +97,9 @@ struct RootView: View {
             ProgressStore.shared.setLastChapter(chapter.id, for: book.id)
             if autoRestoredChapterId == chapter.id {
                 autoRestoredChapterId = nil   // 自动恢复：保留该章段落锚点，续读
+            } else if let anchor = AnnotationStore.shared.consumePendingAnchor(for: chapter.id) {
+                // 书签 / 笔记跳转：用它带来的锚点，别重置成章首
+                ProgressStore.shared.setAnchor(anchor, for: chapter.id)
             } else {
                 ProgressStore.shared.setAnchor("blk-p0", for: chapter.id) // 主动选章：从章首
             }

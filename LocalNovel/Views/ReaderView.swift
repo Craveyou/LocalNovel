@@ -191,6 +191,16 @@ struct ReaderView: View {
         }
     }
 
+    /// 跳到某章某段：先记下待应用锚点，再切章（RootView 选中后按它设锚点）
+    private func jump(to target: Chapter, paragraph: Int) {
+        AnnotationStore.shared.pendingJump = (target.id, "blk-p\(paragraph)")
+        withAnimation(.easeOut(duration: 0.18)) {
+            showCatalog = false
+            showMenu = false
+        }
+        onSelectChapter(target)
+    }
+
     /// 加书签：位置 + 当时段落的一小段原文做预览
     private func addBookmark(at paragraph: Int) {
         let list = paragraphs
@@ -445,6 +455,9 @@ struct ReaderView: View {
                                   currentParagraph: currentParagraphIndex,
                                   theme: prefs.theme,
                                   onAddBookmark: addBookmark(at:),
+                                  onSelectParagraph: { target, paragraph in
+                                      jump(to: target, paragraph: paragraph)
+                                  },
                                   onSelect: { picked in
                                       showCatalog = false
                                       showMenu = false

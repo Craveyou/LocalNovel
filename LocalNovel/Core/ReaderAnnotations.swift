@@ -37,6 +37,10 @@ final class AnnotationStore: ObservableObject {
     @Published private(set) var bookmarks: [ReaderBookmark] = []
     @Published private(set) var notes: [ReaderNote] = []
 
+    /// 从书签 / 笔记跳转时暂存的目标位置：RootView 选中章节后按它设锚点，
+    /// 否则「主动选章」会把锚点重置成章首，精确跳段就丢了
+    var pendingJump: (chapterId: String, anchor: String)?
+
     private let defaults = UserDefaults.standard
     private enum Keys {
         static let bookmarks = "LocalNovel.bookmarks"
@@ -52,6 +56,13 @@ final class AnnotationStore: ObservableObject {
            let list = try? JSONDecoder().decode([ReaderNote].self, from: data) {
             notes = list
         }
+    }
+
+    /// 取走（并清空）某章待应用的跳转锚点
+    func consumePendingAnchor(for chapterId: String) -> String? {
+        guard let pending = pendingJump, pending.chapterId == chapterId else { return nil }
+        pendingJump = nil
+        return pending.anchor
     }
 
     // MARK: 查询
