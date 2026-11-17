@@ -168,7 +168,9 @@ enum WebDAVClient {
     static let session: URLSession = {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 12
-        config.timeoutIntervalForResource = 60
+        // 单次传输上限要留够：PDF / 大图走的是请求级 120s，
+        // 会话级 60s 会先到点，把「网络慢」误报成「连不上」
+        config.timeoutIntervalForResource = 180
         config.httpMaximumConnectionsPerHost = 4
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
         return URLSession(configuration: config,
@@ -182,6 +184,11 @@ enum WebDAVClient {
     private static func send(_ request: URLRequest) async throws -> (Data, URLResponse) {
         do {
             return try await session.data(for: request)
+        } catch let error as URLError where error.code == .cancelled {
+            // 主动取消（快速返回列表 / 关掉章节页）不是「连不上」。
+            // 原来一律映射成 unreachable，会顺手作废已探测好的连接，
+            // 下次进列表又要重新探内网 + 外网各 2.5 秒。
+            throw CancellationError()
         } catch {
             throw WebDAVError.unreachable
         }

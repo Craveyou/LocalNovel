@@ -15,12 +15,16 @@ enum BookImportError: LocalizedError {
     case inaccessible(String)
     case nothingToImport
     case documentsUnavailable(String)
+    /// 覆盖同名书失败，且旧副本没能自动挪回原位（备份路径一并带出，别静默丢书）
+    case rollbackFailed(String)
 
     var errorDescription: String? {
         switch self {
         case .inaccessible(let s): return "无法读取所选内容：\(s)"
         case .nothingToImport: return "所选位置没有找到可导入的书"
         case .documentsUnavailable(let s): return "无法准备 App 文档目录：\(s)"
+        case .rollbackFailed(let backup):
+            return "覆盖导入失败，且原书没能自动还原。原书备份仍在：\(backup)"
         }
     }
 }
@@ -29,6 +33,8 @@ enum BookImporter {
     struct Report {
         var imported: [String] = []
         var skipped: [String] = []
+        /// 因本批内重名而自动改名的条目（原名 → 新名）
+        var renamed: [String] = []
         var fileCount = 0
         var target: BookCategory?
         var error: String?
@@ -40,6 +46,7 @@ enum BookImporter {
             var s = "已复制 \(imported.count) 项 / \(fileCount) 个文件到「\(target?.label ?? "书库")」："
                 + imported.prefix(3).joined(separator: "、")
             if !skipped.isEmpty { s += "；跳过 \(skipped.count) 项" }
+            if !renamed.isEmpty { s += "；\(renamed.count) 项重名已自动改名" }
             return s
         }
     }
@@ -93,8 +100,18 @@ enum BookImporter {
             return report
         }
 
+        // 小说文件夹是「递归拍平」导入的：多级目录里的同名文件（上册/第1章.txt、
+        // 下册/第1章.txt）会撞到同一个目标名。原来后一个直接覆盖前一个，
+        // 盘上只剩一本但提示「已复制 N 项」—— 等于静默丢书。这里在本批内自动改名。
+        var usedNames: Set<String> = []
         for item in items {
-            let name = item.lastPathComponent
+            var name = item.lastPathComponent
+            if usedNames.contains(name) {
+                let renamed = uniqueName(for: name, used: usedNames, in: targetDir, fm: fileManager)
+                report.renamed.append("\(name) → \(renamed)")
+                name = renamed
+            }
+            usedNames.insert(name)
             let dest = targetDir.appendingPathComponent(name)
             do {
                 try replaceCopy(from: item, to: dest, in: targetDir, fm: fileManager)
@@ -106,6 +123,25 @@ enum BookImporter {
             }
         }
         return report
+    }
+
+    /// 本批导入内的重名：追加「(2)」「(3)」…，同时避开书库里已存在的名字
+    private static func uniqueName(for name: String, used: Set<String>,
+                                   in dir: URL, fm: FileManager) -> String {
+        let url = URL(fileURLWithPath: name)
+        let base = url.deletingPathExtension().lastPathComponent
+        let ext = url.pathExtension
+        var index = 2
+        while index <= 999 {
+            let candidate = ext.isEmpty ? "\(base) (\(index))" : "\(base) (\(index)).\(ext)"
+            if !used.contains(candidate),
+               !fm.fileExists(atPath: dir.appendingPathComponent(candidate).path) {
+                return candidate
+            }
+            index += 1
+        }
+        let suffix = UUID().uuidString.prefix(4)
+        return ext.isEmpty ? "\(base) \(suffix)" : "\(base) \(suffix).\(ext)"
     }
 
     // MARK: - 要复制哪些项目
@@ -195,23 +231,80 @@ enum BookImporter {
 
     // MARK: - 复制
 
-    /// 同名目标整体替换；先移走旧副本，复制成功再删，失败回滚，绝不留下半本书
+    /// 同名目标整体替换；先移走旧副本，复制成功再删，失败回滚，绝不留下半本书。
+    ///
+    /// 回滚的坑：原来先 `removeItem(dest)` 再 `moveItem(backup → dest)`，
+    /// 一旦 dest 删不干净（受保护路径 / 半成品里有只读文件），move 也会失败，
+    /// 用户原书就只剩一个隐藏的 `.ln-backup-*`，等于凭空消失。
+    /// 现在的顺序是「半成品先挪开 → 旧副本移回 → 才清半成品」，
+    /// 任一步失败都保留旧副本，并把备份路径写进错误里。
     private static func replaceCopy(from src: URL, to dest: URL, in docs: URL,
                                     fm: FileManager) throws {
         if !fm.fileExists(atPath: dest.path) {
             try fm.copyItem(at: src, to: dest)
             return
         }
-        let backup = docs.appendingPathComponent(".ln-backup-\(UUID().uuidString)")
+        // 备份名带上原文件名，进程被杀时下次启动能认出来还原（见 recoverInterruptedReplacements）
+        let backup = docs.appendingPathComponent(
+            ".ln-backup-\(UUID().uuidString)-\(dest.lastPathComponent)")
         try fm.moveItem(at: dest, to: backup)
         do {
             try fm.copyItem(at: src, to: dest)
             try? fm.removeItem(at: backup)
         } catch {
-            try? fm.removeItem(at: dest)
-            try? fm.moveItem(at: backup, to: dest)
+            let partial = docs.appendingPathComponent(".ln-partial-\(UUID().uuidString)")
+            if fm.fileExists(atPath: dest.path) {
+                do {
+                    try fm.moveItem(at: dest, to: partial)
+                } catch {
+                    // 半成品挪不动：不动旧副本，把它留在原处，交给恢复流程
+                    throw BookImportError.rollbackFailed(backup.path)
+                }
+            }
+            do {
+                try fm.moveItem(at: backup, to: dest)
+                try? fm.removeItem(at: partial)
+            } catch {
+                throw BookImportError.rollbackFailed(backup.path)
+            }
             throw error
         }
+    }
+
+    /// 启动时补救「覆盖导入中途被杀」留下的隐藏备份：
+    /// 备份名形如 `.ln-backup-<uuid>-<原名>`，若原位置为空就把旧书挪回去。
+    /// 备份散落在各分区 / 系列目录里，所以按目录递归（限深 3 层）。
+    /// 返回还原的条目数。
+    @discardableResult
+    static func recoverInterruptedReplacements(in root: URL,
+                                               depth: Int = 0,
+                                               fileManager fm: FileManager = .default) -> Int {
+        guard depth <= 3 else { return 0 }
+        guard let items = try? fm.contentsOfDirectory(at: root,
+                                                      includingPropertiesForKeys: [.isDirectoryKey],
+                                                      options: []) else { return 0 }
+        var restored = 0
+        for item in items {
+            let name = item.lastPathComponent
+            if name.hasPrefix(".ln-backup-") {
+                // 去掉 `.ln-backup-<uuid>-` 前缀，剩下的才是原文件名（可能含连字符）
+                let rest = name.dropFirst(".ln-backup-".count)
+                guard let dash = rest.firstIndex(of: "-") else { continue }
+                let original = String(rest[rest.index(after: dash)...])
+                guard !original.isEmpty else { continue }
+                let dest = root.appendingPathComponent(original)
+                guard !fm.fileExists(atPath: dest.path) else { continue }
+                if (try? fm.moveItem(at: item, to: dest)) != nil { restored += 1 }
+                continue
+            }
+            let isDir = (try? item.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+            if isDir, !MediaResolver.isHidden(name) {
+                restored += recoverInterruptedReplacements(in: item,
+                                                           depth: depth + 1,
+                                                           fileManager: fm)
+            }
+        }
+        return restored
     }
 
     private static func visibleItems(at url: URL, fm: FileManager) throws -> [URL] {

@@ -16,13 +16,16 @@ final class LocalMediaPlayer: ObservableObject {
     @Published private(set) var videoAspect: CGFloat?
 
     let player: AVPlayer
-    private let chapterId: String
+    /// 进度按「章 + 媒体」存储：同一章里可能挂多个视频/音频，只按章存会互相串台
+    private let progressKey: String
     private var timeObserver: Any?
+    private var endObserver: NSObjectProtocol?
     /// 长按开始前是否在播放，用于松手后精确还原状态
     private var resumeAfterBoost = false
 
-    init(url: URL, chapterId: String, headers: [String: String] = [:]) {
-        self.chapterId = chapterId
+    init(url: URL, chapterId: String, headers: [String: String] = [:],
+         progressKey: String? = nil) {
+        self.progressKey = progressKey ?? chapterId
         // 远端（NAS / WebDAV）视频要带认证头；本地 file:// 时 headers 为空
         let asset = headers.isEmpty
             ? AVURLAsset(url: url)
@@ -37,10 +40,33 @@ final class LocalMediaPlayer: ObservableObject {
         let assetDuration = headers.isEmpty ? CMTimeGetSeconds(item.asset.duration) : 0
         if assetDuration.isFinite, assetDuration > 0 { duration = assetDuration }
 
-        let saved = ProgressStore.shared.mediaTime(for: chapterId)
-        if saved > 0, assetDuration.isFinite, saved < assetDuration - 1 {
-            p.seek(to: CMTime(seconds: saved, preferredTimescale: 600))
-            currentTime = saved
+        // 恢复进度：不能拿 assetDuration 当门槛 —— 远端视频这里恒为 0，
+        // 原来那个 `saved < assetDuration - 1` 永远不成立，NAS 视频永远从头播。
+        // 兼容旧数据：以前按 chapterId 存，单媒体章节的进度能直接接上。
+        var saved = ProgressStore.shared.mediaTime(for: progressKey)
+        if saved <= 1, progressKey != chapterId {
+            saved = ProgressStore.shared.mediaTime(for: chapterId)
+        }
+        if saved > 1 {
+            let reachedEnd = assetDuration.isFinite && assetDuration > 0
+                && saved >= assetDuration - 1
+            if !reachedEnd {
+                p.seek(to: CMTime(seconds: saved, preferredTimescale: 600))
+                currentTime = saved
+            }
+        }
+
+        // 播完必须自己收状态：否则 isPlaying 还是 true，按钮显示「暂停」，
+        // 点一下执行的是 pause()，播放器停在末尾再也起不来。
+        endObserver = NotificationCenter.default.addObserver(
+            forName: AVPlayerItem.didPlayToEndTime, object: item, queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.isPlaying = false
+            self.isBoosting = false
+            self.player.rate = 1.0
+            // 清掉记忆：下次点播放从头开始，而不是又停在结尾一动不动
+            ProgressStore.shared.setMediaTime(0, for: self.progressKey)
         }
 
         timeObserver = p.addPeriodicTimeObserver(
@@ -74,12 +100,17 @@ final class LocalMediaPlayer: ObservableObject {
     deinit {
         player.pause()
         if let observer = timeObserver { player.removeTimeObserver(observer) }
+        if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
         try? AVAudioSession.sharedInstance().setActive(false)
     }
 
     func toggle() { isPlaying ? pause() : play() }
 
     func play() {
+        // 已经播到结尾：先回到开头。否则 play() 之后停在最后一帧，看起来毫无反应。
+        if duration > 1, currentTime >= duration - 0.5 {
+            seek(to: 0)
+        }
         do {
             // .playback 保证有声；未声明后台模式，App 挂起即停
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [])
@@ -95,7 +126,7 @@ final class LocalMediaPlayer: ObservableObject {
         player.pause()
         isPlaying = false
         isBoosting = false
-        ProgressStore.shared.setMediaTime(currentTime, for: chapterId)
+        ProgressStore.shared.setMediaTime(currentTime, for: progressKey)
     }
 
     /// 长按临时倍速：按住以目标倍速播放，松手还原长按前的播放状态。

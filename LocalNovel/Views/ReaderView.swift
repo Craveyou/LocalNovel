@@ -53,6 +53,11 @@ struct ReaderView: View {
     /// 音量键翻页：给分页引擎发指令（序号 + 方向）
     @State private var pageCommandSeq = 0
     @State private var pageCommandDelta = 0
+    /// 同章内精确跳段：给分页引擎发指令（目标段落 + 序号）。
+    /// 点「属于当前章」的书签 / 笔记时用 —— RootView 那边靠 selectedChapter.id
+    /// 变化驱动，同一章 id 不变，onChange 根本不会触发。
+    @State private var jumpParagraph = 0
+    @State private var jumpSeq = 0
     /// 音量键监听器（开启时才创建）
     @State private var volumePager: VolumeKeyPager?
     /// 主题管理（自定义主题增删改）
@@ -193,14 +198,28 @@ struct ReaderView: View {
         }
     }
 
-    /// 跳到某章某段：先记下待应用锚点，再切章（RootView 选中后按它设锚点）
+    /// 跳到某章某段。
+    /// 跨章走 pendingJump + 切章（RootView 选中后按它设锚点）；
+    /// **同一章**不能这么走：selectedChapter.id 没变，RootView 的 onChange 不触发，
+    /// 界面只会收起面板、位置不动，pendingJump 还会残留到下一次进这章时突然跳段。
     private func jump(to target: Chapter, paragraph: Int) {
-        AnnotationStore.shared.pendingJump = (target.id, "blk-p\(paragraph)")
+        let anchor = "blk-p\(paragraph)"
         withAnimation(.easeOut(duration: 0.18)) {
             showCatalog = false
             showMenu = false
         }
-        onSelectChapter(target)
+        guard target.id == chapter.id else {
+            AnnotationStore.shared.pendingJump = (target.id, anchor)
+            onSelectChapter(target)
+            return
+        }
+        AnnotationStore.shared.pendingJump = nil
+        if usePaging {
+            jumpParagraph = paragraph
+            jumpSeq += 1
+        } else {
+            pendingAnchor = anchor
+        }
     }
 
     /// 加书签：位置 + 当时段落的一小段原文做预览
@@ -229,13 +248,19 @@ struct ReaderView: View {
             showMenu = false
         }
         resplitNotice = "正在重新分章…"
-        library.resplit(book: book, rule: rule) { count in
-            let message = count >= 2
-                ? "已按新规则切成 \(count) 章"
+        library.resplit(book: book, rule: rule) { result in
+            var message = result.chapters >= 2
+                ? "已按新规则切成 \(result.chapters) 章"
                 : "这条规则切不出多章，已退回自动分章（整本一章）"
-            withAnimation(.easeOut(duration: 0.2)) { resplitNotice = message }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.4) {
-                if resplitNotice == message {
+            if result.danglingMarks > 0 {
+                message += "；\(result.danglingMarks) 条书签/笔记已失效"
+            } else if result.restoredHidden > 0 {
+                message += "；\(result.restoredHidden) 章已恢复显示"
+            }
+            let finalMessage = message
+            withAnimation(.easeOut(duration: 0.2)) { resplitNotice = finalMessage }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.2) {
+                if resplitNotice == finalMessage {
                     withAnimation(.easeIn(duration: 0.2)) { resplitNotice = nil }
                 }
             }
@@ -496,6 +521,7 @@ struct ReaderView: View {
                                   bookTitle: bookTitle,
                                   bookURL: currentBook?.folderURL ?? chapter.folderURL,
                                   chapterRule: library.chapterRule(forBookId: bookId) ?? "",
+                                  encoding: library.textEncoding(for: chapter),
                                   canResplit: category == .novel,
                                   currentChapter: chapter,
                                   currentParagraph: currentParagraphIndex,
@@ -749,6 +775,15 @@ struct ReaderView: View {
     /// UserDefaults 里，会让每次进这一章都停在末页。落在本章末尾的锚点按脏数据处理：
     /// 真正读到最后一段的场景极少，从章首重读的代价远小于「每次都跳末页」。
     private var restoreParagraph: Int {
+        // 书签 / 笔记跨章跳转：pendingJump 就是本次的目标段落，优先用它。
+        // RootView 的 onChange 何时执行不确定，若晚于本帧 body 求值，
+        // 读 ProgressStore 会拿到这一章的上次位置，跳段就落到别处了。
+        if let pending = AnnotationStore.shared.pendingJump,
+           pending.chapterId == chapter.id,
+           pending.anchor.hasPrefix("blk-p"),
+           let value = Int(pending.anchor.dropFirst("blk-p".count)) {
+            return max(0, min(value, max(paragraphs.count - 1, 0)))
+        }
         guard let anchor = ProgressStore.shared.anchor(for: chapter.id),
               anchor.hasPrefix("blk-p"),
               let value = Int(anchor.dropFirst("blk-p".count)),
@@ -783,7 +818,12 @@ struct ReaderView: View {
                                     tapCenterAction: prefs.tapCenter,
                                     tapRight: prefs.tapRight,
                                     pageCommand: pageCommandSeq,
-                                    pageCommandDelta: pageCommandDelta),
+                                    pageCommandDelta: pageCommandDelta,
+                                    jumpParagraph: jumpParagraph,
+                                    jumpSeq: jumpSeq,
+                                    contentStamp: ReaderTextPipeline.stamp(
+                                        rules: prefs.activePurifyRules,
+                                        traditional: prefs.isTraditional)),
             onProgress: { paragraph in
                 ProgressStore.shared.noteAnchor("blk-p\(paragraph)", for: chapter.id)
             },

@@ -349,8 +349,8 @@ def main():
           and "DocumentsBootstrap.guideFileName" in resolver)
     check("切回前台补写说明文件", "DocumentsBootstrap.ensureVisibleInFilesApp()" in store)
     check("版本号提升以刷新系统元数据",
-          "<string>2.12.1</string>" in plist and "CURRENT_PROJECT_VERSION = 12" in pbx
-          and "MARKETING_VERSION = 2.12.1" in pbx)
+          "<string>2.12.2</string>" in plist and "CURRENT_PROJECT_VERSION = 13" in pbx
+          and "MARKETING_VERSION = 2.12.2" in pbx)
     check("UI 给出「文件 App 搜索本地小说」兜底路径",
           "搜索框搜「本地小说」" in welcome and "搜索「本地小说」" in store)
     check("AppIcon asset catalog（1024 + Contents.json）",
@@ -713,9 +713,9 @@ def main():
     check("文档正文含双格式包一节",
           "### 5. 同一部书按格式分成两个包（PDF 包 + 图片包）"
           in (ROOT / "Docs" / "漫画目录结构说明.md").read_text(encoding="utf-8"))
-    check("版本升到 2.12.1 / build 12",
-          "<string>2.12.1</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>12</string>" in plist)
+    check("版本升到 2.12.2 / build 13",
+          "<string>2.12.2</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>13</string>" in plist)
 
 
     print("\n== N. 本轮：底部三页 / 短剧 / NAS 连接 ==")
@@ -811,7 +811,10 @@ def main():
           and "RemoteImageCache.shared.enforceLimit()" in settings)
     check("落盘与淘汰在后台队列，不阻塞翻页",
           "private let queue = DispatchQueue(label: \"LocalNovel.remoteImageCache\"" in cache
-          and "let target = folder" in cache and "try? payload.write(to: target" in cache)
+          and "let target = file" in cache and "try? payload.write(to: target" in cache)
+    check("写盘目标是「一图一文件」，不是缓存目录（写成目录会永远写入失败）",
+          "let target = folder" not in cache
+          and "Self.trim(folder: cacheFolder, limit: limit)" in cache)
     check("上限为 0 时不自动删（不限制）",
           "guard limit > 0 else { return measure(folder: folder) }" in cache)
 
@@ -955,10 +958,17 @@ def main():
           and "RemoteTextCache.shared.text" in nas_lib_views)
     check("NAS 书目录里直接放文件时仍当作一本书",
           "把目录本身当成一本书" in nas_lib_views
-          and "hasMedia ? 1 : nil" in nas_lib)
-    check("版本升到 2.12.1 / build 12",
-          "<string>2.12.1</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>12</string>" in plist)
+          and "return media.isEmpty ? nil : media.count" in nas_lib)
+    check("NAS 目录平铺多个 txt 时每本各算一章（原来只有第一本能打开）",
+          "if books.count > 1 {" in nas_lib
+          and "kind: .text," in nas_lib
+          and "MediaResolver.isPlainText($0.url) || MediaResolver.isEpub($0.url)" in nas_lib)
+    check("远端文件缓存有上限并会按最久未修改淘汰",
+          "static let byteLimit: Int64 = 512 * 1024 * 1024" in nas_lib
+          and "Task.detached(priority: .utility) { trim(folder: folder, limit: byteLimit) }" in nas_lib)
+    check("版本升到 2.12.2 / build 13",
+          "<string>2.12.2</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>13</string>" in plist)
 
     print("\n== S. 本轮：txt 乱码（UTF-16 误判 / GBK / Big5） ==")
     encoding_src = (APP / "Core" / "TextEncoding.swift").read_text(encoding="utf-8")
@@ -1264,8 +1274,8 @@ def main():
     check("相邻章正文预取（切章不空等）",
           "func warmNextChapter()" in reader
           and "library.paragraphs(for: next)" in reader)
-    check("版本已升到 2.12.1 / build 12",
-          "2.12.1" in (APP / "Info.plist").read_text(encoding="utf-8"))
+    check("版本已升到 2.12.2 / build 13",
+          "2.12.2" in (APP / "Info.plist").read_text(encoding="utf-8"))
 
     print("\n== Z. 本轮：上下菜单栏 + 进度滑杆 + 目录面板 ==")
     bars = (APP / "Views" / "ReaderChromeBars.swift").read_text(encoding="utf-8")
@@ -1432,8 +1442,15 @@ def main():
     check("待应用锚点先暂存、选章时再消费（不被「主动选章」重置）",
           "var pendingJump: (chapterId: String, anchor: String)?" in ann
           and "func consumePendingAnchor(for chapterId: String)" in ann
-          and 'AnnotationStore.shared.pendingJump = (target.id, "blk-p\\(paragraph)")' in reader
+          and "AnnotationStore.shared.pendingJump = (target.id, anchor)" in reader
           and "consumePendingAnchor(for: chapter.id)" in root)
+    check("同章跳段就地执行（同章 id 不变，RootView 的 onChange 不会触发）",
+          "guard target.id == chapter.id else" in reader
+          and "AnnotationStore.shared.pendingJump = nil" in reader
+          and "jumpSeq += 1" in reader)
+    check("跨章跳转时 restoreParagraph 优先读 pendingJump（onChange 可能晚于 body 求值）",
+          "AnnotationStore.shared.pendingJump," in reader
+          and "pending.chapterId == chapter.id," in reader)
     check("笔记列表可左滑编辑（点条目仍是跳转）",
           'Button("编辑") { editingNote = note }' in cat)
 
@@ -1473,7 +1490,7 @@ def main():
           and "JSONEncoder().encode(chapterRules)" in prefs_src)
     check("规则由 LibraryStore 取出透传给 Scanner（Scanner 不读 Preferences）",
           "let rule = Preferences.shared.chapterRule(for: book.id)" in store
-          and "customPattern: rule)" in store and "customPattern: pattern)" in store
+          and "customPattern: rule," in store and "customPattern: pattern," in store
           and "customPattern: String? = nil" in scanner
           and "ChapterSplitter.split(text, customPattern: regex)" in scanner
           and "Preferences.shared" not in scanner)
@@ -1544,9 +1561,100 @@ def main():
     check("关键词在结果里高亮", "private func highlighted(" in catalog_src
           and ".foregroundStyle(Color.accentColor)" in catalog_src)
 
-    check("版本已升到 2.12.1 / build 12",
-          "<string>2.12.1</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>12</string>" in plist)
+    # ------------------------------------------------------------------
+    # W. 2.12.2：bug 审查后的修复（H1~H6 + 中危若干）
+    # ------------------------------------------------------------------
+    print("\n== W. 本轮：bug 修复（2.12.2） ==")
+    paged_src = (APP / "Views" / "PagedReaderView.swift").read_text(encoding="utf-8")
+    importer_src = (APP / "Core" / "BookImporter.swift").read_text(encoding="utf-8")
+    player_src = (APP / "Media" / "LocalMediaPlayer.swift").read_text(encoding="utf-8")
+    dav_src = (APP / "Core" / "WebDAVClient.swift").read_text(encoding="utf-8")
+    media_view_src = (APP / "Views" / "MediaAttachmentView.swift").read_text(encoding="utf-8")
+    purify_src = (APP / "Core" / "PurifyEngine.swift").read_text(encoding="utf-8")
+    comic_src = (APP / "Media" / "ComicImageStore.swift").read_text(encoding="utf-8")
+    rule_sheet_src = (APP / "Views" / "ChapterRuleSheet.swift").read_text(encoding="utf-8")
+
+    check("覆盖翻页不再被 currentIndex 早退拦掉（程序化翻页画面不动）",
+          "private var displayedIndex = 0" in paged_src
+          and "index != displayedIndex" in paged_src
+          and "index != currentIndex else { return }" not in paged_src)
+    check("覆盖翻页手势与动画以「真正显示页」为基准",
+          "let target = displayedIndex + dir" in paged_src
+          and "let forward = index > displayedIndex" in paged_src)
+    check("连点 / 手势打断时用序号作废旧动画回调",
+          "private var transitionToken = 0" in paged_src
+          and "guard self.transitionToken == token else { return }" in paged_src)
+    check("分页引擎新增「跳段」入口（同章书签 / 笔记不再无反应）",
+          "func jumpToParagraph(_ paragraph: Int)" in paged_src
+          and "jumpToParagraph(pendingJump)" in paged_src
+          and "let pendingJump = new.jumpSeq != lastJumpSeq ? new.jumpParagraph : -1" in paged_src)
+    check("锚点读取优先返回内存里还没落盘的最新值",
+          "if let pending { return pending }" in progress)
+    check("锚点读改写整体持锁（防与防抖 flush 互相覆盖）",
+          "func flushAnchors() {\n        lock.lock()\n        defer { lock.unlock() }" in progress
+          and "整段持锁" in progress)
+    check("重分章不会被连点触发两次",
+          "连点两次「应用并重新分章」只跑一次" in store)
+    check("重分章清掉失配的隐藏章节记录",
+          "ProgressStore.shared.resetHiddenChapters(chapterPathPrefix: prefix)" in store)
+    check("重分章后统计失效书签 / 笔记并回报",
+          "struct ResplitResult" in store
+          and "AnnotationStore.shared.danglingCount(in: book.id" in store)
+    check("删书顺手清掉这本书的书签与笔记",
+          "AnnotationStore.shared.removeAll(in: book.id)" in store)
+    check("扫描进行中被挡下的 rescan 会把 completion 补执行",
+          "private var pendingRescanCompletion" in store
+          and "private func drainPendingRescan()" in store
+          and "self.drainPendingRescan()" in store)
+    check("书签 / 笔记失效时标出来并可一键清理",
+          "章节已失效" in cat and "清理失效" in cat and "pruneDangling" in cat)
+    check("点失效标注弹确认（不再静默无反应）",
+          "private var staleTarget: StaleTarget?" in cat
+          and '.alert("章节已失效"' in cat)
+    check("重新分章后旧正文搜索结果作废重扫",
+          "chaptersFingerprint" in cat
+          and "if !fresh.isEmpty { search.start(query: fresh, chapters: chapters) }" in cat)
+    check("播放结束回到未播放态，且再点播放能从头重播",
+          "AVPlayerItem.didPlayToEndTime" in player_src
+          and "if duration > 1, currentTime >= duration - 0.5" in player_src)
+    check("远端视频也能恢复进度（不再用 assetDuration 当门槛）",
+          "let reachedEnd = assetDuration.isFinite" in player_src
+          and "if saved > 1 {" in player_src
+          and "if !reachedEnd {" in player_src)
+    check("音视频进度按「章 + 媒体」分开存（不再串台）",
+          "progressKey ?? chapterId" in player_src
+          and '#\\(item.id)' in media_view_src)
+    check("分页指纹含正文内容戳（改净化规则会重建）",
+          "let contentStamp: String" in paged_src
+          and "static func stamp(rules: [PurifyRule], traditional: Bool)" in purify_src
+          and "ReaderTextPipeline.stamp(" in reader)
+    check("导入同名文件自动改名，不再静默覆盖",
+          "private static func uniqueName(" in importer_src
+          and "report.renamed.append" in importer_src)
+    check("覆盖导入回滚不再先删目标（原书不会被抹掉）",
+          ".ln-partial-" in importer_src
+          and "throw BookImportError.rollbackFailed(backup.path)" in importer_src)
+    check("启动时还原被中断覆盖的隐藏备份",
+          "recoverInterruptedReplacements" in importer_src
+          and "BookImporter.recoverInterruptedReplacements(in: docs)" in store)
+    check("主动取消不再被当成「连不上」而作废连接",
+          "catch let error as URLError where error.code == .cancelled" in dav_src
+          and "throw CancellationError()" in dav_src)
+    check("远端大文件不再被会话级 60s 超时截断",
+          "config.timeoutIntervalForResource = 180" in dav_src)
+    check("漫画页解码失败后允许重试（不再永久空白）",
+          "if imageURL == url, image != nil { return }" in comic_src)
+    check("重分章用用户手选的编码解码（GB18030 书不再失效）",
+          "func preferredEncoding(for book: Book) -> TextEncodingOption" in store
+          and "preferred: TextEncodingOption = .auto" in scanner
+          and "preferred: preferred)" in store)
+    check("分章样本预览也用同一套编码",
+          "let preferred: TextEncodingOption" in rule_sheet_src
+          and "ChapterSplitter.sample(from: url, maxLines: 2000, preferred: preferred)" in rule_sheet_src)
+
+    check("版本已升到 2.12.2 / build 13",
+          "<string>2.12.2</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>13</string>" in plist)
 
     print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")
     if FAIL:

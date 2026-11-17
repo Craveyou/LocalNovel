@@ -195,20 +195,21 @@ enum BookScanner {
     /// 规则优先：切出两章以上就用它；规则写错 / 切不出多章时 ChapterSplitter 会退回内置正则，
     /// 所以这里有规则也不会把一本书切成空。
     static func makeSliceChapters(fileURL: URL, cleanTitles: Bool,
-                                  customPattern: String? = nil) -> [Chapter] {
+                                  customPattern: String? = nil,
+                                  preferred: TextEncodingOption = .auto) -> [Chapter] {
         let bookTitle = fileURL.deletingPathExtension().lastPathComponent
         var slices: [ChapterSplitter.Slice] = []
         let rule = (customPattern ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if !rule.isEmpty,
            let regex = ChapterSplitter.makePattern(rule),
-           let text = try? TextLoader.loadDocument(fileURL) {
+           let text = try? TextLoader.loadDocument(fileURL, preferred: preferred) {
             let custom = ChapterSplitter.split(text, customPattern: regex)
             if custom.count >= 2 { slices = custom }
         }
         if slices.isEmpty, MediaResolver.isEpub(fileURL) {
             slices = EpubParser.slices(url: fileURL)
         }
-        if slices.isEmpty, let text = try? TextLoader.loadDocument(fileURL) {
+        if slices.isEmpty, let text = try? TextLoader.loadDocument(fileURL, preferred: preferred) {
             slices = ChapterSplitter.split(text)
         }
         guard !slices.isEmpty else {

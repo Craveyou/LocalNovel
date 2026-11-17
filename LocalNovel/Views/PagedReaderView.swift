@@ -78,14 +78,21 @@ struct PagedReaderInput {
     /// 外部翻页指令（音量键）：序号变化即执行一次 delta；不参与排版指纹
     let pageCommand: Int
     let pageCommandDelta: Int
+    /// 同章内精确跳段（点书签 / 笔记 / 搜索结果）：序号变化即跳一次，同样不参与指纹。
+    /// -1 表示无目标。
+    let jumpParagraph: Int
+    let jumpSeq: Int
+    /// 正文内容指纹（净化规则 + 繁简）：变了必须重建分页，否则屏幕上是旧文本
+    let contentStamp: String
 
     /// 只有影响排版的参数变化才重建；restoreParagraph 故意不参与。
-    /// 用 O(1) 的指纹（段数 + 首末段长度），不再遍历全部段落算总长：
+    /// 用 O(1) 的指纹（段数 + 首末段长度 + 正文内容戳），不再遍历全部段落算总长：
     /// 几十万段的书每次 body 重算都做一次 NSString 桥接，主线程会被拖住。
+    /// contentStamp 覆盖「段数不变但中间文本变了」的情况（改净化规则 / 切繁简）。
     var signature: String {
         let head = paragraphs.first?.utf16.count ?? 0
         let tail = paragraphs.last?.utf16.count ?? 0
-        return "\(chapterId)|\(paragraphs.count)|\(head)|\(tail)|\(typography.identity)"
+        return "\(chapterId)|\(paragraphs.count)|\(head)|\(tail)|\(contentStamp)|\(typography.identity)"
             + "|\(theme.hashValue)|\(title)|\(bookTitle)"
             + "|\(headerMode.rawValue)|\(footerMode.rawValue)|\(headerTopPadding)|\(footerBottomPadding)|" + "\(showsProgress)"
             + "|\(tapLeft.rawValue)|\(tapCenterAction.rawValue)|\(tapRight.rawValue)"
@@ -159,6 +166,8 @@ class PagedBaseController: UIViewController {
     private var signature = ""
     /// 已执行的翻页指令序号（音量键翻页用，不触发重排）
     private var lastPageCommand = -1
+    /// 上一次执行的「跳段」序号；初始 0 与上层初值对齐，避免首次 apply 就跳
+    private var lastJumpSeq = 0
     private var contentSize: CGSize = .zero
     private var needsRebuild = true
     /// 记忆段落：用户翻页之前，每次 rebuild 都用它定位
@@ -281,11 +290,18 @@ class PagedBaseController: UIViewController {
             }
             lastPageCommand = new.pageCommand
         }
+        // 同章内精确跳段（书签 / 笔记 / 搜索结果）
+        let pendingJump = new.jumpSeq != lastJumpSeq ? new.jumpParagraph : -1
+        if new.jumpSeq != lastJumpSeq { lastJumpSeq = new.jumpSeq }
         applyThemeChrome()
         if new.signature != signature {
             signature = new.signature
             needsRebuild = true
             rebuildIfNeeded()
+        }
+        // 跳段放在重建之后：刚改过字号时 pages 还是旧的，先跳会落到错的页
+        if pendingJump >= 0, new.jumpSeq > 0 {
+            jumpToParagraph(pendingJump)
         }
         updateLabel()
     }
@@ -383,6 +399,20 @@ class PagedBaseController: UIViewController {
         didNavigate = true
         presentPage(at: target, animated: true)
         afterPageChange()
+    }
+
+    /// 本章内跳到某一段所在的页（点书签 / 笔记 / 正文搜索结果的路径）。
+    /// 不带动画：这是「定位」不是「翻页」，动画反而让人等。
+    func jumpToParagraph(_ paragraph: Int) {
+        guard !pages.isEmpty else { return }
+        let target = TextPaginator.pageIndex(forParagraph: clampedParagraph(paragraph), in: pages)
+        guard target != currentIndex else {
+            // 已经是目标页：至少刷一次位置，确保锚点写的是这一段
+            afterPageChange()
+            return
+        }
+        presentPage(at: target, animated: false)
+        adopt(target)
     }
 
     /// 本章已经翻到最后一页、还要继续往后翻：交给上层切到下一章。
@@ -942,6 +972,12 @@ final class CoverPageController: PagedBaseController {
     private var incomingIndex: Int?
     private var direction = 0
     private var prepared = false
+    /// 真正装载在屏幕上的那一页。基类 `move(by:)` 会先写 `currentIndex` 再调
+    /// `presentPage`，所以判断「是不是已经在看这页」必须用这个值，不能用 `currentIndex`
+    /// （两者在程序化翻页的瞬间必然相等，会导致整段呈现逻辑被自己拦掉）。
+    private var displayedIndex = 0
+    /// 过渡序号：手势 / 程序化翻页互相打断时，靠它作废旧动画的 completion
+    private var transitionToken = 0
 
     private var duration: Double { max(0, input?.flipDuration ?? 0.28) }
 
@@ -957,11 +993,16 @@ final class CoverPageController: PagedBaseController {
 
     override func didRebuildPages() {
         removeCurrent()
+        dropIncoming()
         install(index: currentIndex)
     }
 
     override func presentPage(at index: Int, animated: Bool) {
-        guard index >= 0, index < pages.count, index != currentIndex else { return }
+        // 注意：不能用 `index != currentIndex` 做早退。基类 `move(by:)` 已经把
+        // `currentIndex` 写成目标页了，那样会直接 return —— 页码前移、正文不动。
+        guard index >= 0, index < pages.count,
+              index != displayedIndex,
+              index != incomingIndex else { return }
         if animated && duration > 0 {
             slide(to: index)
         } else {
@@ -982,6 +1023,7 @@ final class CoverPageController: PagedBaseController {
         pageContainer.addSubview(vc.view)
         vc.didMove(toParent: self)
         currentVC = vc
+        displayedIndex = index
     }
 
     private func removeCurrent() {
@@ -1010,6 +1052,7 @@ final class CoverPageController: PagedBaseController {
         incoming.view.frame = pageContainer.bounds
         incoming.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         currentVC = incoming
+        displayedIndex = index
         incomingVC = nil
         incomingIndex = nil
         prepared = false
@@ -1019,7 +1062,11 @@ final class CoverPageController: PagedBaseController {
 
     /// 点击翻页的动效（没有跟手过程，直接一段动画）
     private func slide(to index: Int) {
-        let forward = index > currentIndex
+        // 连点时上一次的过渡还没收尾：丢掉在途页，只认最新一次
+        dropIncoming()
+        transitionToken &+= 1
+        let token = transitionToken
+        let forward = index > displayedIndex
         let width = max(pageContainer.bounds.width, 1)
         let vc = makeController(at: index)
         addChild(vc)
@@ -1045,6 +1092,7 @@ final class CoverPageController: PagedBaseController {
                 self.currentVC?.view.frame = self.pageContainer.bounds.offsetBy(dx: width, dy: 0)
             }
         } completion: { _ in
+            guard self.transitionToken == token else { return }
             self.commit()
         }
     }
@@ -1072,12 +1120,17 @@ final class CoverPageController: PagedBaseController {
     }
 
     private func prepare(direction dir: Int) {
-        let target = currentIndex + dir
+        // 以「屏幕上真正显示的那一页」为基准：程序化翻页的动画可能还在播，
+        // 此时 currentIndex 已经前移，用它算目标会跳过一页。
+        let target = displayedIndex + dir
         guard dir != 0, target >= 0, target < pages.count else {
             direction = 0
             prepared = false
             return
         }
+        // 上一次过渡（点击翻页的动画）还没收尾：作废它，只保留这次手势
+        dropIncoming()
+        transitionToken &+= 1
         direction = dir
         let width = max(pageContainer.bounds.width, 1)
         let vc = makeController(at: target)
@@ -1121,6 +1174,7 @@ final class CoverPageController: PagedBaseController {
             ? (dx < -width * 0.28 || velocity < -700)
             : (dx > width * 0.28 || velocity > 700)
         let duration = self.duration
+        let token = transitionToken
         UIView.animate(withDuration: passed ? duration : duration * 0.7,
                        delay: 0,
                        options: [.curveEaseOut]) {
@@ -1138,6 +1192,7 @@ final class CoverPageController: PagedBaseController {
                 }
             }
         } completion: { _ in
+            guard self.transitionToken == token else { return }
             if passed {
                 self.commit()
             } else {

@@ -87,11 +87,11 @@ enum NASPlanner {
         let dirs = entries.filter { $0.isDirectory }.count
         if dirs > 0 { return dirs }
         if category == .organized || category == .novel {
-            // 书目录里直接放文件：这本书只有一章
-            let hasMedia = entries.contains {
+            // 书目录里直接放文件：平铺多个电子书文件时，每本各算一章
+            let media = entries.filter {
                 !$0.isDirectory && MediaResolver.classify($0.name) != nil
             }
-            return hasMedia ? 1 : nil
+            return media.isEmpty ? nil : media.count
         }
         return dirs
     }
@@ -119,8 +119,23 @@ enum NASPlanner {
         let entries = try await WebDAVClient.list(dir: bookURL, account: account)
         let dirs = entries.filter { $0.isDirectory }
         if dirs.isEmpty {
+            let files = entries.filter { !$0.isDirectory }
+            // 目录里平铺了多个电子书文件（a.txt / b.txt …）：每本都是独立的一章。
+            // 原来只返回一个「目录」条目，阅读页再取自然序第一个文件当正文，
+            // 其余 N-1 本永远打不开，也没有任何提示。
+            let books = files.filter {
+                MediaResolver.isPlainText($0.url) || MediaResolver.isEpub($0.url)
+            }
+            if books.count > 1 {
+                return NaturalSort.sorted(books) { $0.name }.map {
+                    NASChapterRef(name: ($0.name as NSString).deletingPathExtension,
+                                  url: $0.url,
+                                  kind: .text,
+                                  group: nil)
+                }
+            }
             // 书目录里直接就是 txt / 图片 / 音视频 → 这本书只有一章（就是它自己）
-            let hasMedia = entries.contains { !$0.isDirectory && MediaResolver.classify($0.name) != nil }
+            let hasMedia = files.contains { MediaResolver.classify($0.name) != nil }
             guard hasMedia else { return [] }
             return [NASChapterRef(name: bookURL.lastPathComponent,
                                   url: bookURL,
@@ -291,6 +306,9 @@ final class RemoteTextCache {
 }
 
 enum RemoteFileStore {
+    /// 磁盘上限：PDF 单本几十上百 MB，不设限会一直涨（图片缓存有 512 MB 限制，这里此前完全没有）
+    static let byteLimit: Int64 = 512 * 1024 * 1024
+
     /// 远端文件落到本地缓存的副本（pdf 用）；同一地址第二次直接命中
     static func localCopy(of url: URL, account: WebDAVAccount) async throws -> URL {
         let folder = try cacheFolder()
@@ -300,7 +318,36 @@ enum RemoteFileStore {
         if FileManager.default.fileExists(atPath: target.path) { return target }
         let data = try await WebDAVClient.data(url, account: account, timeout: 120)
         try data.write(to: target, options: .atomic)
+        // 淘汰放后台：别让写盘 / 清理卡住阅读页
+        Task.detached(priority: .utility) { trim(folder: folder, limit: byteLimit) }
         return target
+    }
+
+    /// 超过上限就按「最久未修改」删，直到回到上限内。返回当前占用。
+    @discardableResult
+    static func trim(folder: URL, limit: Int64) -> Int64 {
+        guard limit > 0 else { return 0 }
+        let keys: Set<URLResourceKey> = [.fileSizeKey, .contentModificationDateKey]
+        let files = (try? FileManager.default.contentsOfDirectory(at: folder,
+                                                                 includingPropertiesForKeys: Array(keys),
+                                                                 options: [.skipsHiddenFiles])) ?? []
+        var entries: [(url: URL, size: Int64, date: Date)] = []
+        var total: Int64 = 0
+        for file in files {
+            let values = try? file.resourceValues(forKeys: keys)
+            let size = Int64(values?.fileSize ?? 0)
+            total += size
+            entries.append((file, size, values?.contentModificationDate ?? .distantPast))
+        }
+        guard total > limit else { return total }
+        entries.sort { $0.date < $1.date }
+        for entry in entries {
+            if total <= limit { break }
+            if (try? FileManager.default.removeItem(at: entry.url)) != nil {
+                total -= entry.size
+            }
+        }
+        return max(0, total)
     }
 
     private static func cacheFolder() throws -> URL {

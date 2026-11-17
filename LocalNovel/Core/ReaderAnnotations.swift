@@ -65,6 +65,52 @@ final class AnnotationStore: ObservableObject {
         return pending.anchor
     }
 
+    // MARK: 失效标注（重新分章 / 删章之后）
+
+    /// 书签或笔记指向的章节还在不在。
+    /// 重新分章后 chapterId（路径#区间起点）全变，老条目就成了死链 ——
+    /// 列表里要明确标出来，不能点了没反应。
+    func isDangling(bookmark: ReaderBookmark, validChapterIds: Set<String>) -> Bool {
+        !validChapterIds.contains(bookmark.chapterId)
+    }
+
+    func isDangling(note: ReaderNote, validChapterIds: Set<String>) -> Bool {
+        !validChapterIds.contains(note.chapterId)
+    }
+
+    func danglingCount(in bookId: String, validChapterIds: Set<String>) -> (bookmarks: Int, notes: Int) {
+        let marks = bookmarks(in: bookId).filter { !validChapterIds.contains($0.chapterId) }.count
+        let notesCount = notes(in: bookId).filter { !validChapterIds.contains($0.chapterId) }.count
+        return (marks, notesCount)
+    }
+
+    /// 一键清掉某本书里指向已不存在章节的书签 / 笔记，返回清掉的条数
+    @discardableResult
+    func pruneDangling(in bookId: String, validChapterIds: Set<String>) -> Int {
+        let staleMarks = bookmarks.filter { $0.bookId == bookId && !validChapterIds.contains($0.chapterId) }
+        let staleNotes = notes.filter { $0.bookId == bookId && !validChapterIds.contains($0.chapterId) }
+        guard !staleMarks.isEmpty || !staleNotes.isEmpty else { return 0 }
+        let markIds = Set(staleMarks.map(\.id))
+        let noteIds = Set(staleNotes.map(\.id))
+        bookmarks.removeAll { markIds.contains($0.id) }
+        notes.removeAll { noteIds.contains($0.id) }
+        persist()
+        return markIds.count + noteIds.count
+    }
+
+    /// 删书：这本书的书签 / 笔记一并清掉。
+    /// 不清的话会永久残留在 UserDefaults 里；之后再导入同名书（书 id 就是路径）
+    /// 这些旧标注会突然「复活」并指向不相干的段落。
+    @discardableResult
+    func removeAll(in bookId: String) -> Int {
+        let before = bookmarks.count + notes.count
+        bookmarks.removeAll { $0.bookId == bookId }
+        notes.removeAll { $0.bookId == bookId }
+        let removed = before - (bookmarks.count + notes.count)
+        if removed > 0 { persist() }
+        return removed
+    }
+
     // MARK: 查询
 
     func bookmarks(in bookId: String) -> [ReaderBookmark] {

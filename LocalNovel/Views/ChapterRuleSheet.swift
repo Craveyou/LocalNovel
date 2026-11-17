@@ -13,6 +13,8 @@ struct ChapterRuleSheet: View {
     let initialRule: String
     /// 整本文件 URL（分章样本从这里取）
     let bookURL: URL?
+    /// 这本书的正文编码：必须和阅读器一致，否则 GB18030 的书会解出乱码、规则静默失效
+    let preferred: TextEncodingOption
     let onApply: (String?) -> Void
 
     @State private var rule: String
@@ -21,9 +23,13 @@ struct ChapterRuleSheet: View {
     @State private var preview: ChapterSplitter.Preview?
     @State private var computing = false
 
-    init(initialRule: String, bookURL: URL?, onApply: @escaping (String?) -> Void) {
+    init(initialRule: String,
+         bookURL: URL?,
+         preferred: TextEncodingOption = .auto,
+         onApply: @escaping (String?) -> Void) {
         self.initialRule = initialRule
         self.bookURL = bookURL
+        self.preferred = preferred
         self.onApply = onApply
         _rule = State(initialValue: initialRule)
     }
@@ -124,7 +130,7 @@ struct ChapterRuleSheet: View {
                     }
                     .foregroundStyle(.red)
                 } footer: {
-                    Text("重切后章节列表与阅读进度会全部重建，每章从开头开始读。")
+                    Text("重切后章节列表与阅读进度会全部重建，每章从开头开始读；已有书签和笔记会标为「章节已失效」，可在目录面板里清理。")
                 }
             }
             .navigationTitle("重新分章")
@@ -146,7 +152,7 @@ struct ChapterRuleSheet: View {
             return
         }
         let value = await Task.detached(priority: .userInitiated) {
-            ChapterSplitter.sample(from: url, maxLines: 2000)
+            ChapterSplitter.sample(from: url, maxLines: 2000, preferred: preferred)
         }.value
         sample = value
         loadingSample = false

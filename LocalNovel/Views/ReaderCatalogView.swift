@@ -19,6 +19,19 @@ private struct ShareItem: Identifiable {
     let url: URL
 }
 
+/// 重新分章后指向已不存在章节的书签 / 笔记
+private enum StaleTarget: Identifiable {
+    case bookmark(ReaderBookmark)
+    case note(ReaderNote)
+
+    var id: String {
+        switch self {
+        case .bookmark(let mark): return "b-\(mark.id)"
+        case .note(let note):     return "n-\(note.id)"
+        }
+    }
+}
+
 struct ReaderCatalogView: View {
     let chapters: [Chapter]
     let currentId: String
@@ -28,6 +41,8 @@ struct ReaderCatalogView: View {
     let bookURL: URL?
     /// 这本书当前的分章规则（没设置 = 空串）
     let chapterRule: String
+    /// 这本书的正文编码（重新分章的样本必须按它解码，否则手选过编码的书预览全乱）
+    let encoding: TextEncodingOption
     /// 只有小说能重新分章（漫画 / 整理是目录结构，没有「切章」这回事）
     let canResplit: Bool
     /// 当前章与当前段落（加书签 / 记笔记时记录位置）
@@ -49,6 +64,8 @@ struct ReaderCatalogView: View {
     @State private var editingNote: ReaderNote?
     @State private var shareItem: ShareItem?
     @State private var showResplit = false
+    /// 点了「章节已失效」的书签 / 笔记：弹确认删除，别让用户点了没反应
+    @State private var staleTarget: StaleTarget?
     /// 搜正文开关（关着只搜章节名）
     @State private var searchBody = false
     @StateObject private var search = BookSearchModel()
@@ -118,6 +135,14 @@ struct ReaderCatalogView: View {
         .ignoresSafeArea(edges: .bottom)
         .onChange(of: query) { _, _ in scheduleBodySearch() }
         .onChange(of: searchBody) { _, _ in scheduleBodySearch() }
+        // 重新分章 / 增删章之后，旧正文搜索结果的 chapterId 全部失效，点了一点反应都没有。
+        // 直接取消这次搜索，让用户在新目录上重搜。
+        .onChange(of: chaptersFingerprint) { _, _ in
+            guard searchBody else { return }
+            search.cancel()
+            let fresh = keyword
+            if !fresh.isEmpty { search.start(query: fresh, chapters: chapters) }
+        }
         .onDisappear {
             searchDebounce?.cancel()
             search.cancel()
@@ -140,9 +165,28 @@ struct ReaderCatalogView: View {
             .presentationDetents([.height(200)])
         }
         .sheet(isPresented: $showResplit) {
-            ChapterRuleSheet(initialRule: chapterRule, bookURL: bookURL) { rule in
+            ChapterRuleSheet(initialRule: chapterRule,
+                             bookURL: bookURL,
+                             preferred: encoding) { rule in
                 onResplit(rule)
             }
+        }
+        .alert("章节已失效", isPresented: Binding(
+            get: { staleTarget != nil },
+            set: { if !$0 { staleTarget = nil } }
+        )) {
+            Button("删除这条", role: .destructive) {
+                if let target = staleTarget {
+                    switch target {
+                    case .bookmark(let mark): annotations.remove(mark)
+                    case .note(let note):     annotations.remove(note)
+                    }
+                }
+                staleTarget = nil
+            }
+            Button("取消", role: .cancel) { staleTarget = nil }
+        } message: {
+            Text("这条记录指向的章节在重新分章后已经不存在，无法再定位。要删除它吗？")
         }
     }
 
@@ -204,6 +248,24 @@ struct ReaderCatalogView: View {
         }
         .padding(.horizontal, 16)
         .padding(.bottom, 8)
+    }
+
+    /// 当前这本书真实存在的章节 id 集合：书签 / 笔记靠它判断是否已成死链
+    private var validChapterIds: Set<String> {
+        Set(chapters.map(\.id))
+    }
+
+    /// 章节列表指纹（只看数量和首末 id，O(1)）：重分章后用来作废旧的搜索结果
+    private var chaptersFingerprint: String {
+        "\(chapters.count)|\(chapters.first?.id ?? "")|\(chapters.last?.id ?? "")"
+    }
+
+    /// 失效标注条数（重新分章 / 删章之后）
+    private var danglingCount: Int {
+        let ids = validChapterIds
+        let marks = annotations.bookmarks(in: bookId).filter { !ids.contains($0.chapterId) }.count
+        let notes = annotations.notes(in: bookId).filter { !ids.contains($0.chapterId) }.count
+        return marks + notes
     }
 
     private var subtitle: String {
@@ -411,21 +473,26 @@ struct ReaderCatalogView: View {
 
     private var bookmarkList: some View {
         let list = annotations.bookmarks(in: bookId)
+        let ids = validChapterIds
         return ScrollView {
             LazyVStack(spacing: 0) {
                 if list.isEmpty { emptyHint("还没有书签。下方「加书签」会记住当前位置。") }
                 ForEach(list) { mark in
+                    let stale = !ids.contains(mark.chapterId)
                     Button {
                         if let chapter = chapters.first(where: { $0.id == mark.chapterId }) {
                             onSelectParagraph(chapter, mark.paragraph)
+                        } else {
+                            staleTarget = .bookmark(mark)
                         }
                     } label: {
                         VStack(alignment: .leading, spacing: 4) {
                             HStack {
                                 Text(mark.chapterTitle)
                                     .font(.system(size: 13, weight: .medium))
-                                    .foregroundStyle(theme.uiText)
+                                    .foregroundStyle(stale ? theme.uiHeaderFooter : theme.uiText)
                                     .lineLimit(1)
+                                if stale { staleBadge }
                                 Spacer(minLength: 6)
                                 Text("第 \(mark.paragraph + 1) 段")
                                     .font(.system(size: 10))
@@ -455,21 +522,26 @@ struct ReaderCatalogView: View {
 
     private var noteList: some View {
         let list = annotations.notes(in: bookId)
+        let ids = validChapterIds
         return ScrollView {
             LazyVStack(spacing: 0) {
                 if list.isEmpty { emptyHint("还没有笔记。下方「记笔记」会记录当前章节与段落。") }
                 ForEach(list) { note in
+                    let stale = !ids.contains(note.chapterId)
                     Button {
                         if let chapter = chapters.first(where: { $0.id == note.chapterId }) {
                             onSelectParagraph(chapter, note.paragraph)
+                        } else {
+                            staleTarget = .note(note)
                         }
                     } label: {
                         VStack(alignment: .leading, spacing: 4) {
                             HStack {
                                 Text(note.chapterTitle)
                                     .font(.system(size: 13, weight: .medium))
-                                    .foregroundStyle(theme.uiText)
+                                    .foregroundStyle(stale ? theme.uiHeaderFooter : theme.uiText)
                                     .lineLimit(1)
+                                if stale { staleBadge }
                                 Spacer(minLength: 6)
                                 Text("第 \(note.paragraph + 1) 段")
                                     .font(.system(size: 10))
@@ -503,6 +575,16 @@ struct ReaderCatalogView: View {
         }
     }
 
+    /// 小标：这条书签 / 笔记指向的章节在重新分章后已不存在
+    private var staleBadge: some View {
+        Text("章节已失效")
+            .font(.system(size: 10))
+            .foregroundStyle(.orange)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .background(Color.orange.opacity(0.14), in: Capsule())
+    }
+
     private func emptyHint(_ text: String) -> some View {
         Text(text)
             .font(.system(size: 13))
@@ -528,6 +610,11 @@ struct ReaderCatalogView: View {
                     }
                 case .bookmark:
                     footerButton("加书签") { onAddBookmark(currentParagraph) }
+                    if danglingCount > 0 {
+                        footerButton("清理失效") {
+                            annotations.pruneDangling(in: bookId, validChapterIds: validChapterIds)
+                        }
+                    }
                 case .note:
                     footerButton("记笔记") {
                         let note = AnnotationStore.shared.addNote(
@@ -543,6 +630,11 @@ struct ReaderCatalogView: View {
                         if let url = AnnotationStore.shared.exportFile(bookTitle: bookTitle,
                                                                       bookId: bookId) {
                             shareItem = ShareItem(url: url)
+                        }
+                    }
+                    if danglingCount > 0 {
+                        footerButton("清理失效") {
+                            annotations.pruneDangling(in: bookId, validChapterIds: validChapterIds)
                         }
                     }
                 }

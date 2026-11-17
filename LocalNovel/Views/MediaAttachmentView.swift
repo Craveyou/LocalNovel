@@ -25,7 +25,8 @@ struct MediaAttachmentView: View {
         self.headers = headers
         _controller = StateObject(wrappedValue: LocalMediaPlayer(url: item.url,
                                                                  chapterId: chapterId,
-                                                                 headers: headers))
+                                                                 headers: headers,
+                                                                 progressKey: "\(chapterId)#\(item.id)"))
     }
 
     private func boost(_ active: Bool) {

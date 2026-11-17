@@ -115,7 +115,9 @@ final class TiledImageView: UIView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     func show(_ url: URL) {
-        guard imageURL != url else { return }
+        // 上一次同一个 URL 解码失败（image 仍为 nil）时不能再早退，
+        // 否则这一页永远是空白，只能靠离开再回来的运气。
+        if imageURL == url, image != nil { return }
         imageURL = url
         image = ComicImageStore.shared.image(for: url)
         setNeedsDisplay()

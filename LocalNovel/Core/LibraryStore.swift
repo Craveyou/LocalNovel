@@ -51,6 +51,9 @@ final class LibraryStore: ObservableObject {
     private var splittingBooks: Set<String> = []
     /// 扫描进行中又有新的重扫请求（连续删除时）
     private var pendingRescan = false
+    /// 扫描进行中被挡下的那次 rescan 的 completion：必须一起补执行，
+    /// 否则「删除章节成功」这类提示会随挂起一起丢掉。
+    private var pendingRescanCompletion: (() -> Void)?
     private let animatedDetector: (URL) -> Bool
 
     init(animatedDetector: @escaping (URL) -> Bool = FrameDetector.isAnimated) {
@@ -73,6 +76,10 @@ final class LibraryStore: ObservableObject {
         let docs = appDocumentsURL()
         let external = RootFolderAccess.shared.restoreRootFolder()
         let clean = Preferences.shared.cleanTitles
+        // 覆盖导入中途被杀留下的隐藏备份，先还原回原位再扫描（否则用户会以为书丢了）
+        if let docs {
+            BookImporter.recoverInterruptedReplacements(in: docs)
+        }
         isScanning = true
 
         DispatchQueue.global(qos: .userInitiated).async {
@@ -86,6 +93,7 @@ final class LibraryStore: ObservableObject {
                         self.isScanning = false
                         self.apply(report, root: docs,
                                    headline: "已从 App 文档目录载入 \(report.library.books.count) 本")
+                        self.drainPendingRescan()
                     }
                     return
                 }
@@ -102,12 +110,14 @@ final class LibraryStore: ObservableObject {
                     } else {
                         self.apply(report, root: external, headline: "已载入书库")
                     }
+                    self.drainPendingRescan()
                 }
                 return
             }
             DispatchQueue.main.async {
                 self.isScanning = false
                 self.applyEmpty(docsReport, docsReport: docsReport)
+                self.drainPendingRescan()
             }
         }
     }
@@ -222,7 +232,9 @@ final class LibraryStore: ObservableObject {
     private func rescan(headline: String, completion: (() -> Void)? = nil) {
         guard let url = currentRoot() else { restore(); return }
         if isScanning {
+            // 正在扫：只留最后一次 completion，一轮结束后补跑（否则连锁回调会重复弹提示）
             pendingRescan = true
+            pendingRescanCompletion = completion
             return
         }
         isScanning = true
@@ -233,12 +245,18 @@ final class LibraryStore: ObservableObject {
                 self.isScanning = false
                 self.apply(report, root: url, headline: headline)
                 completion?()
-                if self.pendingRescan {
-                    self.pendingRescan = false
-                    self.rescan(headline: headline)
-                }
+                self.drainPendingRescan()
             }
         }
+    }
+
+    /// 一轮扫描结束后，把期间被挡下的 rescan 补跑一次（带上它挂起的 completion）
+    private func drainPendingRescan() {
+        guard pendingRescan else { return }
+        pendingRescan = false
+        let next = pendingRescanCompletion
+        pendingRescanCompletion = nil
+        rescan(headline: headline, completion: next)
     }
 
     /// 切换到「文件 App → 我的 iPhone → 本地小说」里的书（零权限路径）
@@ -290,10 +308,12 @@ final class LibraryStore: ObservableObject {
         let clean = Preferences.shared.cleanTitles
         let fileURL = book.folderURL
         let rule = Preferences.shared.chapterRule(for: book.id)
+        let preferred = preferredEncoding(for: book)
         DispatchQueue.global(qos: .userInitiated).async {
             let chapters = BookScanner.makeSliceChapters(fileURL: fileURL,
                                                          cleanTitles: clean,
-                                                         customPattern: rule)
+                                                         customPattern: rule,
+                                                         preferred: preferred)
             DispatchQueue.main.async {
                 self.splittingBooks.remove(book.id)
                 guard !chapters.isEmpty else { return }
@@ -303,6 +323,15 @@ final class LibraryStore: ObservableObject {
         }
     }
 
+    /// 这本书正文该用哪种编码解码：用户手选过就按它来，否则自动检测。
+    /// 自动检测失败才需要手选，所以「重切 / 预览」也必须走同一个入口，
+    /// 否则 GB18030 的书会用 .auto 解出一堆乱码，自定义分章规则静默失效。
+    func preferredEncoding(for book: Book) -> TextEncodingOption {
+        let key = book.chapters.first.map { TextEncodingStore.bookKey(for: $0) }
+            ?? book.folderURL.standardizedFileURL.path
+        return TextEncodingStore.option(for: key)
+    }
+
     // MARK: - 重新分章
 
     /// 这本书当前用的分章规则（没设置 = nil，走内置正则）
@@ -310,12 +339,22 @@ final class LibraryStore: ObservableObject {
         Preferences.shared.chapterRule(for: bookId)
     }
 
+    /// 重新分章的结果：新章数 + 因此失效的书签/笔记数 + 被清掉的「已删除章节」记录数
+    struct ResplitResult {
+        let chapters: Int
+        let danglingMarks: Int
+        let restoredHidden: Int
+    }
+
     /// 重新分章：写入规则 → 清掉这本书的全部派生缓存 → 后台重切 → 应用。
     /// rule 传 nil 或空串表示恢复自动分章。
     ///
     /// 重切后章节 id（文件路径 + 区间起点）全变，段落下标也全变，
     /// 所以必须先清 progress 里这本书的锚点，否则旧锚点会指向不存在的段落。
-    func resplit(book: Book, rule: String?, completion: ((Int) -> Void)? = nil) {
+    func resplit(book: Book, rule: String?, completion: ((ResplitResult) -> Void)? = nil) {
+        // 连点两次「应用并重新分章」只跑一次：否则两个后台任务并发，
+        // 后完成的覆盖先完成的，completion 也会回调两次、提示文案跳变。
+        guard !splittingBooks.contains(book.id) else { return }
         let text = (rule ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         Preferences.shared.setChapterRule(text.isEmpty ? nil : text, for: book.id)
 
@@ -325,22 +364,41 @@ final class LibraryStore: ObservableObject {
         paragraphCache = paragraphCache.filter { !$0.key.hasPrefix(prefix) }
         splitCache.removeValue(forKey: book.id)
         ProgressStore.shared.resetAnchors(chapterPathPrefix: prefix)
+        // 隐藏记录存的也是 chapter.id，重切后全部失配 —— 不清掉会让
+        // 之前「删掉」的章节以新 id 重新冒出来，还占着设置页的统计。
+        let restoredHidden = ProgressStore.shared.resetHiddenChapters(chapterPathPrefix: prefix)
         objectWillChange.send()
 
         let clean = Preferences.shared.cleanTitles
+        // 重切必须用「用户给这本书选过的编码」：自动检测失败才需要手选，
+        // 用 .auto 重切会解出乱码 → 自定义规则匹配不到 → 静默退回整本一章。
+        let preferred = preferredEncoding(for: book)
         let fileURL = book.folderURL
         let pattern = text.isEmpty ? nil : text
         splittingBooks.insert(book.id)
         DispatchQueue.global(qos: .userInitiated).async {
             let chapters = BookScanner.makeSliceChapters(fileURL: fileURL,
                                                          cleanTitles: clean,
-                                                         customPattern: pattern)
+                                                         customPattern: pattern,
+                                                         preferred: preferred)
             DispatchQueue.main.async {
                 self.splittingBooks.remove(book.id)
-                guard !chapters.isEmpty else { completion?(0); return }
+                guard !chapters.isEmpty else {
+                    // 理论上不会发生（切不出多章会退回整本一章），
+                    // 但真出现了也不能让目录无限「准备中」。
+                    self.applySplit(bookId: book.id, chapters: book.chapters)
+                    completion?(ResplitResult(chapters: 0, danglingMarks: 0,
+                                              restoredHidden: restoredHidden))
+                    return
+                }
                 self.splitCache[book.id] = chapters
                 self.applySplit(bookId: book.id, chapters: chapters)
-                completion?(chapters.count)
+                let valid = Set(chapters.map(\.id))
+                let dangling = AnnotationStore.shared.danglingCount(in: book.id,
+                                                                    validChapterIds: valid)
+                completion?(ResplitResult(chapters: chapters.count,
+                                          danglingMarks: dangling.bookmarks + dangling.notes,
+                                          restoredHidden: restoredHidden))
             }
         }
     }
@@ -443,6 +501,9 @@ final class LibraryStore: ObservableObject {
         // 书没了，给它写的分章规则也没用了，别留在偏好里发霉
         Preferences.shared.setChapterRule(nil, for: book.id)
         ProgressStore.shared.resetAnchors(chapterPathPrefix: book.folderURL.path)
+        ProgressStore.shared.resetHiddenChapters(chapterPathPrefix: book.folderURL.path)
+        // 书签 / 笔记也要清：书 id 是路径，同名书重新导入会让旧标注「复活」
+        AnnotationStore.shared.removeAll(in: book.id)
         var removed = false
         do {
             try FileManager.default.removeItem(at: book.folderURL)

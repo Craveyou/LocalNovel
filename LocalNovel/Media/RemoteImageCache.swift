@@ -107,11 +107,12 @@ final class RemoteImageCache {
         memory.setObject(image, forKey: key(url) as NSString)
         // 落盘与淘汰都放后台队列：翻页时不要让写盘卡住主线程
         let limit = configuredLimit
-        let target = folder
+        let target = file          // 一图一文件；写成目录会让 write 必然失败（原来是 folder）
+        let cacheFolder = folder
         let payload = data
         queue.async {
             try? payload.write(to: target, options: .atomic)
-            _ = Self.trim(folder: target, limit: limit)
+            _ = Self.trim(folder: cacheFolder, limit: limit)
         }
         return image
     }

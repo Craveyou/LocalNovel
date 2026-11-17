@@ -61,6 +61,16 @@ enum ReaderTextPipeline {
     private static var cache: [String: [String]] = [:]
     private static var order: [String] = []
 
+    /// 正文内容的决定性因素（净化规则 + 繁简）的指纹。
+    /// 分页重建判断要用它：只看「段数 + 首末段长度」的话，
+    /// 改了一条只影响中间段落的净化规则，段数和首末段都没变 → 不重建，
+    /// 屏幕上还是没净化的旧正文，直到切章或改字号才刷新。
+    static func stamp(rules: [PurifyRule], traditional: Bool) -> String {
+        let active = rules.filter { $0.isEnabled && !$0.pattern.isEmpty }
+        guard !active.isEmpty || traditional else { return "raw" }
+        return "\(traditional ? 1 : 0)|\(PurifyEngine.fingerprint(active))"
+    }
+
     /// 全书可能几千段，这里只在「章节 + 规则 + 繁简」变化时重算
     static func paragraphs(chapterId: String,
                            raw: [String],
