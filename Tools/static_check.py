@@ -1763,6 +1763,10 @@ def main():
           and "onJumpToChapter(target, fraction)" in reader_now
           and "private func jumpToChapter(_ chapter: Chapter, fraction: Double)" in root_now
           and 'ProgressStore.shared.setAnchor("blk-p\\(paragraph)", for: chapter.id)' in root_now)
+    check("ReaderView 自定义 init 覆盖全部回调（新增属性必须同步，否则编译报 extra argument）",
+          "onJumpToChapter: @escaping (Chapter, Double) -> Void = { chapter, _ in" in reader_now
+          and "self.onJumpToChapter = onJumpToChapter" in reader_now
+          and "onJumpToChapter: { chapter, fraction in" in root_now)
     check("跨章跳转的锚点不被 onChange 覆盖成章首",
           "autoRestoredChapterId = chapter.id" in root_now)
     check("末段锚点不再被当脏数据（读完退出再进来不会回章首）",

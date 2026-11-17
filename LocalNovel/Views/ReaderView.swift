@@ -74,6 +74,9 @@ struct ReaderView: View {
          category: BookCategory = .novel,
          onOpenNext: @escaping (Chapter) -> Void = { _ in },
          onSelectChapter: @escaping (Chapter) -> Void = { _ in },
+         onJumpToChapter: @escaping (Chapter, Double) -> Void = { chapter, _ in
+             onSelectChapter(chapter)
+         },
          onExit: @escaping () -> Void = {}) {
         self.chapter = chapter
         self.nextChapter = nextChapter
@@ -83,6 +86,7 @@ struct ReaderView: View {
         self.category = category
         self.onOpenNext = onOpenNext
         self.onSelectChapter = onSelectChapter
+        self.onJumpToChapter = onJumpToChapter
         self.onExit = onExit
     }
 
