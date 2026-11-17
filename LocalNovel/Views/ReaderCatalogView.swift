@@ -29,9 +29,9 @@ struct ReaderCatalogView: View {
     let currentParagraph: Int
     let theme: ReaderTheme
     let onAddBookmark: (Int) -> Void
-    let onSelect: (Chapter) -> Void
     /// 精确跳段：点书签 / 笔记时连段落一起带回去
     let onSelectParagraph: (Chapter, Int) -> Void
+    let onSelect: (Chapter) -> Void
     let onDismiss: () -> Void
 
     @ObservedObject private var annotations = AnnotationStore.shared
