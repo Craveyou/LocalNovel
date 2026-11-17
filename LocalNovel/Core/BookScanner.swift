@@ -190,10 +190,22 @@ enum BookScanner {
     }
 
     /// 从整本正文里按「第X章」切章（epub 优先用 spine 自带的分章；无匹配则整本一章）
-    static func makeSliceChapters(fileURL: URL, cleanTitles: Bool) -> [Chapter] {
+    ///
+    /// customPattern 是用户给这本书写的「重新分章」规则（由 LibraryStore 从 Preferences 取后透传）。
+    /// 规则优先：切出两章以上就用它；规则写错 / 切不出多章时 ChapterSplitter 会退回内置正则，
+    /// 所以这里有规则也不会把一本书切成空。
+    static func makeSliceChapters(fileURL: URL, cleanTitles: Bool,
+                                  customPattern: String? = nil) -> [Chapter] {
         let bookTitle = fileURL.deletingPathExtension().lastPathComponent
         var slices: [ChapterSplitter.Slice] = []
-        if MediaResolver.isEpub(fileURL) {
+        let rule = (customPattern ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !rule.isEmpty,
+           let regex = ChapterSplitter.makePattern(rule),
+           let text = try? TextLoader.loadDocument(fileURL) {
+            let custom = ChapterSplitter.split(text, customPattern: regex)
+            if custom.count >= 2 { slices = custom }
+        }
+        if slices.isEmpty, MediaResolver.isEpub(fileURL) {
             slices = EpubParser.slices(url: fileURL)
         }
         if slices.isEmpty, let text = try? TextLoader.loadDocument(fileURL) {

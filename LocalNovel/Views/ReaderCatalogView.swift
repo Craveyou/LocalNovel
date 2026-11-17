@@ -24,6 +24,12 @@ struct ReaderCatalogView: View {
     let currentId: String
     let bookId: String
     let bookTitle: String
+    /// 整本文件（重新分章从这里取样本）
+    let bookURL: URL?
+    /// 这本书当前的分章规则（没设置 = 空串）
+    let chapterRule: String
+    /// 只有小说能重新分章（漫画 / 整理是目录结构，没有「切章」这回事）
+    let canResplit: Bool
     /// 当前章与当前段落（加书签 / 记笔记时记录位置）
     let currentChapter: Chapter
     let currentParagraph: Int
@@ -32,6 +38,8 @@ struct ReaderCatalogView: View {
     /// 精确跳段：点书签 / 笔记时连段落一起带回去
     let onSelectParagraph: (Chapter, Int) -> Void
     let onSelect: (Chapter) -> Void
+    /// 应用新的分章规则（nil = 恢复自动分章）
+    let onResplit: (String?) -> Void
     let onDismiss: () -> Void
 
     @ObservedObject private var annotations = AnnotationStore.shared
@@ -40,6 +48,7 @@ struct ReaderCatalogView: View {
     @State private var descending = false
     @State private var editingNote: ReaderNote?
     @State private var shareItem: ShareItem?
+    @State private var showResplit = false
 
     private var sorted: [Chapter] {
         descending ? Array(chapters.reversed()) : chapters
@@ -96,6 +105,11 @@ struct ReaderCatalogView: View {
             }
             .padding(24)
             .presentationDetents([.height(200)])
+        }
+        .sheet(isPresented: $showResplit) {
+            ChapterRuleSheet(initialRule: chapterRule, bookURL: bookURL) { rule in
+                onResplit(rule)
+            }
         }
     }
 
@@ -360,6 +374,9 @@ struct ReaderCatalogView: View {
                         if let chapter = chapters.first(where: { $0.id == currentId }) {
                             onSelect(chapter)
                         }
+                    }
+                    if canResplit {
+                        footerButton("重新分章") { showResplit = true }
                     }
                 case .bookmark:
                     footerButton("加书签") { onAddBookmark(currentParagraph) }

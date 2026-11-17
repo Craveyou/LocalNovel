@@ -289,13 +289,58 @@ final class LibraryStore: ObservableObject {
         splittingBooks.insert(book.id)
         let clean = Preferences.shared.cleanTitles
         let fileURL = book.folderURL
+        let rule = Preferences.shared.chapterRule(for: book.id)
         DispatchQueue.global(qos: .userInitiated).async {
-            let chapters = BookScanner.makeSliceChapters(fileURL: fileURL, cleanTitles: clean)
+            let chapters = BookScanner.makeSliceChapters(fileURL: fileURL,
+                                                         cleanTitles: clean,
+                                                         customPattern: rule)
             DispatchQueue.main.async {
                 self.splittingBooks.remove(book.id)
                 guard !chapters.isEmpty else { return }
                 self.splitCache[book.id] = chapters
                 self.applySplit(bookId: book.id, chapters: chapters)
+            }
+        }
+    }
+
+    // MARK: - 重新分章
+
+    /// 这本书当前用的分章规则（没设置 = nil，走内置正则）
+    func chapterRule(forBookId bookId: String) -> String? {
+        Preferences.shared.chapterRule(for: bookId)
+    }
+
+    /// 重新分章：写入规则 → 清掉这本书的全部派生缓存 → 后台重切 → 应用。
+    /// rule 传 nil 或空串表示恢复自动分章。
+    ///
+    /// 重切后章节 id（文件路径 + 区间起点）全变，段落下标也全变，
+    /// 所以必须先清 progress 里这本书的锚点，否则旧锚点会指向不存在的段落。
+    func resplit(book: Book, rule: String?, completion: ((Int) -> Void)? = nil) {
+        let text = (rule ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        Preferences.shared.setChapterRule(text.isEmpty ? nil : text, for: book.id)
+
+        let prefix = book.folderURL.path
+        contentCache = contentCache.filter { !$0.key.hasPrefix(prefix) }
+        textCache = textCache.filter { !$0.key.hasPrefix(prefix) }
+        paragraphCache = paragraphCache.filter { !$0.key.hasPrefix(prefix) }
+        splitCache.removeValue(forKey: book.id)
+        ProgressStore.shared.resetAnchors(chapterPathPrefix: prefix)
+        objectWillChange.send()
+
+        let clean = Preferences.shared.cleanTitles
+        let fileURL = book.folderURL
+        let pattern = text.isEmpty ? nil : text
+        splittingBooks.insert(book.id)
+        DispatchQueue.global(qos: .userInitiated).async {
+            let chapters = BookScanner.makeSliceChapters(fileURL: fileURL,
+                                                         cleanTitles: clean,
+                                                         customPattern: pattern)
+            DispatchQueue.main.async {
+                self.splittingBooks.remove(book.id)
+                guard !chapters.isEmpty else { completion?(0); return }
+                self.splitCache[book.id] = chapters
+                self.applySplit(bookId: book.id, chapters: chapters)
+                completion?(chapters.count)
             }
         }
     }
@@ -395,6 +440,9 @@ final class LibraryStore: ObservableObject {
     func deleteBook(_ book: Book) -> String {
         invalidateCaches()
         splitCache.removeValue(forKey: book.id)
+        // 书没了，给它写的分章规则也没用了，别留在偏好里发霉
+        Preferences.shared.setChapterRule(nil, for: book.id)
+        ProgressStore.shared.resetAnchors(chapterPathPrefix: book.folderURL.path)
         var removed = false
         do {
             try FileManager.default.removeItem(at: book.folderURL)

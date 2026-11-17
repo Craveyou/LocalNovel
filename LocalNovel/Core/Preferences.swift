@@ -271,6 +271,33 @@ final class Preferences: ObservableObject {
         purifyEnabled ? purifyRules : []
     }
 
+    // MARK: 重新分章（G 组）
+    //
+    // 每本书一条自定义分章正则（bookId → 正则文本）。空串等同于没设置，
+    // 表示走内置的「第X章 / Chapter N / 序章」那套。规则只影响分章，
+    // 不动源文件；应用后该书的章节区间会整批重建。
+    @Published var chapterRules: [String: String] = [:] {
+        didSet { if loaded { save() } }
+    }
+
+    /// 这本书当前的分章规则；没写过（或写成空）返回 nil
+    func chapterRule(for bookId: String) -> String? {
+        let rule = (chapterRules[bookId] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return rule.isEmpty ? nil : rule
+    }
+
+    /// 写入 / 清除某本书的分章规则（空串 = 恢复自动分章）
+    func setChapterRule(_ rule: String?, for bookId: String) {
+        let text = (rule ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.isEmpty {
+            guard chapterRules[bookId] != nil else { return }
+            chapterRules.removeValue(forKey: bookId)
+        } else {
+            guard chapterRules[bookId] != text else { return }
+            chapterRules[bookId] = text
+        }
+    }
+
     // MARK: 全局外观
 
     @Published var appearance: AppearanceMode = .system {
@@ -431,6 +458,10 @@ final class Preferences: ObservableObject {
            let list = try? JSONDecoder().decode([PurifyRule].self, from: data) {
             purifyRules = list
         }
+        if let data = defaults.data(forKey: Keys.chapterRules),
+           let map = try? JSONDecoder().decode([String: String].self, from: data) {
+            chapterRules = map
+        }
         autoOpenLastBook = defaults.bool(forKey: Keys.autoOpenLastBook)
         firstLineIndent = defaults.object(forKey: Keys.indent) == nil
             ? true : defaults.bool(forKey: Keys.indent)
@@ -510,6 +541,7 @@ final class Preferences: ObservableObject {
         static let autoOpenLastBook = "LocalNovel.autoOpenLastBook"
         static let purifyEnabled = "LocalNovel.purifyEnabled"
         static let purifyRules = "LocalNovel.purifyRules"
+        static let chapterRules = "LocalNovel.chapterRules"
         static let keepScreenOn = "LocalNovel.keepScreenOn"
     }
 
@@ -564,6 +596,9 @@ final class Preferences: ObservableObject {
         defaults.set(purifyEnabled, forKey: Keys.purifyEnabled)
         if let data = try? JSONEncoder().encode(purifyRules) {
             defaults.set(data, forKey: Keys.purifyRules)
+        }
+        if let data = try? JSONEncoder().encode(chapterRules) {
+            defaults.set(data, forKey: Keys.chapterRules)
         }
         defaults.set(keepScreenOn, forKey: Keys.keepScreenOn)
     }

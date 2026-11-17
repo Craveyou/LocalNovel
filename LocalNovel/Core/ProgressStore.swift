@@ -154,4 +154,33 @@ final class ProgressStore {
         last.removeValue(forKey: bookId)
         defaults.set(last, forKey: Keys.lastChapters)
     }
+
+    /// 重新分章：章节 id（文件路径 + 区间起点）与段落下标全部失效。
+    /// 一次性清掉这本书的所有锚点 / 滚动位置 / 媒体进度与「最近读的章」，
+    /// 让新章节一律从章首开始 —— 否则旧锚点会指向完全不存在的段落，
+    /// 表现就是「重切后打开直接翻到末尾」。
+    func resetAnchors(chapterPathPrefix prefix: String) {
+        guard !prefix.isEmpty else { return }
+        lock.lock()
+        pendingAnchors = pendingAnchors.filter { !$0.key.hasPrefix(prefix) }
+        lock.unlock()
+
+        var anchors = defaults.dictionary(forKey: Keys.anchors) as? [String: String] ?? [:]
+        // 先快照 key 再删：边遍历边改同一个字典会触发独占访问冲突
+        for key in Array(anchors.keys) where key.hasPrefix(prefix) { anchors.removeValue(forKey: key) }
+        defaults.set(anchors, forKey: Keys.anchors)
+
+        var offsets = defaults.dictionary(forKey: Keys.offsets) as? [String: Double] ?? [:]
+        for key in Array(offsets.keys) where key.hasPrefix(prefix) { offsets.removeValue(forKey: key) }
+        defaults.set(offsets, forKey: Keys.offsets)
+
+        var times = defaults.dictionary(forKey: Keys.mediaTimes) as? [String: Double] ?? [:]
+        for key in Array(times.keys) where key.hasPrefix(prefix) { times.removeValue(forKey: key) }
+        defaults.set(times, forKey: Keys.mediaTimes)
+
+        var last = defaults.dictionary(forKey: Keys.lastChapters) as? [String: String] ?? [:]
+        let staleBooks = last.compactMap { $0.value.hasPrefix(prefix) ? $0.key : nil }
+        for book in staleBooks { last.removeValue(forKey: book) }
+        defaults.set(last, forKey: Keys.lastChapters)
+    }
 }

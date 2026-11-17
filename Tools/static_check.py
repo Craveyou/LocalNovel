@@ -349,8 +349,8 @@ def main():
           and "DocumentsBootstrap.guideFileName" in resolver)
     check("切回前台补写说明文件", "DocumentsBootstrap.ensureVisibleInFilesApp()" in store)
     check("版本号提升以刷新系统元数据",
-          "<string>2.11.9</string>" in plist and "CURRENT_PROJECT_VERSION = 10" in pbx
-          and "MARKETING_VERSION = 2.11.9" in pbx)
+          "<string>2.12.0</string>" in plist and "CURRENT_PROJECT_VERSION = 11" in pbx
+          and "MARKETING_VERSION = 2.12.0" in pbx)
     check("UI 给出「文件 App 搜索本地小说」兜底路径",
           "搜索框搜「本地小说」" in welcome and "搜索「本地小说」" in store)
     check("AppIcon asset catalog（1024 + Contents.json）",
@@ -713,9 +713,9 @@ def main():
     check("文档正文含双格式包一节",
           "### 5. 同一部书按格式分成两个包（PDF 包 + 图片包）"
           in (ROOT / "Docs" / "漫画目录结构说明.md").read_text(encoding="utf-8"))
-    check("版本升到 2.11.9 / build 7",
-          "<string>2.11.9</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>10</string>" in plist)
+    check("版本升到 2.12.0 / build 11",
+          "<string>2.12.0</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>11</string>" in plist)
 
 
     print("\n== N. 本轮：底部三页 / 短剧 / NAS 连接 ==")
@@ -956,9 +956,9 @@ def main():
     check("NAS 书目录里直接放文件时仍当作一本书",
           "把目录本身当成一本书" in nas_lib_views
           and "hasMedia ? 1 : nil" in nas_lib)
-    check("版本升到 2.11.9 / build 7",
-          "<string>2.11.9</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>10</string>" in plist)
+    check("版本升到 2.12.0 / build 11",
+          "<string>2.12.0</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>11</string>" in plist)
 
     print("\n== S. 本轮：txt 乱码（UTF-16 误判 / GBK / Big5） ==")
     encoding_src = (APP / "Core" / "TextEncoding.swift").read_text(encoding="utf-8")
@@ -1264,8 +1264,8 @@ def main():
     check("相邻章正文预取（切章不空等）",
           "func warmNextChapter()" in reader
           and "library.paragraphs(for: next)" in reader)
-    check("版本已升到 2.11.9 / build 7",
-          "2.11.9" in (APP / "Info.plist").read_text(encoding="utf-8"))
+    check("版本已升到 2.12.0 / build 11",
+          "2.12.0" in (APP / "Info.plist").read_text(encoding="utf-8"))
 
     print("\n== Z. 本轮：上下菜单栏 + 进度滑杆 + 目录面板 ==")
     bars = (APP / "Views" / "ReaderChromeBars.swift").read_text(encoding="utf-8")
@@ -1448,6 +1448,67 @@ def main():
     check("关掉后连页脚那一条留白也收掉",
           "let progressOff = input?.showsProgress == false" in paged
           and "guard input?.showsProgress != false else { return \"\" }" in paged)
+
+    print("\n== AG. 本轮：重新分章（按书自定义正则 + 样本预览） ==")
+    splitter = (APP / "Core" / "ChapterSplitter.swift").read_text(encoding="utf-8")
+    scanner = (APP / "Core" / "BookScanner.swift").read_text(encoding="utf-8")
+    store = (APP / "Core" / "LibraryStore.swift").read_text(encoding="utf-8")
+    prefs_src = (APP / "Core" / "Preferences.swift").read_text(encoding="utf-8")
+    progress = (APP / "Core" / "ProgressStore.swift").read_text(encoding="utf-8")
+    catalog = (APP / "Views" / "ReaderCatalogView.swift").read_text(encoding="utf-8")
+    rule_sheet = (APP / "Views" / "ChapterRuleSheet.swift").read_text(encoding="utf-8")
+    reader = (APP / "Views" / "ReaderView.swift").read_text(encoding="utf-8")
+
+    check("分章入口可带自定义规则（默认参数保持原调用不变）",
+          "static func split(_ text: String, customPattern: NSRegularExpression? = nil)" in splitter
+          and "ChapterSplitter.split(text)" in scanner)
+    check("自定义规则优先，切不出两章退回内置正则（绝不把书切成空）",
+          "if let customPattern {" in splitter
+          and "if custom.count >= 2 { return custom }" in splitter
+          and "guard builtIn.count >= 2 else { return [Slice(title: \"\", range: full)] }" in splitter)
+    check("规则按书存 Preferences（bookId → 正则，JSON 持久化）",
+          "var chapterRules: [String: String]" in prefs_src
+          and "func chapterRule(for bookId: String) -> String?" in prefs_src
+          and "func setChapterRule(_ rule: String?, for bookId: String)" in prefs_src
+          and "JSONEncoder().encode(chapterRules)" in prefs_src)
+    check("规则由 LibraryStore 取出透传给 Scanner（Scanner 不读 Preferences）",
+          "let rule = Preferences.shared.chapterRule(for: book.id)" in store
+          and "customPattern: rule)" in store and "customPattern: pattern)" in store
+          and "customPattern: String? = nil" in scanner
+          and "ChapterSplitter.split(text, customPattern: regex)" in scanner
+          and "Preferences.shared" not in scanner)
+    check("重切前清掉这本书的分章 / 段落缓存",
+          "splitCache.removeValue(forKey: book.id)" in store
+          and "paragraphCache = paragraphCache.filter { !$0.key.hasPrefix(prefix) }" in store
+          and "ProgressStore.shared.resetAnchors(chapterPathPrefix: prefix)" in store)
+    check("重切后锚点批量重置（锚点 / 滚动位置 / 媒体进度 / 最近章一并清）",
+          "func resetAnchors(chapterPathPrefix prefix: String)" in progress
+          and progress.count("for key in Array(") >= 3
+          and "$0.value.hasPrefix(prefix)" in progress)
+    check("目录 Tab 底部有「重新分章」，只给小说开",
+          'footerButton("重新分章")' in catalog
+          and "if canResplit {" in catalog
+          and "canResplit: category == .novel" in reader)
+    check("弹层里写规则 + 前 2000 行样本预览 + 确认才落库",
+          "ChapterRuleSheet(initialRule: chapterRule" in catalog
+          and "maxLines: 2000" in rule_sheet
+          and 'Text("应用并重新分章")' in rule_sheet)
+    check("预览只报「样本能切出几章 + 前几条标题」，不冒充全书",
+          "struct Preview" in splitter
+          and "能切出 \\(preview.count) 章" in rule_sheet
+          and "前 \\(preview.sampleLines) 行" in rule_sheet)
+    check("正则写错直接报错且禁用应用；可恢复自动分章",
+          "static func validate(_ pattern: String) -> String?" in splitter
+          and '.disabled(!canApply || computing)' in rule_sheet
+          and 'Button("恢复自动分章")' in rule_sheet)
+    check("常用规则预置（第X章 / 数字开头 / Chapter N / 卷部）",
+          "static let presets: [Preset]" in splitter
+          and "ForEach(ChapterSplitter.presets)" in rule_sheet)
+    check("删书时顺手清掉它的分章规则",
+          "Preferences.shared.setChapterRule(nil, for: book.id)" in store)
+    check("版本已升到 2.12.0 / build 11",
+          "<string>2.12.0</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>11</string>" in plist)
 
     print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")
     if FAIL:

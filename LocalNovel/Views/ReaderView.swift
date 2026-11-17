@@ -63,6 +63,8 @@ struct ReaderView: View {
     @ObservedObject private var annotations = AnnotationStore.shared
     /// 滚动模式：到底之后的上拉是否还有效（切过章或松手回弹后重新武装，保证一次一记）
     @State private var bottomPullArmed = true
+    /// 重新分章的即时反馈（切成多少章）
+    @State private var resplitNotice: String?
 
     init(chapter: Chapter,
          nextChapter: Chapter? = nil,
@@ -212,6 +214,32 @@ struct ReaderView: View {
                                            chapterTitle: chapter.displayTitle,
                                            paragraph: paragraph,
                                            preview: preview)
+    }
+
+    /// 本书最新快照（重新分章要用它把规则写进 Preferences 并重扫）
+    private var currentBook: Book? {
+        library.library?.books.first(where: { $0.id == bookId })
+    }
+
+    /// 应用新的分章规则：面板收起 → 后台重切 → 目录与进度按新章节重建
+    private func applyResplit(_ rule: String?) {
+        guard let book = currentBook else { return }
+        withAnimation(.easeOut(duration: 0.18)) {
+            showCatalog = false
+            showMenu = false
+        }
+        resplitNotice = "正在重新分章…"
+        library.resplit(book: book, rule: rule) { count in
+            let message = count >= 2
+                ? "已按新规则切成 \(count) 章"
+                : "这条规则切不出多章，已退回自动分章（整本一章）"
+            withAnimation(.easeOut(duration: 0.2)) { resplitNotice = message }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.4) {
+                if resplitNotice == message {
+                    withAnimation(.easeIn(duration: 0.2)) { resplitNotice = nil }
+                }
+            }
+        }
     }
 
     private func sendPageCommand(_ delta: Int) {
@@ -433,6 +461,21 @@ struct ReaderView: View {
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
+        // 重新分章的即时反馈：切成多少章 / 退回自动分章
+        .overlay(alignment: .top) {
+            if let notice = resplitNotice {
+                Text(notice)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(prefs.theme.uiText)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 9)
+                    .background(prefs.theme.uiBackground.opacity(0.96),
+                                in: Capsule())
+                    .overlay(Capsule().strokeBorder(prefs.theme.uiSeparator, lineWidth: 0.6))
+                    .padding(.top, 52)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
         // 右侧浮动圆钮：书签 / 目录 / 主题（只在菜单展开时出现）
         .overlay(alignment: .trailing) {
             if showMenu {
@@ -451,6 +494,9 @@ struct ReaderView: View {
                                   currentId: chapter.id,
                                   bookId: bookId,
                                   bookTitle: bookTitle,
+                                  bookURL: currentBook?.folderURL ?? chapter.folderURL,
+                                  chapterRule: library.chapterRule(forBookId: bookId) ?? "",
+                                  canResplit: category == .novel,
                                   currentChapter: chapter,
                                   currentParagraph: currentParagraphIndex,
                                   theme: prefs.theme,
@@ -463,6 +509,7 @@ struct ReaderView: View {
                                       showMenu = false
                                       onSelectChapter(picked)
                                   },
+                                  onResplit: { rule in applyResplit(rule) },
                                   onDismiss: { showCatalog = false })
                     .transition(.opacity)
             }
