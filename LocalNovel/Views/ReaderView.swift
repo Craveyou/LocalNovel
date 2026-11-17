@@ -82,7 +82,7 @@ struct ReaderView: View {
          onOpenNext: @escaping (Chapter) -> Void = { _ in },
          onSelectChapter: @escaping (Chapter, Int?) -> Void = { _, _ in },
          onJumpToChapter: ((Chapter, Double) -> Void)? = nil,
-         onCoreChapterChange: @escaping (Chapter) -> Void = {},
+         onCoreChapterChange: @escaping (Chapter) -> Void = { _ in },
          onExit: @escaping () -> Void = {}) {
         self.chapter = chapter
         self.nextChapter = nextChapter
