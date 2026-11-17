@@ -256,7 +256,7 @@ final class LibraryStore: ObservableObject {
         pendingRescan = false
         let next = pendingRescanCompletion
         pendingRescanCompletion = nil
-        rescan(headline: headline, completion: next)
+        rescan(headline: headline ?? "已同步书库改动", completion: next)
     }
 
     /// 切换到「文件 App → 我的 iPhone → 本地小说」里的书（零权限路径）

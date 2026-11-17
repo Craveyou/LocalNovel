@@ -43,8 +43,8 @@ final class LocalMediaPlayer: ObservableObject {
         // 恢复进度：不能拿 assetDuration 当门槛 —— 远端视频这里恒为 0，
         // 原来那个 `saved < assetDuration - 1` 永远不成立，NAS 视频永远从头播。
         // 兼容旧数据：以前按 chapterId 存，单媒体章节的进度能直接接上。
-        var saved = ProgressStore.shared.mediaTime(for: progressKey)
-        if saved <= 1, progressKey != chapterId {
+        var saved = ProgressStore.shared.mediaTime(for: self.progressKey)
+        if saved <= 1, self.progressKey != chapterId {
             saved = ProgressStore.shared.mediaTime(for: chapterId)
         }
         if saved > 1 {
@@ -59,7 +59,7 @@ final class LocalMediaPlayer: ObservableObject {
         // 播完必须自己收状态：否则 isPlaying 还是 true，按钮显示「暂停」，
         // 点一下执行的是 pause()，播放器停在末尾再也起不来。
         endObserver = NotificationCenter.default.addObserver(
-            forName: AVPlayerItem.didPlayToEndTime, object: item, queue: .main
+            forName: NSNotification.Name.AVPlayerItemDidPlayToEndTime, object: item, queue: .main
         ) { [weak self] _ in
             guard let self else { return }
             self.isPlaying = false

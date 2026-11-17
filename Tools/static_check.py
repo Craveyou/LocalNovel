@@ -1615,7 +1615,7 @@ def main():
           "chaptersFingerprint" in cat
           and "if !fresh.isEmpty { search.start(query: fresh, chapters: chapters) }" in cat)
     check("播放结束回到未播放态，且再点播放能从头重播",
-          "AVPlayerItem.didPlayToEndTime" in player_src
+          "AVPlayerItemDidPlayToEndTime" in player_src
           and "if duration > 1, currentTime >= duration - 0.5" in player_src)
     check("远端视频也能恢复进度（不再用 assetDuration 当门槛）",
           "let reachedEnd = assetDuration.isFinite" in player_src

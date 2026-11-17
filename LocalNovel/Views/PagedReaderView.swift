@@ -405,7 +405,7 @@ class PagedBaseController: UIViewController {
     /// 不带动画：这是「定位」不是「翻页」，动画反而让人等。
     func jumpToParagraph(_ paragraph: Int) {
         guard !pages.isEmpty else { return }
-        let target = TextPaginator.pageIndex(forParagraph: clampedParagraph(paragraph), in: pages)
+        let target = TextPaginator.pageIndex(forParagraph: clampedParagraph(paragraph), in: slices)
         guard target != currentIndex else {
             // 已经是目标页：至少刷一次位置，确保锚点写的是这一段
             afterPageChange()
