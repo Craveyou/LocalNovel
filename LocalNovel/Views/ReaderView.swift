@@ -74,9 +74,7 @@ struct ReaderView: View {
          category: BookCategory = .novel,
          onOpenNext: @escaping (Chapter) -> Void = { _ in },
          onSelectChapter: @escaping (Chapter) -> Void = { _ in },
-         onJumpToChapter: @escaping (Chapter, Double) -> Void = { chapter, _ in
-             onSelectChapter(chapter)
-         },
+         onJumpToChapter: ((Chapter, Double) -> Void)? = nil,
          onExit: @escaping () -> Void = {}) {
         self.chapter = chapter
         self.nextChapter = nextChapter
@@ -86,7 +84,8 @@ struct ReaderView: View {
         self.category = category
         self.onOpenNext = onOpenNext
         self.onSelectChapter = onSelectChapter
-        self.onJumpToChapter = onJumpToChapter
+        // 没传就退回「只切章不定位」（默认参数里不能引用其它参数，只能在这里兜底）
+        self.onJumpToChapter = onJumpToChapter ?? { chapter, _ in onSelectChapter(chapter) }
         self.onExit = onExit
     }
 
