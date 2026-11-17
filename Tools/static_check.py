@@ -349,8 +349,8 @@ def main():
           and "DocumentsBootstrap.guideFileName" in resolver)
     check("切回前台补写说明文件", "DocumentsBootstrap.ensureVisibleInFilesApp()" in store)
     check("版本号提升以刷新系统元数据",
-          "<string>2.11.4</string>" in plist and "CURRENT_PROJECT_VERSION = 5" in pbx
-          and "MARKETING_VERSION = 2.11.4" in pbx)
+          "<string>2.11.5</string>" in plist and "CURRENT_PROJECT_VERSION = 6" in pbx
+          and "MARKETING_VERSION = 2.11.5" in pbx)
     check("UI 给出「文件 App 搜索本地小说」兜底路径",
           "搜索框搜「本地小说」" in welcome and "搜索「本地小说」" in store)
     check("AppIcon asset catalog（1024 + Contents.json）",
@@ -713,9 +713,9 @@ def main():
     check("文档正文含双格式包一节",
           "### 5. 同一部书按格式分成两个包（PDF 包 + 图片包）"
           in (ROOT / "Docs" / "漫画目录结构说明.md").read_text(encoding="utf-8"))
-    check("版本升到 2.11.4 / build 5",
-          "<string>2.11.4</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>5</string>" in plist)
+    check("版本升到 2.11.5 / build 6",
+          "<string>2.11.5</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>6</string>" in plist)
 
 
     print("\n== N. 本轮：底部三页 / 短剧 / NAS 连接 ==")
@@ -956,9 +956,9 @@ def main():
     check("NAS 书目录里直接放文件时仍当作一本书",
           "把目录本身当成一本书" in nas_lib_views
           and "hasMedia ? 1 : nil" in nas_lib)
-    check("版本升到 2.11.4 / build 5",
-          "<string>2.11.4</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>5</string>" in plist)
+    check("版本升到 2.11.5 / build 6",
+          "<string>2.11.5</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>6</string>" in plist)
 
     print("\n== S. 本轮：txt 乱码（UTF-16 误判 / GBK / Big5） ==")
     encoding_src = (APP / "Core" / "TextEncoding.swift").read_text(encoding="utf-8")
@@ -1263,8 +1263,8 @@ def main():
     check("相邻章正文预取（切章不空等）",
           "func warmNextChapter()" in reader
           and "library.paragraphs(for: next)" in reader)
-    check("版本已升到 2.11.4 / build 5",
-          "2.11.4" in (APP / "Info.plist").read_text(encoding="utf-8"))
+    check("版本已升到 2.11.5 / build 6",
+          "2.11.5" in (APP / "Info.plist").read_text(encoding="utf-8"))
 
     print("\n== Z. 本轮：上下菜单栏 + 进度滑杆 + 目录面板 ==")
     bars = (APP / "Views" / "ReaderChromeBars.swift").read_text(encoding="utf-8")
@@ -1291,10 +1291,10 @@ def main():
           "ignoresSafeArea(edges: .bottom)" in catalog
           and "搜索章节" in catalog
           and "倒序" in catalog and "正序" in catalog
-          and 'Text("共 \\(chapters.count) 章")' in catalog)
+          and 'return "共 \\(chapters.count) 章"' in catalog)
     check("目录打开即定位当前章，并提供「定位到当前章」按钮",
           "proxy.scrollTo(currentId, anchor: .center)" in catalog
-          and 'Text("定位到当前章")' in catalog)
+          and 'footerButton("定位到当前章")' in catalog)
     check("菜单开合由正文中间单击驱动，切章后自动收起",
           "showMenu.toggle()" in reader
           and "showMenu = false" in reader

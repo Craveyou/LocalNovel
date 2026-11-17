@@ -24,8 +24,9 @@ struct ReaderView: View {
     let nextChapter: Chapter?
     /// 本书全部章节（供控制菜单里的目录弹层跳转）
     let chapters: [Chapter]
-    /// 书名：页眉可以选「书名」（小说专属排版）
+    /// 书名：页眉可以选「书名」（小说专属排版），也是书签 / 笔记的归属键
     let bookTitle: String
+    let bookId: String
     /// 所在分区。翻页只给「小说」；漫画连排、整理图文混排，都必须滚动
     let category: BookCategory
     let onOpenNext: (Chapter) -> Void
@@ -63,6 +64,7 @@ struct ReaderView: View {
          nextChapter: Chapter? = nil,
          chapters: [Chapter] = [],
          bookTitle: String = "",
+         bookId: String = "",
          category: BookCategory = .novel,
          onOpenNext: @escaping (Chapter) -> Void = { _ in },
          onSelectChapter: @escaping (Chapter) -> Void = { _ in },
@@ -71,6 +73,7 @@ struct ReaderView: View {
         self.nextChapter = nextChapter
         self.chapters = chapters
         self.bookTitle = bookTitle
+        self.bookId = bookId
         self.category = category
         self.onOpenNext = onOpenNext
         self.onSelectChapter = onSelectChapter
@@ -158,6 +161,27 @@ struct ReaderView: View {
             pager.start()
             volumePager = pager
         }
+    }
+
+    /// 当前段落（阅读记忆里的锚点），书签 / 笔记用它记位置
+    private var currentParagraphIndex: Int {
+        guard let anchor = ProgressStore.shared.anchor(for: chapter.id),
+              anchor.hasPrefix("blk-p"),
+              let value = Int(anchor.dropFirst("blk-p".count)) else { return 0 }
+        return max(0, value)
+    }
+
+    /// 加书签：位置 + 当时段落的一小段原文做预览
+    private func addBookmark(at paragraph: Int) {
+        let list = paragraphs
+        let preview = (paragraph >= 0 && paragraph < list.count)
+            ? String(list[paragraph].prefix(40))
+            : ""
+        AnnotationStore.shared.addBookmark(bookId: bookId,
+                                           chapterId: chapter.id,
+                                           chapterTitle: chapter.displayTitle,
+                                           paragraph: paragraph,
+                                           preview: preview)
     }
 
     private func sendPageCommand(_ delta: Int) {
@@ -382,7 +406,12 @@ struct ReaderView: View {
             if showCatalog {
                 ReaderCatalogView(chapters: chapters,
                                   currentId: chapter.id,
+                                  bookId: bookId,
+                                  bookTitle: bookTitle,
+                                  currentChapter: chapter,
+                                  currentParagraph: currentParagraphIndex,
                                   theme: prefs.theme,
+                                  onAddBookmark: addBookmark(at:),
                                   onSelect: { picked in
                                       showCatalog = false
                                       showMenu = false

@@ -1,26 +1,43 @@
 import SwiftUI
 
-// MARK: - 目录面板（从下方浮出，版式对齐千阅）
-//
-// 结构：
-//   拖拽手柄
-//   标题 + 章节数 ......... 正序/倒序 · 关闭
-//   搜索框（输入即过滤）
-//   章节列表（当前章高亮 + 圆点，打开时自动定位到当前章）
-//   底部「定位到当前章」
-//
-// 只给「小说」用；漫画 / 整理 / 短剧仍走它们原来的章节列表。
+// MARK: - 目录面板（从下方浮出：目录 / 书签 / 笔记 三个 Tab）
+
+private enum CatalogTab: Int, CaseIterable, Identifiable {
+    case catalog, bookmark, note
+    var id: Int { rawValue }
+    var label: String {
+        switch self {
+        case .catalog:  return "目录"
+        case .bookmark: return "书签"
+        case .note:     return "笔记"
+        }
+    }
+}
+
+private struct ShareItem: Identifiable {
+    let id = UUID()
+    let url: URL
+}
 
 struct ReaderCatalogView: View {
     let chapters: [Chapter]
     let currentId: String
+    let bookId: String
+    let bookTitle: String
+    /// 当前章与当前段落（加书签 / 记笔记时记录位置）
+    let currentChapter: Chapter
+    let currentParagraph: Int
     let theme: ReaderTheme
     let onSelect: (Chapter) -> Void
+    let onAddBookmark: (Int) -> Void
     let onDismiss: () -> Void
 
+    @ObservedObject private var annotations = AnnotationStore.shared
+    @State private var tab: CatalogTab = .catalog
     @State private var query = ""
     @State private var descending = false
-    @FocusState private var searchFocused: Bool
+    @State private var editingNote: ReaderNote?
+    @State private var shareItem: ShareItem?
 
     private var sorted: [Chapter] {
         descending ? Array(chapters.reversed()) : chapters
@@ -49,9 +66,9 @@ struct ReaderCatalogView: View {
                 VStack(spacing: 0) {
                     handle
                     header
-                    searchBar
+                    if tab == .catalog { searchBar }
                     Divider().overlay(theme.uiSeparator)
-                    list
+                    content
                     footer
                 }
                 .frame(height: geo.size.height * 0.72)
@@ -61,6 +78,23 @@ struct ReaderCatalogView: View {
             }
         }
         .ignoresSafeArea(edges: .bottom)
+        .sheet(item: $editingNote) { note in
+            NoteEditorSheet(note: note, theme: theme) { updated in
+                AnnotationStore.shared.update(updated)
+            }
+        }
+        .sheet(item: $shareItem) { item in
+            VStack(spacing: 18) {
+                Text("笔记已导出").font(.headline)
+                ShareLink(item: item.url) {
+                    Label("保存 / 分享", systemImage: "square.and.arrow.up")
+                }
+                Button("完成") { shareItem = nil }
+                    .foregroundStyle(.secondary)
+            }
+            .padding(24)
+            .presentationDetents([.height(200)])
+        }
     }
 
     // MARK: 局部
@@ -74,44 +108,61 @@ struct ReaderCatalogView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 10) {
-            Text("目录")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(theme.uiText)
-            Text("共 \(chapters.count) 章")
-                .font(.system(size: 12))
-                .foregroundStyle(theme.uiHeaderFooter)
-
-            Spacer(minLength: 8)
-
-            Button {
-                descending.toggle()
-            } label: {
-                HStack(spacing: 3) {
-                    Image(systemName: descending ? "arrow.up" : "arrow.down")
-                        .font(.system(size: 11, weight: .semibold))
-                    Text(descending ? "倒序" : "正序")
-                        .font(.system(size: 12))
+        VStack(spacing: 6) {
+            HStack(spacing: 10) {
+                Picker("", selection: $tab) {
+                    ForEach(CatalogTab.allCases) { item in
+                        Text(item.label).tag(item)
+                    }
                 }
-                .foregroundStyle(theme.uiText)
-                .padding(.horizontal, 8)
-                .frame(height: 28)
-                .background(theme.uiSeparator.opacity(0.35),
-                            in: Capsule())
-            }
-            .buttonStyle(.plain)
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 210)
 
-            Button(action: onDismiss) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(theme.uiHeaderFooter)
-                    .frame(width: 28, height: 28)
-                    .contentShape(Rectangle())
+                Spacer(minLength: 8)
+
+                if tab == .catalog {
+                    Button {
+                        descending.toggle()
+                    } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: descending ? "arrow.up" : "arrow.down")
+                                .font(.system(size: 11, weight: .semibold))
+                            Text(descending ? "倒序" : "正序").font(.system(size: 12))
+                        }
+                        .foregroundStyle(theme.uiText)
+                        .padding(.horizontal, 8)
+                        .frame(height: 28)
+                        .background(theme.uiSeparator.opacity(0.35), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(theme.uiHeaderFooter)
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
+            HStack {
+                Text(subtitle)
+                    .font(.system(size: 11))
+                    .foregroundStyle(theme.uiHeaderFooter)
+                Spacer()
+            }
         }
         .padding(.horizontal, 16)
         .padding(.bottom, 8)
+    }
+
+    private var subtitle: String {
+        switch tab {
+        case .catalog:  return "共 \(chapters.count) 章"
+        case .bookmark: return "共 \(annotations.bookmarks(in: bookId).count) 条书签"
+        case .note:     return "共 \(annotations.notes(in: bookId).count) 条笔记"
+        }
     }
 
     private var searchBar: some View {
@@ -122,13 +173,9 @@ struct ReaderCatalogView: View {
             TextField("搜索章节", text: $query)
                 .font(.system(size: 14))
                 .foregroundStyle(theme.uiText)
-                .focused($searchFocused)
-                .submitLabel(.search)
                 .autocorrectionDisabled()
             if !query.isEmpty {
-                Button {
-                    query = ""
-                } label: {
+                Button { query = "" } label: {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: 13))
                         .foregroundStyle(theme.uiHeaderFooter)
@@ -144,25 +191,27 @@ struct ReaderCatalogView: View {
         .padding(.bottom, 8)
     }
 
-    private var list: some View {
+    @ViewBuilder
+    private var content: some View {
+        switch tab {
+        case .catalog:  chapterList
+        case .bookmark: bookmarkList
+        case .note:     noteList
+        }
+    }
+
+    private var chapterList: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 0) {
-                    ForEach(Array(filtered.enumerated()), id: \.element.id) { _, chapter in
-                        row(chapter)
-                            .id(chapter.id)
+                    ForEach(filtered) { chapter in
+                        chapterRow(chapter).id(chapter.id)
                     }
-                    if filtered.isEmpty {
-                        Text("没有匹配的章节")
-                            .font(.system(size: 13))
-                            .foregroundStyle(theme.uiHeaderFooter)
-                            .padding(.top, 40)
-                    }
+                    if filtered.isEmpty { emptyHint("没有匹配的章节") }
                 }
                 .padding(.bottom, 8)
             }
             .onAppear {
-                // 打开即定位到当前章（列表可能上千条，滚到当前章才有意义）
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
                     proxy.scrollTo(currentId, anchor: .center)
                 }
@@ -170,7 +219,7 @@ struct ReaderCatalogView: View {
         }
     }
 
-    private func row(_ chapter: Chapter) -> some View {
+    private func chapterRow(_ chapter: Chapter) -> some View {
         let isCurrent = chapter.id == currentId
         return Button {
             onSelect(chapter)
@@ -186,11 +235,7 @@ struct ReaderCatalogView: View {
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
                 Spacer(minLength: 6)
-                if isCurrent {
-                    Circle()
-                        .fill(Color.accentColor)
-                        .frame(width: 6, height: 6)
-                }
+                if isCurrent { Circle().fill(Color.accentColor).frame(width: 6, height: 6) }
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 9)
@@ -200,21 +245,208 @@ struct ReaderCatalogView: View {
         .buttonStyle(.plain)
     }
 
+    private var bookmarkList: some View {
+        let list = annotations.bookmarks(in: bookId)
+        return ScrollView {
+            LazyVStack(spacing: 0) {
+                if list.isEmpty { emptyHint("还没有书签。下方「加书签」会记住当前位置。") }
+                ForEach(list) { mark in
+                    Button {
+                        if let chapter = chapters.first(where: { $0.id == mark.chapterId }) {
+                            onSelect(chapter)
+                        }
+                    } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text(mark.chapterTitle)
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundStyle(theme.uiText)
+                                    .lineLimit(1)
+                                Spacer(minLength: 6)
+                                Text("第 \(mark.paragraph + 1) 段")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(theme.uiHeaderFooter)
+                            }
+                            if !mark.preview.isEmpty {
+                                Text(mark.preview)
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(theme.uiHeaderFooter)
+                                    .lineLimit(2)
+                            }
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 9)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .swipeActions {
+                        Button("删除", role: .destructive) { annotations.remove(mark) }
+                    }
+                }
+            }
+            .padding(.bottom, 8)
+        }
+    }
+
+    private var noteList: some View {
+        let list = annotations.notes(in: bookId)
+        return ScrollView {
+            LazyVStack(spacing: 0) {
+                if list.isEmpty { emptyHint("还没有笔记。下方「记笔记」会记录当前章节与段落。") }
+                ForEach(list) { note in
+                    Button {
+                        editingNote = note
+                    } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text(note.chapterTitle)
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundStyle(theme.uiText)
+                                    .lineLimit(1)
+                                Spacer(minLength: 6)
+                                Text("第 \(note.paragraph + 1) 段")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(theme.uiHeaderFooter)
+                            }
+                            if !note.quote.isEmpty {
+                                Text(note.quote)
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(theme.uiHeaderFooter)
+                                    .lineLimit(2)
+                            }
+                            Text(note.text.isEmpty ? "（空笔记，点开编辑）" : note.text)
+                                .font(.system(size: 13))
+                                .foregroundStyle(theme.uiText)
+                                .lineLimit(3)
+                                .multilineTextAlignment(.leading)
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 9)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .swipeActions {
+                        Button("删除", role: .destructive) { annotations.remove(note) }
+                    }
+                }
+            }
+            .padding(.bottom, 8)
+        }
+    }
+
+    private func emptyHint(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 13))
+            .foregroundStyle(theme.uiHeaderFooter)
+            .multilineTextAlignment(.center)
+            .padding(.horizontal, 24)
+            .padding(.top, 40)
+    }
+
     private var footer: some View {
         VStack(spacing: 0) {
             Divider().overlay(theme.uiSeparator)
-            Button {
-                onSelect(chapters.first { $0.id == currentId } ?? chapters.first ?? chapters[0])
-            } label: {
-                Text("定位到当前章")
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(theme.uiText)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 44)
-                    .contentShape(Rectangle())
+            HStack(spacing: 0) {
+                switch tab {
+                case .catalog:
+                    footerButton("定位到当前章") {
+                        if let chapter = chapters.first(where: { $0.id == currentId }) {
+                            onSelect(chapter)
+                        }
+                    }
+                case .bookmark:
+                    footerButton("加书签") { onAddBookmark(currentParagraph) }
+                case .note:
+                    footerButton("记笔记") {
+                        let note = AnnotationStore.shared.addNote(
+                            bookId: bookId,
+                            chapterId: currentChapter.id,
+                            chapterTitle: currentChapter.displayTitle,
+                            paragraph: currentParagraph,
+                            quote: "",
+                            text: "")
+                        editingNote = note
+                    }
+                    footerButton("导出") {
+                        if let url = AnnotationStore.shared.exportFile(bookTitle: bookTitle,
+                                                                      bookId: bookId) {
+                            shareItem = ShareItem(url: url)
+                        }
+                    }
+                }
             }
-            .buttonStyle(.plain)
-            .disabled(chapters.isEmpty)
+        }
+    }
+
+    private func footerButton(_ title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(theme.uiText)
+                .frame(maxWidth: .infinity)
+                .frame(height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: - 笔记编辑
+
+struct NoteEditorSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let note: ReaderNote
+    let theme: ReaderTheme
+    let onSave: (ReaderNote) -> Void
+
+    @State private var text: String
+    @State private var quote: String
+
+    init(note: ReaderNote, theme: ReaderTheme, onSave: @escaping (ReaderNote) -> Void) {
+        self.note = note
+        self.theme = theme
+        self.onSave = onSave
+        _text = State(initialValue: note.text)
+        _quote = State(initialValue: note.quote)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("位置") {
+                    Text(note.chapterTitle).font(.system(size: 13))
+                    Text("第 \(note.paragraph + 1) 段")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
+                Section("摘录（可留空）") {
+                    TextField("摘录一段原文", text: $quote, axis: .vertical)
+                        .lineLimit(2...4)
+                }
+                Section("笔记") {
+                    TextField("写点什么…", text: $text, axis: .vertical)
+                        .lineLimit(4...12)
+                }
+            }
+            .navigationTitle("笔记")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("保存") {
+                        var updated = note
+                        updated.text = text
+                        updated.quote = quote
+                        onSave(updated)
+                        dismiss()
+                    }
+                }
+            }
         }
     }
 }
