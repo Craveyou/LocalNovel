@@ -1198,7 +1198,8 @@ def main():
           and "private var chapterTitleBlock" in reader
           and "chapterTitleBlock" in reader)
     check("繁简用 ICU 转换，不维护映射表",
-          "simplifiedChineseToTraditional" in style
+          'StringTransform(rawValue: id)' in style
+          and '"Simplified-Traditional"' in style
           and "ChineseScript.paragraphs(chapter.id" in reader)
     check("阅读亮度只压阅读层 + 常亮退出即还原",
           "brightnessOverlay" in reader

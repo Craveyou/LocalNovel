@@ -330,9 +330,23 @@ enum ReaderBackgroundImage {
 // MARK: 繁简
 
 enum ChineseScript {
-    /// 简体 → 繁体（ICU 转换，不维护映射表）
+    /// 简体 → 繁体。
+    ///
+    /// Foundation 没有把「简繁转换」暴露成 StringTransform 的静态成员，
+    /// 但 StringTransform 是 RawRepresentable，可以直接用 ICU 的转换器名：
+    ///   · "Simplified-Traditional"（ICU 标准名）
+    ///   · "Hans-Hant"（语言标签写法，部分系统只认这个）
+    /// 两个都不认时原样返回，绝不能因为转换失败把正文吞掉。
+    private static let traditionalTransformIDs = ["Simplified-Traditional", "Hans-Hant"]
+
     static func toTraditional(_ text: String) -> String {
-        text.applyingTransform(.simplifiedChineseToTraditional, reverse: false) ?? text
+        guard !text.isEmpty else { return text }
+        for id in traditionalTransformIDs {
+            if let converted = text.applyingTransform(StringTransform(rawValue: id), reverse: false) {
+                return converted
+            }
+        }
+        return text
     }
 
     /// 小容量缓存：同一章反复重绘时不必重复转换
