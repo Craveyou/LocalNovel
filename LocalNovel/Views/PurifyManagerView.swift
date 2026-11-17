@@ -54,8 +54,7 @@ struct PurifyManagerView: View {
                 } header: {
                     Text("规则（\(prefs.purifyRules.count) 条）")
                 } footer: {
-                    Text("举例：^\s*（本章完）\s*$ 删掉每行只有「（本章完）」的行；"
-                         + "www\.[a-z0-9]+\.(com|net) 删掉站名。写错的正则会自动跳过，不会吃掉正文。")
+                    Text(#"举例：^\s*（本章完）\s*$ 删掉每行只有「（本章完）」的行；www\.[a-z0-9]+\.(com|net) 删掉站名。写错的正则会自动跳过，不会吃掉正文。"#)
                 }
             }
             .navigationTitle("净化")
