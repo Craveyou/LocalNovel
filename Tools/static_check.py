@@ -350,8 +350,8 @@ def main():
           and "DocumentsBootstrap.guideFileName" in resolver)
     check("切回前台补写说明文件", "DocumentsBootstrap.ensureVisibleInFilesApp()" in store)
     check("版本号提升以刷新系统元数据",
-          "<string>2.15.1</string>" in plist and "CURRENT_PROJECT_VERSION = 19" in pbx
-          and "MARKETING_VERSION = 2.15.1" in pbx)
+          "<string>2.16.0</string>" in plist and "CURRENT_PROJECT_VERSION = 20" in pbx
+          and "MARKETING_VERSION = 2.16.0" in pbx)
     check("UI 给出「文件 App 搜索本地小说」兜底路径",
           "搜索框搜「本地小说」" in welcome and "搜索「本地小说」" in store)
     check("AppIcon asset catalog（1024 + Contents.json）",
@@ -644,11 +644,11 @@ def main():
     check("点屏幕左右边缘翻页（中间不误触）",
           "width * 0.28" in paged and "width * 0.72" in paged
           and "shouldReceive touch" in paged)
-    check("翻到末页（滑动继续右拖 / 卷曲左滑 / 右侧点击）直接进下一章",
+    check("翻到末页（平移继续划 / 卷曲左滑 / 右侧点击）直接进下一章",
           "func advanceToNextChapter" in paged
-          and "nextChapterThreshold" in paged
+          and "func handleEdgeSwipe()" in paged
           and "handleSwipeLeft" in paged
-          and "scrollViewDidEndDragging" in paged
+          and "if delta > 0, advanceToNextChapter() { return }" in paged
           and "if !input.hasNextChapter { list.append(.footer) }" in paged
           and "struct FooterPageView" in paged and "已是最后一章" in paged
           and "Button(action: onOpenNext)" not in paged)
@@ -718,9 +718,9 @@ def main():
     check("文档正文含双格式包一节",
           "### 5. 同一部书按格式分成两个包（PDF 包 + 图片包）"
           in (ROOT / "Docs" / "漫画目录结构说明.md").read_text(encoding="utf-8"))
-    check("版本升到 2.15.1 / build 19",
-          "<string>2.15.1</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>19</string>" in plist)
+    check("版本升到 2.16.0 / build 20",
+          "<string>2.16.0</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>20</string>" in plist)
 
 
     print("\n== N. 本轮：底部三页 / 短剧 / NAS 连接 ==")
@@ -971,9 +971,9 @@ def main():
     check("远端文件缓存有上限并会按最久未修改淘汰",
           "static let byteLimit: Int64 = 512 * 1024 * 1024" in nas_lib
           and "Task.detached(priority: .utility) { trim(folder: folder, limit: byteLimit) }" in nas_lib)
-    check("版本升到 2.15.1 / build 19",
-          "<string>2.15.1</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>19</string>" in plist)
+    check("版本升到 2.16.0 / build 20",
+          "<string>2.16.0</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>20</string>" in plist)
 
     print("\n== S. 本轮：txt 乱码（UTF-16 误判 / GBK / Big5） ==")
     encoding_src = (APP / "Core" / "TextEncoding.swift").read_text(encoding="utf-8")
@@ -1028,8 +1028,8 @@ def main():
           "private(set) var measureAttributed" in paged
           and "let attributed = measureAttributed" in paged)
     check("页控制器按窗口淘汰（大章节不常驻全部页视图）",
-          "func evict(except range: ClosedRange<Int>)" in paged
-          and "abs(key - index) > 2" in paged)
+          "func trimCache(around index: Int)" in paged
+          and "abs(key - index) > 1" in paged)
     check("绘制不再复制整章文本上色",
           ".foregroundColor: theme.uiTextColor" in paginator
           and "NSMutableAttributedString(attributedString: attributed)" not in paged)
@@ -1060,12 +1060,13 @@ def main():
     check("阅读方式六档：滚动 / 仿真 / 平移 / 覆盖 / 上下翻页 / 无动画",
           "case scroll = 0" in pref_src and "case page = 1" in pref_src
           and "case slide = 2" in pref_src and "var isPaged: Bool" in pref_src)
-    check("滑动翻页用 UIScrollView 分页（整页跟手横移）",
-          "scroller.isPagingEnabled = true" in paged
-          and "contentInsetAdjustmentBehavior = .never" in paged)
-    check("滑动页有左右页边阴影（纸张叠压感）",
+    check("平移翻页用 UIPageViewController(.scroll)（跟手横移由系统分页器给）",
+          "UIPageViewController(transitionStyle: .scroll" in paged
+          and "navigationOrientation: orientation" in paged
+          and "pager.setViewControllers([target]" in paged)
+    check("平移页有左右页边阴影（纸张叠压感）",
           "UIColor.black.withAlphaComponent(0.16).cgColor" in paged
-          and 'leftEdge.name = "edge.left"' in paged)
+          and "private final class PageEdgeShadowView" in paged)
     check("五套引擎共用分页 / 定位 / 锚点（切换模式不丢位置）",
           "class PagedBaseController: UIViewController" in paged
           and "final class CurlPageController: PagedBaseController" in paged
@@ -1166,10 +1167,9 @@ def main():
           "func advanceToNextChapter" in paged
           and "nextTriggered" in paged
           and "input?.hasNextChapter == true" in paged)
-    check("滑动翻页：末页继续右拖超过阈值才切章",
-          "nextChapterThreshold: CGFloat = 72" in paged
-          and ".contentOffset.x - maxOffset" in paged
-          and "func finishDrag() -> Bool" in paged)
+    check("平移翻页：只有本来就在末页才把继续划接到下一章",
+          "swipe.direction = isVertical ? .up : .left" in paged
+          and "displayedIndex >= pages.count - 1" in paged)
     check("仿真翻页：末页左滑切章（不再顶死在末页）",
           "UISwipeGestureRecognizer" in paged
           and "@objc private func handleSwipeLeft" in paged
@@ -1274,7 +1274,7 @@ def main():
     check("上下翻页复用滑动引擎，只把轴换成纵向",
           "var isVertical: Bool { false }" in paged
           and "final class VerticalPageController: SlidePageController" in paged
-          and "isVertical ? height : width" in paged)
+          and "isVertical ? .vertical : .horizontal" in paged)
     check("无动画模式：左右滑 + 点击直接换页，不加过渡",
           "final class InstantPageController" in paged
           and "move(by: gesture.direction == .left ? 1 : -1)" in paged)
@@ -1287,8 +1287,8 @@ def main():
     check("相邻章正文预取（切章不空等）",
           "func warmNextChapter()" in reader
           and "library.paragraphs(for: next)" in reader)
-    check("版本已升到 2.15.1 / build 19",
-          "2.15.1" in (APP / "Info.plist").read_text(encoding="utf-8"))
+    check("版本已升到 2.16.0 / build 20",
+          "2.16.0" in (APP / "Info.plist").read_text(encoding="utf-8"))
 
     print("\n== Z. 本轮：上下菜单栏 + 进度滑杆 + 目录面板 ==")
     bars = (APP / "Views" / "ReaderChromeBars.swift").read_text(encoding="utf-8")
@@ -1724,15 +1724,41 @@ def main():
           "var onAutoRestore: (Chapter) -> Void" in clist_now
           and "onAutoRestore(chapter)" in clist_now
           and "onAutoRestore: { chapter in" in root_src)
-    check("分页引擎切章恢复期内不接受「按偏移反推页码」",
-          "private(set) var isRestoring = false" in paged_src
-          and "guard !isRestoring else { updateLabel(); return }" in paged_src
-          and "func endRestoring() { isRestoring = false }" in paged_src)
+    check("页码只由「起始段落 + 翻页回调」决定，全篇没有偏移反推（千阅的索引模型）",
+          "private var displayedIndex = 0" in paged_src
+          and "pager.setViewControllers([target]" in paged_src
+          and "isRestoring" not in paged_src
+          and "indexFromOffset" not in paged_src
+          and "contentOffset.x" not in paged_src
+          and "scrollViewDidScroll" not in paged_src)
 
     clist_src = (APP / "Views" / "ChapterListView.swift").read_text(encoding="utf-8")
     check("目录页只负责跳转，不再重复写 lastChapter / 锚点（避免覆盖书签跳段）",
           "ProgressStore.shared.setAnchor" not in clist_src
           and "ProgressStore.shared.setLastChapter" not in clist_src)
+
+    # ------------------------------------------------------------------
+    # X6. 2.16.0：移植千阅的页码索引模型与翻页容器
+    # ------------------------------------------------------------------
+    print("\n== X6. 本轮：移植千阅的翻页手势与定位模型（2.16.0） ==")
+    check("平移 / 上下换成 UIPageViewController(.scroll)（跟手横移 + 松手吸附由系统给）",
+          "UIPageViewController(transitionStyle: .scroll" in paged_src
+          and "let orientation: UIPageViewController.NavigationOrientation = isVertical ? .vertical : .horizontal" in paged_src
+          and "isVertical ? .vertical : .horizontal" in paged_src)
+    check("装页走 setViewControllers（页码是状态，不经过任何滚动偏移）",
+          "pager.setViewControllers([target]," in paged_src
+          and "direction: index >= displayedIndex ? .forward : .reverse" in paged_src
+          and "didFinishAnimating" in paged_src)
+    check("翻页容器压在背景图之上、pageContainer 不吃触摸（否则系统 pan 收不到）",
+          "func installEngineView(_ engineView: UIView)" in paged_src
+          and "view.insertSubview(engineView, aboveSubview: backgroundImageView)" in paged_src
+          and "pageContainer.isUserInteractionEnabled = false" in paged_src
+          and paged_src.count("pageContainer.isUserInteractionEnabled = true") == 2)
+    check("越界锚点一律回章首（脏锚点不会变成「打开就是最后一页」）",
+          "guard count > 0, value >= 0, value < count else { return 0 }" in paged_src)
+    check("末页继续划才接下一章（中间页不抢手势）",
+          "swipe.direction = isVertical ? .up : .left" in paged_src
+          and "guard !pages.isEmpty, displayedIndex >= pages.count - 1 else { return }" in paged_src)
 
     # ------------------------------------------------------------------
     # X3. 2.15.0：点小说不再卡住（切章 + 解码 + 净化全部后置到后台）
@@ -1757,9 +1783,9 @@ def main():
           and "let waiters = self.splitWaiters.removeValue(forKey: book.id) ?? []" in store
           and "waiters.forEach { $0() }" in store)
 
-    check("版本已升到 2.15.1 / build 19",
-          "<string>2.15.1</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>19</string>" in plist)
+    check("版本已升到 2.16.0 / build 20",
+          "<string>2.16.0</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>20</string>" in plist)
 
     # ------------------------------------------------------------------
     # X4. 2.15.0：删掉字体/简繁/音量键/启动直进/自定义主题 + 修跳转
