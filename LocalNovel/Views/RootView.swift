@@ -287,6 +287,9 @@ struct RootView: View {
 
     /// 打开某一章的公共实现：先定位置，再切章。
     private func openChapter(_ chapter: Chapter, paragraph: Int?) {
+        // 点的就是当前这一章、也没指定要跳到哪一段（目录里点当前行 / 「定位到当前章」）：
+        // 什么都不做。否则会把这一章的阅读记忆重置成章首，退出再进就回到开头了。
+        guard paragraph != nil || chapter.id != selectedChapter?.id else { return }
         let target = max(0, paragraph ?? 0)
         if !chapter.isPlaceholder {
             startIntent = ChapterStart(chapterId: chapter.id, paragraph: target)
