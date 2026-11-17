@@ -41,10 +41,14 @@ struct ReaderView: View {
     @State private var showSettings = false
     /// 关闭全屏大图后要滚回的插图锚点（如 "blk-i3"）
     @State private var pendingAnchor: String?
-    /// 点屏幕中间弹出的阅读控制菜单
-    @State private var showControls = false
-    /// 控制菜单里的「目录」弹层
-    @State private var showTOC = false
+    /// 上下菜单栏（顶部条 + 底部条）
+    @State private var showMenu = false
+    /// 排版 / 主题面板
+    @State private var showStylePanel = false
+    /// 目录面板（从下方浮出）
+    @State private var showCatalog = false
+    /// 拖动进度滑杆时浮出的目标章节名
+    @State private var scrubTitle: String?
     /// 滚动模式：到底之后的上拉是否还有效（切过章或松手回弹后重新武装，保证一次一记）
     @State private var bottomPullArmed = true
 
@@ -68,6 +72,65 @@ struct ReaderView: View {
 
     /// 只对小说生效：漫画 / 整理 / 短剧仍按原来的样子（不读这些排版与主题设置）
     private var isComic: Bool { category == .comic }
+
+    // MARK: 菜单栏数据
+
+    private var topBarTitle: String {
+        bookTitle.isEmpty ? chapter.title : bookTitle
+    }
+
+    private var chapterIndex: Int? {
+        chapters.firstIndex { $0.id == chapter.id }
+    }
+
+    private var previousChapter: Chapter? {
+        guard let index = chapterIndex, index > 0, index <= chapters.count else { return nil }
+        return chapters[index - 1]
+    }
+
+    /// 全书进度：章节位置 + 本章段落位置（取阅读记忆里的锚点，不额外记录状态，
+    /// 避免每滚动一段就刷新整个阅读页）
+    private var bookProgress: Double {
+        guard !chapters.isEmpty, let index = chapterIndex else { return 0 }
+        var ratio = 0.0
+        let count = paragraphs.count
+        if count > 1,
+           let anchor = ProgressStore.shared.anchor(for: chapter.id),
+           anchor.hasPrefix("blk-p"),
+           let value = Int(anchor.dropFirst("blk-p".count)) {
+            ratio = Double(min(max(value, 0), count - 1)) / Double(count - 1)
+        }
+        return min(max((Double(index) + ratio) / Double(chapters.count), 0), 1)
+    }
+
+    private func chapterTitle(at progress: Double) -> String? {
+        guard !chapters.isEmpty else { return nil }
+        let index = min(max(Int(progress * Double(chapters.count)), 0), chapters.count - 1)
+        return chapters[index].displayTitle
+    }
+
+    private func jump(to progress: Double) {
+        guard !chapters.isEmpty else { return }
+        let index = min(max(Int(progress * Double(chapters.count)), 0), chapters.count - 1)
+        let target = chapters[index]
+        guard target.id != chapter.id else { return }
+        open(target)
+    }
+
+    /// 切章（菜单栏操作后收起菜单，回到正文）
+    private func open(_ target: Chapter) {
+        withAnimation(.easeOut(duration: 0.18)) { showMenu = false }
+        onSelectChapter(target)
+    }
+
+    /// 白天 / 夜间一键切：在主题里挑对应的一套
+    private func toggleDayNight() {
+        let wantNight = !prefs.theme.isNight
+        let pool = ReaderTheme.builtIns + prefs.customThemes
+        if let hit = pool.first(where: { $0.isNight == wantNight }) {
+            prefs.themeId = hit.id
+        }
+    }
 
     /// 阅读时常亮（小说设置项，退出阅读自动还原）
     private func syncIdleTimer() {
@@ -238,31 +301,82 @@ struct ReaderView: View {
         .toolbar {
             // 顶部仍保留「设置」与编码的快捷入口；中间单击另有一套完整控制菜单
             ToolbarItem(placement: .primaryAction) {
-                Button { showControls = true } label: {
+                Button { showStylePanel = true } label: {
                     Label("显示选项", systemImage: "textformat.size")
                 }
             }
         }
-        // 控制菜单 + 目录弹层（reader 层覆盖，不随分页引擎重建）
+        // 顶部条 / 底部条：贴安全区，单击正文中间弹出或收起
+        .overlay(alignment: .top) {
+            if showMenu {
+                ReaderTopBar(title: topBarTitle,
+                             subtitle: chapter.displayTitle,
+                             trailing: showsEncodingMenu ? "文本编码" : nil,
+                             theme: prefs.theme,
+                             onBack: onExit,
+                             onTrailing: {
+                                 showStylePanel = true
+                             })
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .overlay(alignment: .bottom) {
+            if showMenu {
+                ReaderBottomBar(theme: prefs.theme,
+                                progress: bookProgress,
+                                draggingTitle: scrubTitle,
+                                hasPrevious: previousChapter != nil,
+                                hasNext: nextChapter != nil,
+                                isNight: prefs.theme.isNight,
+                                onPreviousChapter: {
+                                    if let previous = previousChapter { open(previous) }
+                                },
+                                onNextChapter: {
+                                    if let next = nextChapter { open(next) }
+                                },
+                                onScrub: { value in
+                                    scrubTitle = chapterTitle(at: value)
+                                },
+                                onScrubEnd: { value in
+                                    scrubTitle = nil
+                                    jump(to: value)
+                                },
+                                onCatalog: { showCatalog = true },
+                                onDayNight: toggleDayNight,
+                                onTheme: { showStylePanel = true },
+                                onTypography: { showStylePanel = true },
+                                onSettings: { showSettings = true })
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        // 目录面板：从下方浮出，自带半透明遮罩，点遮罩收起
         .overlay {
-            if showControls {
+            if showCatalog {
+                ReaderCatalogView(chapters: chapters,
+                                  currentId: chapter.id,
+                                  theme: prefs.theme,
+                                  onSelect: { picked in
+                                      showCatalog = false
+                                      showMenu = false
+                                      onSelectChapter(picked)
+                                  },
+                                  onDismiss: { showCatalog = false })
+                    .transition(.opacity)
+            }
+        }
+        // 排版 / 主题面板（字号、字体、间距、标题、页眉页脚、主题、亮度）
+        .overlay {
+            if showStylePanel {
                 ReaderControlsPanel(
                     chapterTitle: chapter.displayTitle,
                     showsEncoding: showsEncodingMenu,
                     encodingMenu: AnyView(encodingMenu),
-                    onTOC: { showTOC = true },
+                    onTOC: { showStylePanel = false; showCatalog = true },
                     onSettings: { showSettings = true },
                     onExit: onExit,
-                    onDismiss: { showControls = false }
+                    onDismiss: { showStylePanel = false }
                 )
                 .transition(.opacity)
-            }
-        }
-        .sheet(isPresented: $showTOC) {
-            ReaderTOCView(chapters: chapters, currentId: chapter.id) { picked in
-                showTOC = false
-                showControls = false
-                onSelectChapter(picked)
             }
         }
         .sheet(isPresented: $showSettings) { SettingsView() }
@@ -515,7 +629,7 @@ struct ReaderView: View {
                 if let next = nextChapter { onOpenNext(next) }
             },
             onTapCenter: {
-                withAnimation(.easeOut(duration: 0.18)) { showControls.toggle() }
+                withAnimation(.easeOut(duration: 0.2)) { showMenu.toggle() }
             }
         )
         .id("paged-\(prefs.pageTurn.rawValue)")
@@ -533,7 +647,7 @@ struct ReaderView: View {
                     // .local 原点即本视图左上；iPad 分栏下 geo.size.width 是 detail 列真实宽度
                     let w = geo.size.width
                     if point.x > w * 0.28 && point.x < w * 0.72 {
-                        withAnimation(.easeOut(duration: 0.18)) { showControls.toggle() }
+                        withAnimation(.easeOut(duration: 0.2)) { showMenu.toggle() }
                     }
                 }
         }

@@ -349,8 +349,8 @@ def main():
           and "DocumentsBootstrap.guideFileName" in resolver)
     check("切回前台补写说明文件", "DocumentsBootstrap.ensureVisibleInFilesApp()" in store)
     check("版本号提升以刷新系统元数据",
-          "<string>2.11.1</string>" in plist and "CURRENT_PROJECT_VERSION = 2" in pbx
-          and "MARKETING_VERSION = 2.11.1" in pbx)
+          "<string>2.11.2</string>" in plist and "CURRENT_PROJECT_VERSION = 3" in pbx
+          and "MARKETING_VERSION = 2.11.2" in pbx)
     check("UI 给出「文件 App 搜索本地小说」兜底路径",
           "搜索框搜「本地小说」" in welcome and "搜索「本地小说」" in store)
     check("AppIcon asset catalog（1024 + Contents.json）",
@@ -713,9 +713,9 @@ def main():
     check("文档正文含双格式包一节",
           "### 5. 同一部书按格式分成两个包（PDF 包 + 图片包）"
           in (ROOT / "Docs" / "漫画目录结构说明.md").read_text(encoding="utf-8"))
-    check("版本升到 2.11.1 / build 2",
-          "<string>2.11.1</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>2</string>" in plist)
+    check("版本升到 2.11.2 / build 3",
+          "<string>2.11.2</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>3</string>" in plist)
 
 
     print("\n== N. 本轮：底部三页 / 短剧 / NAS 连接 ==")
@@ -956,9 +956,9 @@ def main():
     check("NAS 书目录里直接放文件时仍当作一本书",
           "把目录本身当成一本书" in nas_lib_views
           and "hasMedia ? 1 : nil" in nas_lib)
-    check("版本升到 2.11.1 / build 2",
-          "<string>2.11.1</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>2</string>" in plist)
+    check("版本升到 2.11.2 / build 3",
+          "<string>2.11.2</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>3</string>" in plist)
 
     print("\n== S. 本轮：txt 乱码（UTF-16 误判 / GBK / Big5） ==")
     encoding_src = (APP / "Core" / "TextEncoding.swift").read_text(encoding="utf-8")
@@ -1114,17 +1114,19 @@ def main():
           and 'binding(for: \\.appearance)' in controls
           and 'sliderRow("字号"' in controls
           and 'sliderRow("行距"' in controls)
-    check("控制菜单含目录入口与退出阅读",
-          "onTOC: { showTOC = true }" in reader
+    check("面板含目录入口与退出阅读",
+          "onTOC: { showStylePanel = false; showCatalog = true }" in reader
           and 'entryButton("目录", systemImage: "list.bullet"' in controls
           and "onExit" in controls)
-    check("目录弹层列出全部章节、当前章高亮、点击跳转",
-          "struct ReaderTOCView" in controls
-          and "chapter.id == currentId" in controls
-          and "onSelect(chapter)" in controls)
-    check("阅读页挂控制菜单 overlay 与目录 sheet",
+    check("目录面板列出全部章节、当前章高亮、点击跳转",
+          "struct ReaderCatalogView" in (APP / "Views" / "ReaderCatalogView.swift").read_text(encoding="utf-8")
+          and "chapter.id == currentId" in (APP / "Views" / "ReaderCatalogView.swift").read_text(encoding="utf-8")
+          and "onSelect(chapter)" in (APP / "Views" / "ReaderCatalogView.swift").read_text(encoding="utf-8"))
+    check("阅读页挂排版面板与目录面板（都走 overlay，不弹 sheet）",
           "ReaderControlsPanel(" in reader
-          and ".sheet(isPresented: $showTOC)" in reader)
+          and "ReaderCatalogView(chapters: chapters" in reader
+          and ".overlay(alignment: .bottom)" in reader
+          and ".sheet(isPresented: $showTOC)" not in reader)
     check("控制菜单含「全部设置」入口（复用设置页）",
           "let onSettings: () -> Void" in controls
           and 'entryButton("全部设置", systemImage: "gearshape"' in controls
@@ -1261,8 +1263,45 @@ def main():
     check("相邻章正文预取（切章不空等）",
           "func warmNextChapter()" in reader
           and "library.paragraphs(for: next)" in reader)
-    check("版本已升到 2.11.1 / build 2",
-          "2.11.1" in (APP / "Info.plist").read_text(encoding="utf-8"))
+    check("版本已升到 2.11.2 / build 3",
+          "2.11.2" in (APP / "Info.plist").read_text(encoding="utf-8"))
+
+    print("\n== Z. 本轮：上下菜单栏 + 进度滑杆 + 目录面板 ==")
+    bars = (APP / "Views" / "ReaderChromeBars.swift").read_text(encoding="utf-8")
+    catalog = (APP / "Views" / "ReaderCatalogView.swift").read_text(encoding="utf-8")
+    reader = (APP / "Views" / "ReaderView.swift").read_text(encoding="utf-8")
+
+    check("顶部条：返回 + 书名/章节名 + 右侧动作",
+          "struct ReaderTopBar" in bars
+          and "chevron.left" in bars
+          and "let trailing: String?" in bars
+          and "ReaderTopBar(title: topBarTitle" in reader)
+    check("底部条：上一章 / 进度滑杆 / 下一章",
+          "struct ReaderBottomBar" in bars
+          and 'Text("上一章")' in bars and 'Text("下一章")' in bars
+          and "Slider(value: Binding(get: { shownValue }" in bars)
+    check("底部工具行：目录 / 日夜 / 主题 / 排版 / 设置",
+          all(k in bars for k in ['tool("目录"', 'tool("主题"', 'tool("排版"', 'tool("设置"'])
+          and 'isNight ? "白天" : "夜间"' in bars)
+    check("进度按「章节 + 本章段落」折算，拖动时浮出章节名",
+          "chapterIndex" in reader and "bookProgress" in reader
+          and '"blk-p"' in reader
+          and "scrubTitle" in reader and "chapterTitle(at:" in reader)
+    check("目录面板从下方浮出（不是 sheet），带搜索 / 正序倒序 / 章节数",
+          "ignoresSafeArea(edges: .bottom)" in catalog
+          and "搜索章节" in catalog
+          and "倒序" in catalog and "正序" in catalog
+          and 'Text("共 \\(chapters.count) 章")' in catalog)
+    check("目录打开即定位当前章，并提供「定位到当前章」按钮",
+          "proxy.scrollTo(currentId, anchor: .center)" in catalog
+          and 'Text("定位到当前章")' in catalog)
+    check("菜单开合由正文中间单击驱动，切章后自动收起",
+          "showMenu.toggle()" in reader
+          and "showMenu = false" in reader
+          and "ReaderCatalogView(chapters: chapters" in reader)
+    check("白天 / 夜间一键切换（按主题的 isNight 挑）",
+          "private func toggleDayNight()" in reader
+          and "$0.isNight == wantNight" in reader)
 
     print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")
     if FAIL:
