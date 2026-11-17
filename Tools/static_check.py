@@ -350,8 +350,8 @@ def main():
           and "DocumentsBootstrap.guideFileName" in resolver)
     check("切回前台补写说明文件", "DocumentsBootstrap.ensureVisibleInFilesApp()" in store)
     check("版本号提升以刷新系统元数据",
-          "<string>2.16.1</string>" in plist and "CURRENT_PROJECT_VERSION = 21" in pbx
-          and "MARKETING_VERSION = 2.16.1" in pbx)
+          "<string>2.16.2</string>" in plist and "CURRENT_PROJECT_VERSION = 22" in pbx
+          and "MARKETING_VERSION = 2.16.2" in pbx)
     check("UI 给出「文件 App 搜索本地小说」兜底路径",
           "搜索框搜「本地小说」" in welcome and "搜索「本地小说」" in store)
     check("AppIcon asset catalog（1024 + Contents.json）",
@@ -719,9 +719,9 @@ def main():
     check("文档正文含双格式包一节",
           "### 5. 同一部书按格式分成两个包（PDF 包 + 图片包）"
           in (ROOT / "Docs" / "漫画目录结构说明.md").read_text(encoding="utf-8"))
-    check("版本升到 2.16.1 / build 21",
-          "<string>2.16.1</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>21</string>" in plist)
+    check("版本升到 2.16.2 / build 22",
+          "<string>2.16.2</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>22</string>" in plist)
 
 
     print("\n== N. 本轮：底部三页 / 短剧 / NAS 连接 ==")
@@ -972,9 +972,9 @@ def main():
     check("远端文件缓存有上限并会按最久未修改淘汰",
           "static let byteLimit: Int64 = 512 * 1024 * 1024" in nas_lib
           and "Task.detached(priority: .utility) { trim(folder: folder, limit: byteLimit) }" in nas_lib)
-    check("版本升到 2.16.1 / build 21",
-          "<string>2.16.1</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>21</string>" in plist)
+    check("版本升到 2.16.2 / build 22",
+          "<string>2.16.2</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>22</string>" in plist)
 
     print("\n== S. 本轮：txt 乱码（UTF-16 误判 / GBK / Big5） ==")
     encoding_src = (APP / "Core" / "TextEncoding.swift").read_text(encoding="utf-8")
@@ -1288,9 +1288,9 @@ def main():
           ".pickerStyle(.menu)" in controls)
     check("相邻章正文预取（切章不空等）",
           "func warmNextChapter()" in reader
-          and "library.paragraphs(for: next)" in reader)
-    check("版本已升到 2.16.1 / build 21",
-          "2.16.1" in (APP / "Info.plist").read_text(encoding="utf-8"))
+          and "library.paragraphs(for: target)" in reader)
+    check("版本已升到 2.16.2 / build 22",
+          "2.16.2" in (APP / "Info.plist").read_text(encoding="utf-8"))
 
     print("\n== Z. 本轮：上下菜单栏 + 进度滑杆 + 目录面板 ==")
     bars = (APP / "Views" / "ReaderChromeBars.swift").read_text(encoding="utf-8")
@@ -1785,9 +1785,9 @@ def main():
           and "let waiters = self.splitWaiters.removeValue(forKey: book.id) ?? []" in store
           and "waiters.forEach { $0() }" in store)
 
-    check("版本已升到 2.16.1 / build 21",
-          "<string>2.16.1</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>21</string>" in plist)
+    check("版本已升到 2.16.2 / build 22",
+          "<string>2.16.2</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>22</string>" in plist)
 
     # ------------------------------------------------------------------
     # X4. 2.15.0：删掉字体/简繁/音量键/启动直进/自定义主题 + 修跳转
@@ -1874,6 +1874,16 @@ def main():
           "struct AutoReadBar: View" in bars_src
           and 'tool("自动", systemImage: "play.circle", action: onAutoRead)' in bars_src
           and "AutoReadBar(theme: prefs.theme" in reader)
+
+    # ------------------------------------------------------------------
+    # X8. 2.16.2：选词与相邻章预加载
+    # ------------------------------------------------------------------
+    print("\n== X8. 本轮：滚动模式选词 + 相邻章预加载（2.16.2） ==")
+    check("滚动模式正文可长按选词（系统菜单：拷贝 / 查询 / 翻译）",
+          ".textSelection(.enabled)" in reader)
+    check("上下章双向预加载（正文切段 + 净化预计算）",
+          "let targets = [previousChapter, nextChapter].compactMap { $0 }" in reader
+          and "library.prefetchParagraphs(for: target)" in reader)
 
     print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")
     if FAIL:

@@ -310,10 +310,17 @@ struct ReaderView: View {
 
     /// 预取下一章正文：本地书不用等网络，但切章要重新读文件 + 分段 + 切章判断，
     /// 提前在主线程上「空转」一次，翻到下一章时内容已经在缓存里。
+    /// 相邻章预加载（千阅 B8）：上一章 / 下一章的正文切段与净化结果先进缓存。
+    /// 翻到章边时只差一次排版，不用现解码现净化；延迟 0.8s 再跑，先把当前章让出去。
     private func warmNextChapter() {
-        guard category == .novel, let next = nextChapter else { return }
+        guard category == .novel else { return }
+        let targets = [previousChapter, nextChapter].compactMap { $0 }
+        guard !targets.isEmpty else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-            _ = library.paragraphs(for: next)
+            for target in targets {
+                _ = library.paragraphs(for: target)
+                library.prefetchParagraphs(for: target)
+            }
         }
     }
 
@@ -699,6 +706,8 @@ struct ReaderView: View {
                         Text(paragraphs[index])
                             .font(Font(bodyFont))
                             .kerning(prefs.wordSpacing)
+                            // 千阅 K2 / K3：长按选中即可拷贝 / 查询 / 翻译
+                            .textSelection(.enabled)
                             .lineSpacing(prefs.lineSpacing)
                             .foregroundStyle(prefs.theme.uiText)
                             .frame(maxWidth: .infinity, alignment: .leading)
