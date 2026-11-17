@@ -9,10 +9,13 @@ import SwiftUI
 struct LibrarySidebar: View {
     @EnvironmentObject private var library: LibraryStore
     @Binding var selection: Book?
-
-    @State private var openedSection: BookCategory?
+    /// 当前进到哪个分区。状态必须由 RootView 持有：
+    /// 选到「漫画 / 整理 / 短剧」时外层会从两栏切成三栏，SwiftUI 会把整棵
+    /// NavigationSplitView 连同本视图一起销毁重建，@State 归零 → 侧栏跳回书库首页。
+    @Binding var openedSection: BookCategory?
     /// 小说分区里的系列文件夹；nil 表示还在分区这一层
-    @State private var openedSeries: String?
+    @Binding var openedSeries: String?
+
     @State private var pendingDelete: Book?
     @State private var resultMessage: String?
     @State private var showSettings = false

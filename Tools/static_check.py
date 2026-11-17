@@ -350,8 +350,8 @@ def main():
           and "DocumentsBootstrap.guideFileName" in resolver)
     check("切回前台补写说明文件", "DocumentsBootstrap.ensureVisibleInFilesApp()" in store)
     check("版本号提升以刷新系统元数据",
-          "<string>2.15.0</string>" in plist and "CURRENT_PROJECT_VERSION = 18" in pbx
-          and "MARKETING_VERSION = 2.15.0" in pbx)
+          "<string>2.15.1</string>" in plist and "CURRENT_PROJECT_VERSION = 19" in pbx
+          and "MARKETING_VERSION = 2.15.1" in pbx)
     check("UI 给出「文件 App 搜索本地小说」兜底路径",
           "搜索框搜「本地小说」" in welcome and "搜索「本地小说」" in store)
     check("AppIcon asset catalog（1024 + Contents.json）",
@@ -450,7 +450,7 @@ def main():
           and "advanceIfPulledPastBottom" in reader)
     check("下一章基于最新章节列表计算并直接切换",
           "nextChapter(after: chapter)" in welcome
-          and "onOpenNext: { next in selectChapter(next) }" in welcome
+          and "onOpenNext: { next in selectChapter(next, paragraph: nil) }" in welcome
           and "func nextChapter(after chapter: Chapter)" in welcome)
     check("章节支持多选批量删除（全选 / 计数 / 二次确认）",
           "@State private var managing" in chapters and "selectedIds" in chapters
@@ -718,9 +718,9 @@ def main():
     check("文档正文含双格式包一节",
           "### 5. 同一部书按格式分成两个包（PDF 包 + 图片包）"
           in (ROOT / "Docs" / "漫画目录结构说明.md").read_text(encoding="utf-8"))
-    check("版本升到 2.15.0 / build 18",
-          "<string>2.15.0</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>18</string>" in plist)
+    check("版本升到 2.15.1 / build 19",
+          "<string>2.15.1</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>19</string>" in plist)
 
 
     print("\n== N. 本轮：底部三页 / 短剧 / NAS 连接 ==")
@@ -971,9 +971,9 @@ def main():
     check("远端文件缓存有上限并会按最久未修改淘汰",
           "static let byteLimit: Int64 = 512 * 1024 * 1024" in nas_lib
           and "Task.detached(priority: .utility) { trim(folder: folder, limit: byteLimit) }" in nas_lib)
-    check("版本升到 2.15.0 / build 18",
-          "<string>2.15.0</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>18</string>" in plist)
+    check("版本升到 2.15.1 / build 19",
+          "<string>2.15.1</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>19</string>" in plist)
 
     print("\n== S. 本轮：txt 乱码（UTF-16 误判 / GBK / Big5） ==")
     encoding_src = (APP / "Core" / "TextEncoding.swift").read_text(encoding="utf-8")
@@ -1083,11 +1083,13 @@ def main():
           and "tab.tabBar.isHidden = hidden" in hider)
     check("阅读页挂上标签栏兜底",
           "TabBarAutoHide()" in reader)
-    check("用户主动在目录选章 → 从章首开始（且锚点写在切章之前）",
-          'ProgressStore.shared.setAnchor("blk-p0", for: chapter.id)' in chapter_list
-          and 'selectedChapter = chapter' in chapter_list
-          and chapter_list.index('ProgressStore.shared.setAnchor("blk-p0", for: chapter.id)')
-              < chapter_list.index('selectedChapter = chapter'))
+    anchor_write = 'ProgressStore.shared.setAnchor("blk-p\\(target)", for: chapter.id)'
+    at = chapter_list.find(anchor_write)
+    check("用户主动在目录选章 → 从章首开始（锚点与起始意图都写在切章之前）",
+          "let target = max(0, paragraph ?? 0)" in chapter_list
+          and 'startIntent = ChapterStart(chapterId: chapter.id, paragraph: target)' in chapter_list
+          and at >= 0
+          and chapter_list.find("selectedChapter = chapter", at) > at)
     check("自动恢复上次章节时不重置锚点",
           "autoRestoredChapterId = target.id" in chapter_list
           and "if autoRestoredChapterId == chapter.id" in chapter_list)
@@ -1285,8 +1287,8 @@ def main():
     check("相邻章正文预取（切章不空等）",
           "func warmNextChapter()" in reader
           and "library.paragraphs(for: next)" in reader)
-    check("版本已升到 2.15.0 / build 18",
-          "2.15.0" in (APP / "Info.plist").read_text(encoding="utf-8"))
+    check("版本已升到 2.15.1 / build 19",
+          "2.15.1" in (APP / "Info.plist").read_text(encoding="utf-8"))
 
     print("\n== Z. 本轮：上下菜单栏 + 进度滑杆 + 目录面板 ==")
     bars = (APP / "Views" / "ReaderChromeBars.swift").read_text(encoding="utf-8")
@@ -1432,18 +1434,16 @@ def main():
           "let onSelectParagraph: (Chapter, Int) -> Void" in cat
           and "onSelectParagraph(chapter, mark.paragraph)" in cat
           and "onSelectParagraph(chapter, note.paragraph)" in cat)
-    check("待应用锚点先暂存、选章时再消费（不被「主动选章」重置）",
-          "var pendingJump: (chapterId: String, anchor: String)?" in ann
-          and "func consumePendingAnchor(for chapterId: String)" in ann
-          and "AnnotationStore.shared.pendingJump = (target.id, anchor)" in reader
-          and "consumePendingAnchor(for: chapter.id)" in root)
+    check("书签 / 笔记跨章跳转直接带段落意图（不再靠 pendingJump 暂存）",
+          "onSelectChapter(target, paragraph)" in reader
+          and "consumePendingAnchor" not in ann
+          and "var pendingJump" not in ann)
     check("同章跳段就地执行（同章 id 不变，RootView 的 onChange 不会触发）",
           "guard target.id == chapter.id else" in reader
-          and "AnnotationStore.shared.pendingJump = nil" in reader
           and "jumpSeq += 1" in reader)
-    check("跨章跳转时 restoreParagraph 优先读 pendingJump（onChange 可能晚于 body 求值）",
-          "AnnotationStore.shared.pendingJump," in reader
-          and "pending.chapterId == chapter.id," in reader)
+    check("明确的起始段落优先于任何存量锚点",
+          "if let startParagraph {" in reader
+          and "return max(0, min(startParagraph, max(paragraphs.count - 1, 0)))" in reader)
     check("笔记列表可左滑编辑（点条目仍是跳转）",
           'Button("编辑") { editingNote = note }' in cat)
 
@@ -1685,7 +1685,8 @@ def main():
           (APP / "Views" / "ChapterListView.swift").exists()
           and "private var showsCatalogColumn: Bool" in root_src
           and "return book.category != .novel" in root_src
-          and "ChapterListView(book: selectedBook, selection: $selectedChapter)" in root_src)
+          and "ChapterListView(book: selectedBook," in root_src
+          and "} content: {" in root_src)
     check("小说选书即读（不再按分类分流到目录页）",
           "private func openBook(_ book: Book)" in root_src
           and "openBook(book)" in root_src
@@ -1697,11 +1698,36 @@ def main():
     check("删掉当前章时先切走，阅读页不会停在空白章",
           "private func deleteChapters(_ targets: [Chapter])" in reader
           and "if let next = chapters.first(where: { !removed.contains($0.id) })" in reader
-          and "onSelectChapter(next)" in reader)
-    check("选章锚点在切章之前写回章首（修「点章节跳到最后一页」）",
-          root_src.index('ProgressStore.shared.setAnchor("blk-p0", for: chapter.id)')
-              < root_src.index("selectedChapter = chapter")
-          and "锚点必须在这里写、不能等 onChange" in root_src)
+          and "onSelectChapter(next, nil)" in reader)
+    check("选章的起始段落由上层明确给出（点目录 = 段 0）",
+          "let startParagraph: Int?" in reader
+          and "onSelectChapter(picked, nil)   // 点目录 = 从这一章开头" in reader
+          and "startParagraph: startIntent?.chapterId == chapter.id" in root_src)
+
+    # ------------------------------------------------------------------
+    # X5. 2.15.1：书库侧栏层级不再被布局切换清空 + 跳章定位改「明确意图」
+    # ------------------------------------------------------------------
+    print("\n== X5. 本轮：整理分类点书回首页 / 目录点章落到章首（2.15.1） ==")
+    sidebar_now = (APP / "Views" / "LibrarySidebar.swift").read_text(encoding="utf-8")
+    clist_now = (APP / "Views" / "ChapterListView.swift").read_text(encoding="utf-8")
+
+    check("书库侧栏层级提到 RootView（两栏 ↔ 三栏切换不丢层级）",
+          "@Binding var openedSection: BookCategory?" in sidebar_now
+          and "@Binding var openedSeries: String?" in sidebar_now
+          and "@State private var sidebarSection: BookCategory?" in root_src
+          and "openedSection: $sidebarSection" in root_src
+          and "openedSeries: $sidebarSeries" in root_src)
+    check("两处布局共用同一个 sidebar（同一份 selection / 层级）",
+          "private var sidebar: some View" in root_src
+          and root_src.count("LibrarySidebar(selection: $selectedBook,") == 1)
+    check("自动续读由目录页显式告知上层（不把位置重置成章首）",
+          "var onAutoRestore: (Chapter) -> Void" in clist_now
+          and "onAutoRestore(chapter)" in clist_now
+          and "onAutoRestore: { chapter in" in root_src)
+    check("分页引擎切章恢复期内不接受「按偏移反推页码」",
+          "private(set) var isRestoring = false" in paged_src
+          and "guard !isRestoring else { updateLabel(); return }" in paged_src
+          and "func endRestoring() { isRestoring = false }" in paged_src)
 
     clist_src = (APP / "Views" / "ChapterListView.swift").read_text(encoding="utf-8")
     check("目录页只负责跳转，不再重复写 lastChapter / 锚点（避免覆盖书签跳段）",
@@ -1731,9 +1757,9 @@ def main():
           and "let waiters = self.splitWaiters.removeValue(forKey: book.id) ?? []" in store
           and "waiters.forEach { $0() }" in store)
 
-    check("版本已升到 2.15.0 / build 18",
-          "<string>2.15.0</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>18</string>" in plist)
+    check("版本已升到 2.15.1 / build 19",
+          "<string>2.15.1</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>19</string>" in plist)
 
     # ------------------------------------------------------------------
     # X4. 2.15.0：删掉字体/简繁/音量键/启动直进/自定义主题 + 修跳转
@@ -1762,10 +1788,12 @@ def main():
           "private func jumpWithinChapter(fraction: Double)" in reader_now
           and "onJumpToChapter(target, fraction)" in reader_now
           and "private func jumpToChapter(_ chapter: Chapter, fraction: Double)" in root_now
-          and 'ProgressStore.shared.setAnchor("blk-p\\(paragraph)", for: chapter.id)' in root_now)
+          and "private func openChapter(_ chapter: Chapter, paragraph: Int?)" in root_now
+          and 'ProgressStore.shared.setAnchor("blk-p\\(target)", for: chapter.id)' in root_now)
     check("ReaderView 自定义 init 覆盖全部回调（新增属性必须同步，否则编译报 extra argument）",
           "onJumpToChapter: ((Chapter, Double) -> Void)? = nil" in reader_now
-          and "self.onJumpToChapter = onJumpToChapter ?? { chapter, _ in onSelectChapter(chapter) }" in reader_now
+          and "self.onJumpToChapter = onJumpToChapter ?? { chapter, _ in onSelectChapter(chapter, nil) }" in reader_now
+          and "startParagraph: Int? = nil" in reader_now
           and "onJumpToChapter: { chapter, fraction in" in root_now)
     check("跨章跳转的锚点不被 onChange 覆盖成章首",
           "autoRestoredChapterId = chapter.id" in root_now)

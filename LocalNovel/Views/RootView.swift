@@ -4,6 +4,17 @@ import UniformTypeIdentifiers
 // MARK: - 三栏布局（iPad）/ 自动折叠为导航栈（iPhone）
 
 struct RootView: View {
+    /// 打开某一章时「从第几段开始」的明确意图。
+    ///
+    /// 以前是先把段落锚点写进 ProgressStore、再让 ReaderView 去读：读的那一刻
+    /// 谁后写谁赢，任何残留状态（旧锚点、书签跳段留下的 pendingJump）都能把
+    /// 位置顶掉，表现就是「点目录里的某一章，却落到了这一章的最后几页」。
+    /// 现在由 RootView 明确指定，阅读器只认这个值，不再去猜。
+    struct ChapterStart: Equatable {
+        let chapterId: String
+        let paragraph: Int
+    }
+
     @EnvironmentObject private var library: LibraryStore
     @EnvironmentObject private var prefs: Preferences
     @Environment(\.scenePhase) private var scenePhase
@@ -11,13 +22,23 @@ struct RootView: View {
 
     @State private var selectedBook: Book?
     @State private var selectedChapter: Chapter?
+    /// 书库侧栏的层级（分区 / 小说系列）：放在这里而不是侧栏内部，
+    /// 否则两栏 ↔ 三栏切换时侧栏被重建，层级归零、跳回首页。
+    @State private var sidebarSection: BookCategory?
+    @State private var sidebarSeries: String?
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    /// 手机（紧凑宽度）下当前该显示哪一栏。
+    /// 选到漫画 / 整理 / 短剧时外层会从两栏切成三栏，新分栏视图是「凭空创建」的，
+    /// 不能指望它自己按 selection 补一次 push —— 显式指定要展示的栏，否则会停回书库。
+    @State private var compactColumn: NavigationSplitViewColumn = .sidebar
     /// restore 只在首次出现时跑一次；此前每次 onAppear 都全量重扫 + 清缓存，
     /// 会让阅读器内容反复失效，也是「再次点书一直载入」的诱因之一。
     @State private var didRestore = false
     /// 由「打开小说自动定位」或「恢复上次章节」设进来的章节 id。
     /// 它的 selection 变化不算用户主动选章：保留该章的段落锚点，从上次位置续读。
     @State private var autoRestoredChapterId: String?
+    /// 本次切章要落的段落（点目录 = 段 0；书签 = 书记的段；进度条 = 换算出的段）
+    @State private var startIntent: ChapterStart?
     /// 正在准备打开的小说（后台切章 / 解码整本）。非 nil 时 detail 显示进度而不是阅读器。
     @State private var preparingBook: Book?
     /// 防止「准备完之前用户又点了别的书」：旧任务回来时直接丢弃（序号比对）
@@ -28,16 +49,24 @@ struct RootView: View {
         // 漫画 / 短剧 / 整理仍是三栏：书库 → 章节列表 → 正文，点章节在中间栏切换。
         Group {
             if showsCatalogColumn {
-                NavigationSplitView(columnVisibility: $columnVisibility) {
-                    LibrarySidebar(selection: $selectedBook)
+                NavigationSplitView(columnVisibility: $columnVisibility,
+                                    preferredCompactColumn: $compactColumn) {
+                    sidebar
                 } content: {
-                    ChapterListView(book: selectedBook, selection: $selectedChapter)
+                    ChapterListView(book: selectedBook,
+                                    selection: $selectedChapter,
+                                    onAutoRestore: { chapter in
+                                        // 自动续读：沿用这一章的记忆位置，不重置成章首
+                                        autoRestoredChapterId = chapter.id
+                                        startIntent = nil
+                                    })
                 } detail: {
                     readerDetail
                 }
             } else {
-                NavigationSplitView(columnVisibility: $columnVisibility) {
-                    LibrarySidebar(selection: $selectedBook)
+                NavigationSplitView(columnVisibility: $columnVisibility,
+                                    preferredCompactColumn: $compactColumn) {
+                    sidebar
                 } detail: {
                     readerDetail
                 }
@@ -61,12 +90,16 @@ struct RootView: View {
         .onChange(of: selectedBook?.id) { _, _ in
             guard let book = selectedBook else {
                 selectedChapter = nil
+                compactColumn = .sidebar      // 回到书库首页
                 return
             }
             if book.category == .novel {
                 openBook(book)
+                compactColumn = .detail       // 手机：选书即读，直接到正文
             } else {
                 selectedChapter = nil
+                startIntent = nil
+                compactColumn = .content      // 手机：停在章节列表
             }
         }
         // 切章完成（占位章 → 真实章节）后，若当前章已失效或还没选中，重新定位到记忆章节。
@@ -80,6 +113,7 @@ struct RootView: View {
             } ?? true
             guard stale, let target = preferredChapter(in: fresh, allowFirst: true) else { return }
             autoRestoredChapterId = target.id
+            startIntent = nil          // 自动定位：按这一章的记忆位置续读
             selectedChapter = target
         }
         // 选章副作用统一到 RootView：记「最近读的章」并区分续读 / 主动选章。
@@ -90,11 +124,16 @@ struct RootView: View {
             // 否则下次切完章就找不到上次读的章，被重置到第一章。
             guard !chapter.isPlaceholder else { return }
             ProgressStore.shared.setLastChapter(chapter.id, for: book.id)
+            // 手机（紧凑宽度）：选中章节就展示正文栏（三栏布局里 detail 是第三栏）
+            compactColumn = .detail
+            // 意图不是给这一章的（换书 / 换章后残留）→ 直接作废，别拿别处的位置定位本章
+            if startIntent?.chapterId != chapter.id { startIntent = nil }
+
             if autoRestoredChapterId == chapter.id {
                 autoRestoredChapterId = nil   // 自动恢复：保留该章段落锚点，续读
-            } else if let anchor = AnnotationStore.shared.consumePendingAnchor(for: chapter.id) {
-                // 书签 / 笔记跳转：用它带来的锚点，别重置成章首
-                ProgressStore.shared.setAnchor(anchor, for: chapter.id)
+                startIntent = nil
+            } else if startIntent != nil {
+                // 点目录 / 书签 / 进度条：起始段落已明确，锚点也已写好，不再覆盖
             } else {
                 ProgressStore.shared.setAnchor("blk-p0", for: chapter.id) // 主动选章：从章首
             }
@@ -122,7 +161,15 @@ struct RootView: View {
             selectedBook = nil
             selectedChapter = nil
             preparingBook = nil
+            startIntent = nil
         }
+    }
+
+    /// 书库第一栏（两栏 / 三栏共用同一份状态，切布局时不丢层级）
+    private var sidebar: some View {
+        LibrarySidebar(selection: $selectedBook,
+                       openedSection: $sidebarSection,
+                       openedSeries: $sidebarSeries)
     }
 
     /// 是否保留中间「章节列表」栏：只有小说不要。
@@ -142,8 +189,15 @@ struct RootView: View {
                        bookTitle: latestBook()?.title ?? "",
                        bookId: latestBook()?.id ?? "",
                        category: latestBook()?.category ?? .novel,
-                       onOpenNext: { next in selectChapter(next) },
-                       onSelectChapter: { chapter in selectChapter(chapter) },
+                       // 明确告诉阅读器「这一章从第几段开始」：点目录就是 0，
+                       // 书签 / 进度条是算出来的段。没指定就按记忆位置续读。
+                       startParagraph: startIntent?.chapterId == chapter.id
+                           ? startIntent?.paragraph
+                           : nil,
+                       onOpenNext: { next in selectChapter(next, paragraph: nil) },
+                       onSelectChapter: { picked, paragraph in
+                           selectChapter(picked, paragraph: paragraph)
+                       },
                        onJumpToChapter: { chapter, fraction in
                            jumpToChapter(chapter, fraction: fraction)
                        },
@@ -151,6 +205,7 @@ struct RootView: View {
                            selectedChapter = nil
                            selectedBook = nil   // 回到书库首页，再点同一本也会重新触发「选书即读」
                            preparingBook = nil
+                           startIntent = nil
                        })
                 .id(chapter.id) // 切章时重建，重置滚动与播放器
         } else {
@@ -174,6 +229,7 @@ struct RootView: View {
     private func openBook(_ book: Book) {
         guard book.category == .novel else {
             selectedChapter = nil
+            startIntent = nil
             return
         }
         openNovel(book)
@@ -189,6 +245,7 @@ struct RootView: View {
         let token = prepareSeq
         preparingBook = book
         selectedChapter = nil
+        startIntent = nil          // 选书进阅读器 = 续读，位置交给记忆锚点
         library.prepareNovel(book) { fresh in
             // 准备期间用户可能已经点了别的书 / 退出：旧任务直接丢弃
             guard prepareSeq == token, selectedBook?.id == book.id else { return }
@@ -201,6 +258,7 @@ struct RootView: View {
                 guard prepareSeq == token, selectedBook?.id == book.id else { return }
                 preparingBook = nil
                 autoRestoredChapterId = target.id
+                startIntent = nil
                 selectedChapter = target
             }
         }
@@ -217,33 +275,40 @@ struct RootView: View {
         return nil
     }
 
-    /// 目录 / 章末导航主动跳章：清掉自动恢复标记，并把锚点先写回章首。
+    /// 主动切章：`paragraph` 为 nil 表示从这一章开头开始。
     ///
-    /// 锚点必须在这里写、不能等 onChange：ReaderView 一旦重建就先按「这一章上次读到的段落」
-    /// 定位（restoreParagraph），onChange 再写 blk-p0 时页面已经画完、分页器不会二次定位，
-    /// 表现就是「点某一章进去直接停在那一章的最后一页」。
-    private func selectChapter(_ chapter: Chapter) {
+    /// 起始段落既写成「明确意图」（`startIntent`，阅读器只认它），也同步写进
+    /// ProgressStore（书架进度、书签位置、下次续读都读它）。两处都在
+    /// `selectedChapter` 变化之前完成，阅读器重建时读到的一定是本次的目标位置。
+    private func selectChapter(_ chapter: Chapter, paragraph: Int?) {
         autoRestoredChapterId = nil
-        if chapter.id != selectedChapter?.id, !chapter.isPlaceholder {
-            ProgressStore.shared.setAnchor("blk-p0", for: chapter.id)
+        openChapter(chapter, paragraph: paragraph)
+    }
+
+    /// 打开某一章的公共实现：先定位置，再切章。
+    private func openChapter(_ chapter: Chapter, paragraph: Int?) {
+        let target = max(0, paragraph ?? 0)
+        if !chapter.isPlaceholder {
+            startIntent = ChapterStart(chapterId: chapter.id, paragraph: target)
+            ProgressStore.shared.setAnchor("blk-p\(target)", for: chapter.id)
         }
         selectedChapter = chapter
     }
 
     /// 进度条跨章跳转：按章内比例换算出目标段落，先把锚点写好再切章，
-    /// 这样目标章首帧就落在拖动的位置，而不是章首（也不会被 selectChapter 覆盖成 blk-p0）。
+    /// 这样目标章首帧就落在拖动的位置，而不是章首（也不会被当成主动选章重置）。
     private func jumpToChapter(_ chapter: Chapter, fraction: Double) {
-        // 锚点已经按拖动位置写好：标记成「自动恢复」，让 onChange 不要再覆盖成 blk-p0
+        // 标成「自动恢复」，让 onChange 不要按主动选章再重置一次
         autoRestoredChapterId = chapter.id
+        var paragraph = 0
         if !chapter.isPlaceholder {
             let count = library.paragraphs(for: chapter).count
             let clamped = min(max(fraction, 0), 1)
-            let paragraph = count > 0
+            paragraph = count > 0
                 ? min(max(Int((Double(count - 1) * clamped).rounded()), 0), count - 1)
                 : 0
-            ProgressStore.shared.setAnchor("blk-p\(paragraph)", for: chapter.id)
         }
-        selectedChapter = chapter
+        openChapter(chapter, paragraph: paragraph)
     }
 
     private func nextChapter(after chapter: Chapter) -> Chapter? {

@@ -176,6 +176,12 @@ class PagedBaseController: UIViewController {
     private var didNavigate = false
     /// 是否已经把「翻到底」换成切章：一次翻页只切一次，等上层重建本控制器
     private var nextTriggered = false
+    /// 刚切章、还没稳定下来的这段时间：滚动回调里算出来的页码不可信
+    /// （首帧尺寸 / contentSize 都在变，contentOffset 会被系统夹到末尾），
+    /// 期间不接受「用当前偏移反推页码」，否则一进章就记成末页、还会写进阅读记忆。
+    private(set) var isRestoring = false
+    /// 子类（滑动 / 覆盖引擎）在用户接管手势时要把它清掉，所以另开一个写入口
+    func endRestoring() { isRestoring = false }
     /// 页脚：页码 / 百分比
     private let pageLabel = UILabel()
     /// 页眉：章节名 / 书名
@@ -281,6 +287,7 @@ class PagedBaseController: UIViewController {
             restoreParagraph = max(0, new.restoreParagraph)
             didNavigate = false
             nextTriggered = false
+            isRestoring = true
         }
         input = new
         // 音量键翻页：序号变了才动，避免每次 SwiftUI 更新都多翻一页
@@ -372,6 +379,12 @@ class PagedBaseController: UIViewController {
 
         didRebuildPages()
         updateLabel()
+        // 位置已经落定，下一轮事件循环再解除「恢复期」，把同一帧里的临时偏移挡在外面
+        if isRestoring {
+            DispatchQueue.main.async { [weak self] in
+                self?.isRestoring = false
+            }
+        }
     }
 
     private func clampedParagraph(_ value: Int) -> Int {
@@ -852,6 +865,7 @@ class SlidePageController: PagedBaseController {
 extension SlidePageController: UIScrollViewDelegate {
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
         overflow = 0
+        endRestoring()               // 用户已经接管，之后算出来的页码就是真实意图
         dragStartIndex = indexFromOffset()
     }
 
@@ -897,6 +911,9 @@ extension SlidePageController: UIScrollViewDelegate {
 
     private func settle() {
         guard pageExtent > 0, !pages.isEmpty else { return }
+        // 恢复期内系统还会微调 contentOffset（换章 / 换字号 / 换尺寸都会），
+        // 这时反推出来的页码可能是末页；用它 adopt 会把位置永久带到章末。
+        guard !isRestoring else { updateLabel(); return }
         let index = indexFromOffset()
         if index != currentIndex {
             adopt(index)
@@ -1105,6 +1122,7 @@ final class CoverPageController: PagedBaseController {
         case .began:
             direction = 0
             prepared = false
+            endRestoring()           // 用户接管：之后的手势翻页都按真实页码结算
         case .changed:
             if !prepared {
                 guard abs(dx) > 6 else { return }

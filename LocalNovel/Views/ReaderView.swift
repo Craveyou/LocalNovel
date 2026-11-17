@@ -29,9 +29,13 @@ struct ReaderView: View {
     let bookId: String
     /// 所在分区。翻页只给「小说」；漫画连排、整理图文混排，都必须滚动
     let category: BookCategory
+    /// 上层明确指定的起始段落（点目录 = 0；书签 / 进度条 = 换算出的段）。
+    /// nil = 按这一章的记忆锚点续读。优先级高于任何存量状态，
+    /// 避免「点某一章却落在这一章最后几页」。
+    let startParagraph: Int?
     let onOpenNext: (Chapter) -> Void
-    /// 目录弹层里主动跳章
-    let onSelectChapter: (Chapter) -> Void
+    /// 目录弹层里主动跳章：`paragraph` 为 nil 表示从章首开始，非 nil 是书签 / 笔记带来的精确段
+    let onSelectChapter: (Chapter, Int?) -> Void
     /// 进度条跨章跳转：带章内比例（0-1），由上层换算成段落锚点后再切章
     let onJumpToChapter: (Chapter, Double) -> Void
     /// 退出阅读回到书库
@@ -72,8 +76,9 @@ struct ReaderView: View {
          bookTitle: String = "",
          bookId: String = "",
          category: BookCategory = .novel,
+         startParagraph: Int? = nil,
          onOpenNext: @escaping (Chapter) -> Void = { _ in },
-         onSelectChapter: @escaping (Chapter) -> Void = { _ in },
+         onSelectChapter: @escaping (Chapter, Int?) -> Void = { _, _ in },
          onJumpToChapter: ((Chapter, Double) -> Void)? = nil,
          onExit: @escaping () -> Void = {}) {
         self.chapter = chapter
@@ -82,10 +87,11 @@ struct ReaderView: View {
         self.bookTitle = bookTitle
         self.bookId = bookId
         self.category = category
+        self.startParagraph = startParagraph
         self.onOpenNext = onOpenNext
         self.onSelectChapter = onSelectChapter
         // 没传就退回「只切章不定位」（默认参数里不能引用其它参数，只能在这里兜底）
-        self.onJumpToChapter = onJumpToChapter ?? { chapter, _ in onSelectChapter(chapter) }
+        self.onJumpToChapter = onJumpToChapter ?? { chapter, _ in onSelectChapter(chapter, nil) }
         self.onExit = onExit
     }
 
@@ -168,7 +174,7 @@ struct ReaderView: View {
     /// 切章（菜单栏操作后收起菜单，回到正文）
     private func open(_ target: Chapter) {
         withAnimation(.easeOut(duration: 0.18)) { showMenu = false }
-        onSelectChapter(target)
+        onSelectChapter(target, nil)
     }
 
     /// 白天 / 夜间一键切：在六套内置主题里挑同类型的第一套
@@ -209,26 +215,23 @@ struct ReaderView: View {
     }
 
     /// 跳到某章某段。
-    /// 跨章走 pendingJump + 切章（RootView 选中后按它设锚点）；
+    /// 跨章直接把「目标段落」交给上层（RootView 写进明确的起始意图再切章）；
     /// **同一章**不能这么走：selectedChapter.id 没变，RootView 的 onChange 不触发，
-    /// 界面只会收起面板、位置不动，pendingJump 还会残留到下一次进这章时突然跳段。
+    /// 界面只会收起面板、位置不动。
     private func jump(to target: Chapter, paragraph: Int) {
-        let anchor = "blk-p\(paragraph)"
         withAnimation(.easeOut(duration: 0.18)) {
             showCatalog = false
             showMenu = false
         }
         guard target.id == chapter.id else {
-            AnnotationStore.shared.pendingJump = (target.id, anchor)
-            onSelectChapter(target)
+            onSelectChapter(target, paragraph)
             return
         }
-        AnnotationStore.shared.pendingJump = nil
         if usePaging {
             jumpParagraph = paragraph
             jumpSeq += 1
         } else {
-            pendingAnchor = anchor
+            pendingAnchor = "blk-p\(paragraph)"
         }
     }
 
@@ -284,7 +287,7 @@ struct ReaderView: View {
         let removed = Set(targets.map(\.id))
         if removed.contains(chapter.id) {
             if let next = chapters.first(where: { !removed.contains($0.id) }) {
-                onSelectChapter(next)
+                onSelectChapter(next, nil)
             } else {
                 onExit()
             }
@@ -555,7 +558,7 @@ struct ReaderView: View {
                                   onSelect: { picked in
                                       showCatalog = false
                                       showMenu = false
-                                      onSelectChapter(picked)
+                                      onSelectChapter(picked, nil)   // 点目录 = 从这一章开头
                                   },
                                   onDeleteChapters: { targets in deleteChapters(targets) },
                                   onResplit: { rule in applyResplit(rule) },
@@ -791,14 +794,10 @@ struct ReaderView: View {
     /// 注意：**不能**把「落在最后一段」的锚点当脏数据归零 —— 读到本章最后一页写下的
     /// 就是末段锚点，一归零就变成「读完退出、再进来回到章首」，位置全丢。
     private var restoreParagraph: Int {
-        // 书签 / 笔记跨章跳转：pendingJump 就是本次的目标段落，优先用它。
-        // RootView 的 onChange 何时执行不确定，若晚于本帧 body 求值，
-        // 读 ProgressStore 会拿到这一章的上次位置，跳段就落到别处了。
-        if let pending = AnnotationStore.shared.pendingJump,
-           pending.chapterId == chapter.id,
-           pending.anchor.hasPrefix("blk-p"),
-           let value = Int(pending.anchor.dropFirst("blk-p".count)) {
-            return max(0, min(value, max(paragraphs.count - 1, 0)))
+        // 上层给了明确意图（点目录 / 书签 / 进度条）：它就是唯一答案。
+        // 不去读 ProgressStore、也不看任何残留状态，谁都顶不掉。
+        if let startParagraph {
+            return max(0, min(startParagraph, max(paragraphs.count - 1, 0)))
         }
         guard let anchor = ProgressStore.shared.anchor(for: chapter.id),
               anchor.hasPrefix("blk-p"),
@@ -874,7 +873,10 @@ struct ReaderView: View {
     // MARK: 锚点
 
     private func restoreAnchor(_ proxy: ScrollViewProxy) {
-        guard let anchor = ProgressStore.shared.anchor(for: chapter.id) else { return }
+        // 上层指定的起始段优先（点目录 / 书签 / 进度条），否则用记忆锚点
+        let anchor = startParagraph.map { "blk-p\(max(0, min($0, max(paragraphs.count - 1, 0))))" }
+            ?? ProgressStore.shared.anchor(for: chapter.id)
+        guard let anchor else { return }
         // LazyVStack 首屏布局需要时间，一次 scrollTo 很容易被忽略（段落还没构建），
         // 表现就是「记忆不生效、回到章首」。分批重试：越靠后的锚点需要的布局时间越长。
         for delay in [0.12, 0.4, 0.9] {

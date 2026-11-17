@@ -24,6 +24,9 @@ private struct ChapterGroup: Identifiable {
 struct ChapterListView: View {
     let book: Book?
     @Binding var selection: Chapter?
+    /// 自动恢复「上次读到哪一章」时回调：让上层知道这次不是用户点的，
+    /// 别把这一章的阅读位置重置成章首（漫画 / 整理 / 短剧靠它续读）。
+    var onAutoRestore: (Chapter) -> Void = { _ in }
 
     @EnvironmentObject private var library: LibraryStore
     /// 短剧每集的大小 / 时长（按需加载，行滚到才读）
@@ -345,6 +348,7 @@ struct ChapterListView: View {
            let chapter = book.chapters.first(where: { $0.id == last }) {
             // 标记来源：这次 selection 变化不是用户点的，别把它当成「主动选章」重置到章首
             autoRestoredChapterId = chapter.id
+            onAutoRestore(chapter)
             selection = chapter
         } else {
             selection = nil
