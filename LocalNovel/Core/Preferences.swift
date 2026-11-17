@@ -30,23 +30,36 @@ enum PageTurnMode: Int, CaseIterable, Identifiable {
     case scroll = 0
     case page = 1
     case slide = 2
+    case cover = 3
+    case vertical = 4
+    case none = 5
 
     var id: Int { rawValue }
 
     var label: String {
         switch self {
-        case .scroll: return "上下滚动"
-        case .page:   return "仿真翻页"
-        case .slide:  return "滑动翻页"
+        case .scroll:   return "上下滚动"
+        case .page:     return "仿真"
+        case .slide:    return "平移"
+        case .cover:    return "覆盖"
+        case .vertical: return "上下翻页"
+        case .none:     return "无动画"
         }
     }
 
-    /// 是否走「分页阅读」引擎（卷曲与滑动都是分页，只是呈现方式不同）
+    /// 是否走「分页阅读」引擎（除连续滚动外都是分页，只是呈现方式不同）
     var isPaged: Bool { self != .scroll }
 
     /// 分页引擎的呈现样式
     var flipStyle: PageFlipStyle {
-        self == .page ? .curl : .slide
+        switch self {
+        case .page:     return .curl
+        case .slide:    return .slide
+        case .cover:    return .cover
+        case .vertical: return .vertical
+        case .none:     return .none
+        case .scroll:   return .slide   // 不参与分页，兜底
+        }
     }
 
     var detail: String {
@@ -54,9 +67,15 @@ enum PageTurnMode: Int, CaseIterable, Identifiable {
         case .scroll:
             return "上下滚动：连续长页，段落流畅衔接，适合长篇与图文混排。"
         case .page:
-            return "仿真翻页：纸张卷起的立体动画，点屏幕左 / 右侧翻页，底部显示页码。"
+            return "仿真：纸张卷起的立体动画，点屏幕左 / 右侧翻页。"
         case .slide:
-            return "滑动翻页：整页跟手横移，翻动时带页边阴影，松手自动吸附到下一页；也可点左右边缘翻页。"
+            return "平移：整页跟手横移，翻动时带页边阴影，松手自动吸附到下一页。"
+        case .cover:
+            return "覆盖：新页从右侧压上来、旧页不动，往回翻则旧页滑走露出上一页。"
+        case .vertical:
+            return "上下翻页：整页纵向吸附，上下滑动翻页（不是连续滚动）。"
+        case .none:
+            return "无动画：左右滑或点左右边缘直接换页，不加过渡，最省电最跟手。"
         }
     }
 }
@@ -206,6 +225,10 @@ final class Preferences: ObservableObject {
     @Published var keepScreenOn: Bool = false {
         didSet { if loaded { save() } }
     }
+    /// 覆盖翻页的动画时长（秒）。手势驱动的那几种翻页不受它影响。
+    @Published var flipDuration: Double = 0.28 {
+        didSet { if loaded { save() } }
+    }
 
     // MARK: 全局外观
 
@@ -351,6 +374,7 @@ final class Preferences: ObservableObject {
         headerTopPadding = number(Keys.headerTop, 8, 0, 40)
         footerBottomPadding = number(Keys.footerBottom, 6, 0, 40)
         readerBrightness = Double(number(Keys.brightness, 1.0, 0.25, 1.0))
+        flipDuration = Double(number(Keys.flipDuration, 0.28, 0.05, 0.8))
         firstLineIndent = defaults.object(forKey: Keys.indent) == nil
             ? true : defaults.bool(forKey: Keys.indent)
         keepScreenOn = defaults.bool(forKey: Keys.keepScreenOn)
@@ -420,6 +444,7 @@ final class Preferences: ObservableObject {
         static let themeId = "LocalNovel.themeId"
         static let customThemes = "LocalNovel.customThemes"
         static let brightness = "LocalNovel.readerBrightness"
+        static let flipDuration = "LocalNovel.flipDuration"
         static let keepScreenOn = "LocalNovel.keepScreenOn"
     }
 
@@ -464,6 +489,7 @@ final class Preferences: ObservableObject {
             defaults.set(data, forKey: Keys.customThemes)
         }
         defaults.set(readerBrightness, forKey: Keys.brightness)
+        defaults.set(flipDuration, forKey: Keys.flipDuration)
         defaults.set(keepScreenOn, forKey: Keys.keepScreenOn)
     }
 }

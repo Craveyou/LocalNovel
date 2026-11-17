@@ -26,8 +26,22 @@ import CoreText
 // 2) 记忆段落在偏移前先按本章段落数收敛，越界值不再落到「最后一个「起始段落 ≤ 目标」的页」。
 
 enum PageFlipStyle: Equatable {
-    case curl
-    case slide
+    case curl      // 仿真卷曲
+    case slide     // 整页跟手横移
+    case cover     // 覆盖：新页从右侧压上来，旧页不动
+    case vertical  // 整页纵向吸附
+    case none      // 无动画：直接换页
+
+    /// 存进阅读指纹 / 用于 SwiftUI 侧 .id 重建
+    var key: String {
+        switch self {
+        case .curl:     return "curl"
+        case .slide:    return "slide"
+        case .cover:    return "cover"
+        case .vertical: return "vertical"
+        case .none:     return "none"
+        }
+    }
 }
 
 struct PagedReaderInput {
@@ -53,6 +67,8 @@ struct PagedReaderInput {
     let footerMode: ReaderFooterMode
     let headerTopPadding: CGFloat
     let footerBottomPadding: CGFloat
+    /// 覆盖翻页的动画时长（秒）；0 = 不动画
+    let flipDuration: Double
 
     /// 只有影响排版的参数变化才重建；restoreParagraph 故意不参与。
     /// 用 O(1) 的指纹（段数 + 首末段长度），不再遍历全部段落算总长：
@@ -63,7 +79,7 @@ struct PagedReaderInput {
         return "\(chapterId)|\(paragraphs.count)|\(head)|\(tail)|\(typography.identity)"
             + "|\(theme.hashValue)|\(title)|\(bookTitle)"
             + "|\(headerMode.rawValue)|\(footerMode.rawValue)|\(headerTopPadding)|\(footerBottomPadding)"
-            + "|\(images.count)|\(avMedia.count)|\(hasNextChapter)|\(style == .curl ? "curl" : "slide")"
+            + "|\(images.count)|\(avMedia.count)|\(hasNextChapter)|\(style.key)"
     }
 }
 
@@ -85,9 +101,14 @@ struct PagedReaderView: UIViewControllerRepresentable {
     func makeUIViewController(context: Context) -> PagedBaseController {
         // 两种引擎都继承 PagedBaseController，SwiftUI 侧不必感知差异。
         // 切换阅读方式时 ReaderView 用 .id(pageTurn) 强制重建，所以这里不会中途换类型。
-        let controller: PagedBaseController = input.style == .curl
-            ? CurlPageController()
-            : SlidePageController()
+        let controller: PagedBaseController
+        switch input.style {
+        case .curl:     controller = CurlPageController()
+        case .slide:    controller = SlidePageController()
+        case .cover:    controller = CoverPageController()
+        case .vertical: controller = VerticalPageController()
+        case .none:     controller = InstantPageController()
+        }
         wire(controller)
         controller.apply(input)
         return controller
@@ -140,6 +161,8 @@ class PagedBaseController: UIViewController {
     private let headerLabel = UILabel()
     /// 主题背景图（只有主题配了图才加）
     private let backgroundImageView = UIImageView()
+    /// 页面容器：夹在背景图与页眉页脚之间，方便「覆盖 / 无动画」这类引擎自己管理层级
+    let pageContainer = UIView()
 
     // MARK: 子类扩展点
 
@@ -158,6 +181,11 @@ class PagedBaseController: UIViewController {
         backgroundImageView.clipsToBounds = true
         backgroundImageView.isHidden = true
         view.addSubview(backgroundImageView)
+
+        pageContainer.frame = view.bounds
+        pageContainer.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        pageContainer.backgroundColor = .clear
+        view.addSubview(pageContainer)
 
         for label in [headerLabel, pageLabel] {
             label.font = .systemFont(ofSize: 12, weight: .regular)
@@ -187,6 +215,7 @@ class PagedBaseController: UIViewController {
     /// 页眉 / 页脚 / 背景图的位置（跟 safeArea 与用户设的间距走）
     private func layoutChrome() {
         backgroundImageView.frame = view.bounds
+        pageContainer.frame = view.bounds
         let safe = view.safeAreaInsets
         let side = max(input?.typography.horizontalPadding ?? 20, 8)
         let width = max(view.bounds.width - side * 2, 10)
@@ -470,8 +499,10 @@ class PagedBaseController: UIViewController {
 extension PagedBaseController: UIGestureRecognizerDelegate {
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                            shouldReceive touch: UITouch) -> Bool {
-        // 「末页左滑进下一章」不受下面这条限制：末页可能是插图 / 音视频页
+        // 「末页左滑进下一章」「覆盖翻页的跟手拖拽」不受下面这条限制：
+        // 末页可能是插图 / 音视频页，也照样要能翻
         if gestureRecognizer is UISwipeGestureRecognizer { return true }
+        if gestureRecognizer is UIPanGestureRecognizer { return true }
         // 只在文字页接收点击翻页；图片页要留给「点开全屏」，章末页要留给按钮
         guard currentIndex >= 0, currentIndex < pages.count else { return false }
         if case .text = pages[currentIndex] { return true }
@@ -600,10 +631,13 @@ extension CurlPageController: UIPageViewControllerDelegate {
 ///
 /// 与卷曲引擎的区别只在呈现层，分页 / 定位 / 锚点全部复用基类，
 /// 所以两种模式之间切换不会丢阅读位置。
-final class SlidePageController: PagedBaseController {
+class SlidePageController: PagedBaseController {
     private let scroller = UIScrollView()
     private var hosts: [Int: PageHost] = [:]
-    private var pageWidth: CGFloat = 0
+    /// 一页在滚动方向上的长度（横向 = 宽，纵向 = 高）
+    private var pageExtent: CGFloat = 0
+    /// 上下翻页：同一个引擎换成纵轴吸附，分页 / 锚点 / 页码全部复用
+    var isVertical: Bool { false }
     /// 末页继续往外拖出去的最大距离（松手才判定，避免手势中途反复触发）
     private var overflow: CGFloat = 0
     /// 本次拖动是从第几页开始的：只认「本来就在末页又继续往外拉」，
@@ -615,8 +649,10 @@ final class SlidePageController: PagedBaseController {
     override func viewDidLoad() {
         super.viewDidLoad()
         scroller.isPagingEnabled = true
-        scroller.alwaysBounceHorizontal = true
+        scroller.alwaysBounceHorizontal = !isVertical
+        scroller.alwaysBounceVertical = isVertical
         scroller.showsHorizontalScrollIndicator = false
+        scroller.showsVerticalScrollIndicator = false
         scroller.contentInsetAdjustmentBehavior = .never
         scroller.delegate = self
         scroller.backgroundColor = themeBackgroundColor
@@ -632,18 +668,23 @@ final class SlidePageController: PagedBaseController {
         scroller.frame = view.bounds
         let width = max(view.bounds.width, 1)
         let height = max(view.bounds.height, 1)
-        let widthChanged = abs(width - pageWidth) > 0.5
-        pageWidth = width
+        let extent = isVertical ? height : width
+        let extentChanged = abs(extent - pageExtent) > 0.5
+        pageExtent = extent
 
         guard !pages.isEmpty else {
             scroller.contentSize = view.bounds.size
             return
         }
-        scroller.contentSize = CGSize(width: width * CGFloat(pages.count), height: height)
+        scroller.contentSize = isVertical
+            ? CGSize(width: width, height: height * CGFloat(pages.count))
+            : CGSize(width: width * CGFloat(pages.count), height: height)
         for (index, host) in hosts {
-            host.frame = CGRect(x: CGFloat(index) * width, y: 0, width: width, height: height)
+            host.frame = isVertical
+                ? CGRect(x: 0, y: CGFloat(index) * height, width: width, height: height)
+                : CGRect(x: CGFloat(index) * width, y: 0, width: width, height: height)
         }
-        if widthChanged {
+        if extentChanged {
             jump(to: currentIndex)
             load(around: currentIndex)
         }
@@ -654,8 +695,10 @@ final class SlidePageController: PagedBaseController {
         hosts.removeAll()
         let width = max(view.bounds.width, 1)
         let height = max(view.bounds.height, 1)
-        pageWidth = width
-        scroller.contentSize = CGSize(width: width * CGFloat(max(pages.count, 1)), height: height)
+        pageExtent = isVertical ? height : width
+        scroller.contentSize = isVertical
+            ? CGSize(width: width, height: height * CGFloat(max(pages.count, 1)))
+            : CGSize(width: width * CGFloat(max(pages.count, 1)), height: height)
         jump(to: currentIndex)
         load(around: currentIndex)
         updateLabel()
@@ -669,14 +712,19 @@ final class SlidePageController: PagedBaseController {
     override func presentPage(at index: Int, animated: Bool) {
         guard index >= 0, index < pages.count else { return }
         load(around: index)
-        scroller.setContentOffset(CGPoint(x: CGFloat(index) * pageWidth, y: 0),
-                                  animated: animated)
+        scroller.setContentOffset(offset(for: index), animated: animated)
         if !animated { updateLabel() }
     }
 
     private func jump(to index: Int) {
-        guard index >= 0, index < pages.count, pageWidth > 0 else { return }
-        scroller.setContentOffset(CGPoint(x: CGFloat(index) * pageWidth, y: 0), animated: false)
+        guard index >= 0, index < pages.count, pageExtent > 0 else { return }
+        scroller.setContentOffset(offset(for: index), animated: false)
+    }
+
+    private func offset(for index: Int) -> CGPoint {
+        isVertical
+            ? CGPoint(x: 0, y: CGFloat(index) * pageExtent)
+            : CGPoint(x: CGFloat(index) * pageExtent, y: 0)
     }
 
     // MARK: 页面窗口化
@@ -695,10 +743,11 @@ final class SlidePageController: PagedBaseController {
     private func ensureHost(_ index: Int) {
         guard index >= 0, index < pages.count, hosts[index] == nil else { return }
         let host = PageHost(index: index)
-        host.frame = CGRect(x: CGFloat(index) * pageWidth,
-                            y: 0,
-                            width: pageWidth,
-                            height: max(view.bounds.height, 1))
+        let height = max(view.bounds.height, 1)
+        let width = max(view.bounds.width, 1)
+        host.frame = isVertical
+            ? CGRect(x: 0, y: CGFloat(index) * pageExtent, width: width, height: height)
+            : CGRect(x: CGFloat(index) * pageExtent, y: 0, width: width, height: height)
         host.backgroundColor = themeBackgroundColor
 
         let vc = makeController(at: index)
@@ -732,8 +781,9 @@ final class SlidePageController: PagedBaseController {
     }
 
     private func indexFromOffset() -> Int {
-        guard pageWidth > 0 else { return 0 }
-        let raw = (scroller.contentOffset.x / pageWidth).rounded()
+        guard pageExtent > 0 else { return 0 }
+        let value = isVertical ? scroller.contentOffset.y : scroller.contentOffset.x
+        let raw = (value / pageExtent).rounded()
         return min(max(Int(raw), 0), max(pages.count - 1, 0))
     }
 }
@@ -745,11 +795,14 @@ extension SlidePageController: UIScrollViewDelegate {
     }
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
-        guard pageWidth > 0, !pages.isEmpty else { return }
+        guard pageExtent > 0, !pages.isEmpty else { return }
         // 贴在末页还继续往外拖：记下最大越界距离。
         // 只有内容的右边缘会越界，所以拖到中间页时这里恒为 0，不会误判。
-        let maxOffset = max(scroller.contentSize.width - scroller.bounds.width, 0)
-        overflow = max(overflow, scroller.contentOffset.x - maxOffset)
+        // 上下翻页不做「拖到底换章」（纵向到底本来就是滚到章末，容易误触）。
+        if !isVertical {
+            let maxOffset = max(scroller.contentSize.width - scroller.bounds.width, 0)
+            overflow = max(overflow, scroller.contentOffset.x - maxOffset)
+        }
 
         let index = indexFromOffset()
         load(around: index)
@@ -782,7 +835,7 @@ extension SlidePageController: UIScrollViewDelegate {
     }
 
     private func settle() {
-        guard pageWidth > 0, !pages.isEmpty else { return }
+        guard pageExtent > 0, !pages.isEmpty else { return }
         let index = indexFromOffset()
         if index != currentIndex {
             adopt(index)
@@ -790,6 +843,12 @@ extension SlidePageController: UIScrollViewDelegate {
             updateLabel()
         }
     }
+}
+
+/// 上下翻页：与滑动翻页同一个引擎，只把轴换成纵向。
+/// 千阅的「上下」是整页吸附（不是连续滚动），所以复用分页切片而不是滚动视图。
+final class VerticalPageController: SlidePageController {
+    override var isVertical: Bool { true }
 }
 
 /// 滑动翻页里的一页：承载子控制器的视图 + 左右页边阴影
@@ -838,6 +897,270 @@ private final class PageHost: UIView {
                                  y: 0,
                                  width: shadowWidth,
                                  height: bounds.height)
+    }
+}
+
+// MARK: - 覆盖翻页
+
+/// 覆盖翻页：新页从右侧压上来，旧页不动；往回翻则旧页滑走、露出上一页。
+/// 手势自己接管（UIPanGestureRecognizer），松手按位移 / 速度决定翻页还是回弹。
+/// 分页、锚点、页码、章末续章全部复用基类，只换「怎么呈现」。
+final class CoverPageController: PagedBaseController {
+    private var currentVC: UIViewController?
+    private var incomingVC: UIViewController?
+    private var incomingIndex: Int?
+    private var direction = 0
+    private var prepared = false
+
+    private var duration: Double { max(0, input?.flipDuration ?? 0.28) }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        pageContainer.clipsToBounds = true
+        let pan = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
+        pan.delegate = self
+        pan.cancelsTouchesInView = false
+        pan.maximumNumberOfTouches = 1
+        view.addGestureRecognizer(pan)
+    }
+
+    override func didRebuildPages() {
+        removeCurrent()
+        install(index: currentIndex)
+    }
+
+    override func presentPage(at index: Int, animated: Bool) {
+        guard index >= 0, index < pages.count, index != currentIndex else { return }
+        if animated && duration > 0 {
+            slide(to: index)
+        } else {
+            removeCurrent()
+            install(index: index)
+            updateLabel()
+        }
+    }
+
+    // MARK: 页面装载
+
+    private func install(index: Int) {
+        guard index >= 0, index < pages.count else { return }
+        let vc = makeController(at: index)
+        addChild(vc)
+        vc.view.frame = pageContainer.bounds
+        vc.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        pageContainer.addSubview(vc.view)
+        vc.didMove(toParent: self)
+        currentVC = vc
+    }
+
+    private func removeCurrent() {
+        guard let vc = currentVC else { return }
+        vc.willMove(toParent: nil)
+        vc.view.removeFromSuperview()
+        vc.removeFromParent()
+        currentVC = nil
+    }
+
+    private func dropIncoming() {
+        guard let vc = incomingVC else { return }
+        vc.willMove(toParent: nil)
+        vc.view.removeFromSuperview()
+        vc.removeFromParent()
+        incomingVC = nil
+        incomingIndex = nil
+        prepared = false
+        direction = 0
+    }
+
+    /// 收尾：把新页扶正、旧页移除、同步页码
+    private func commit() {
+        guard let incoming = incomingVC, let index = incomingIndex else { return }
+        removeCurrent()
+        incoming.view.frame = pageContainer.bounds
+        incoming.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        currentVC = incoming
+        incomingVC = nil
+        incomingIndex = nil
+        prepared = false
+        direction = 0
+        adopt(index)
+    }
+
+    /// 点击翻页的动效（没有跟手过程，直接一段动画）
+    private func slide(to index: Int) {
+        let forward = index > currentIndex
+        let width = max(pageContainer.bounds.width, 1)
+        let vc = makeController(at: index)
+        addChild(vc)
+        vc.view.frame = forward
+            ? pageContainer.bounds.offsetBy(dx: width, dy: 0)
+            : pageContainer.bounds
+        vc.view.autoresizingMask = []
+        if forward {
+            pageContainer.addSubview(vc.view)
+        } else {
+            pageContainer.insertSubview(vc.view, at: 0)
+        }
+        vc.didMove(toParent: self)
+        incomingVC = vc
+        incomingIndex = index
+        prepared = true
+        direction = forward ? 1 : -1
+
+        UIView.animate(withDuration: duration, delay: 0, options: [.curveEaseOut]) {
+            if forward {
+                vc.view.frame = self.pageContainer.bounds
+            } else {
+                self.currentVC?.view.frame = self.pageContainer.bounds.offsetBy(dx: width, dy: 0)
+            }
+        } completion: { _ in
+            self.commit()
+        }
+    }
+
+    // MARK: 手势
+
+    @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
+        let dx = gesture.translation(in: view).x
+        switch gesture.state {
+        case .began:
+            direction = 0
+            prepared = false
+        case .changed:
+            if !prepared {
+                guard abs(dx) > 6 else { return }
+                prepare(direction: dx < 0 ? 1 : -1)
+            }
+            guard prepared else { return }
+            apply(dx: dx)
+        case .ended, .cancelled, .failed:
+            finish(dx: dx, velocity: gesture.velocity(in: view).x)
+        default:
+            break
+        }
+    }
+
+    private func prepare(direction dir: Int) {
+        let target = currentIndex + dir
+        guard dir != 0, target >= 0, target < pages.count else {
+            direction = 0
+            prepared = false
+            return
+        }
+        direction = dir
+        let width = max(pageContainer.bounds.width, 1)
+        let vc = makeController(at: target)
+        addChild(vc)
+        vc.view.frame = dir > 0
+            ? pageContainer.bounds.offsetBy(dx: width, dy: 0)
+            : pageContainer.bounds
+        vc.view.autoresizingMask = []
+        if dir > 0 {
+            pageContainer.addSubview(vc.view)
+        } else {
+            pageContainer.insertSubview(vc.view, at: 0)
+        }
+        vc.didMove(toParent: self)
+        incomingVC = vc
+        incomingIndex = target
+        prepared = true
+    }
+
+    private func apply(dx: CGFloat) {
+        guard let incoming = incomingVC else { return }
+        let width = max(pageContainer.bounds.width, 1)
+        if direction > 0 {
+            // 新页跟手从右侧压进来
+            let offset = min(max(dx, -width), 0)
+            incoming.view.frame = pageContainer.bounds.offsetBy(dx: width + offset, dy: 0)
+        } else {
+            // 旧页跟手往右滑走，露出上一页
+            let offset = max(min(dx, width), 0)
+            currentVC?.view.frame = pageContainer.bounds.offsetBy(dx: offset, dy: 0)
+        }
+    }
+
+    private func finish(dx: CGFloat, velocity: CGFloat) {
+        guard prepared, let incoming = incomingVC else {
+            dropIncoming()
+            return
+        }
+        let width = max(pageContainer.bounds.width, 1)
+        let passed = direction > 0
+            ? (dx < -width * 0.28 || velocity < -700)
+            : (dx > width * 0.28 || velocity > 700)
+        let duration = self.duration
+        UIView.animate(withDuration: passed ? duration : duration * 0.7,
+                       delay: 0,
+                       options: [.curveEaseOut]) {
+            if passed {
+                if self.direction > 0 {
+                    incoming.view.frame = self.pageContainer.bounds
+                } else {
+                    self.currentVC?.view.frame = self.pageContainer.bounds.offsetBy(dx: width, dy: 0)
+                }
+            } else {
+                if self.direction > 0 {
+                    incoming.view.frame = self.pageContainer.bounds.offsetBy(dx: width, dy: 0)
+                } else {
+                    self.currentVC?.view.frame = self.pageContainer.bounds
+                }
+            }
+        } completion: { _ in
+            if passed {
+                self.commit()
+            } else {
+                self.dropIncoming()
+            }
+        }
+    }
+}
+
+// MARK: - 无动画翻页
+
+/// 无动画：左右滑 / 点左右边缘直接换页，中间不跟手、不加过渡。
+/// 适合「只想快速看字」的人，也顺手把章末续章保留下来。
+final class InstantPageController: PagedBaseController {
+    private var currentVC: UIViewController?
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        pageContainer.clipsToBounds = true
+        for dir in [UISwipeGestureRecognizer.Direction.left, .right] {
+            let swipe = UISwipeGestureRecognizer(target: self, action: #selector(handleSwipe(_:)))
+            swipe.direction = dir
+            swipe.delegate = self
+            swipe.cancelsTouchesInView = false
+            view.addGestureRecognizer(swipe)
+        }
+    }
+
+    @objc private func handleSwipe(_ gesture: UISwipeGestureRecognizer) {
+        move(by: gesture.direction == .left ? 1 : -1)
+    }
+
+    override func didRebuildPages() {
+        install(index: currentIndex)
+    }
+
+    override func presentPage(at index: Int, animated: Bool) {
+        install(index: index)
+        updateLabel()
+    }
+
+    private func install(index: Int) {
+        guard index >= 0, index < pages.count else { return }
+        currentVC?.willMove(toParent: nil)
+        currentVC?.view.removeFromSuperview()
+        currentVC?.removeFromParent()
+
+        let vc = makeController(at: index)
+        addChild(vc)
+        vc.view.frame = pageContainer.bounds
+        vc.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        pageContainer.addSubview(vc.view)
+        vc.didMove(toParent: self)
+        currentVC = vc
     }
 }
 

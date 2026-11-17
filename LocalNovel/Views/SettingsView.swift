@@ -83,7 +83,11 @@ struct SettingsView: View {
                             Text(mode.label).tag(mode)
                         }
                     }
-                    .pickerStyle(.segmented)
+                    if prefs.pageTurn == .cover {
+                        valueSlider("翻页动画", Binding(get: { CGFloat(prefs.flipDuration) },
+                                                        set: { prefs.flipDuration = Double($0) }),
+                                    0.05...0.8, 0.05) { String(format: "%.2fs", $0) }
+                    }
                     Text(prefs.pageTurn.detail)
                         .font(.footnote)
                         .foregroundStyle(.secondary)

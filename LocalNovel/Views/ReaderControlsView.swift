@@ -345,8 +345,17 @@ struct ReaderControlsPanel: View {
                         Text(mode.label).tag(mode)
                     }
                 }
-                .pickerStyle(.segmented)
-                .frame(maxWidth: 240)
+                .pickerStyle(.menu)
+            }
+            Text(prefs.pageTurn.detail)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if prefs.pageTurn == .cover {
+                sliderRow("翻页动画", value: Binding(
+                    get: { CGFloat(prefs.flipDuration) },
+                    set: { prefs.flipDuration = Double($0) }
+                ), range: 0.05...0.8, step: 0.05, format: { String(format: "%.2fs", $0) })
             }
             HStack {
                 Text("外观").font(.subheadline)

@@ -349,8 +349,8 @@ def main():
           and "DocumentsBootstrap.guideFileName" in resolver)
     check("切回前台补写说明文件", "DocumentsBootstrap.ensureVisibleInFilesApp()" in store)
     check("版本号提升以刷新系统元数据",
-          "<string>2.11</string>" in plist and "CURRENT_PROJECT_VERSION = 1" in pbx
-          and "MARKETING_VERSION = 2.11" in pbx)
+          "<string>2.11.1</string>" in plist and "CURRENT_PROJECT_VERSION = 2" in pbx
+          and "MARKETING_VERSION = 2.11.1" in pbx)
     check("UI 给出「文件 App 搜索本地小说」兜底路径",
           "搜索框搜「本地小说」" in welcome and "搜索「本地小说」" in store)
     check("AppIcon asset catalog（1024 + Contents.json）",
@@ -605,9 +605,10 @@ def main():
     guide = (APP / "Views" / "StructureGuideView.swift").read_text(encoding="utf-8")
     settings = (APP / "Views" / "SettingsView.swift").read_text(encoding="utf-8")
 
-    check("阅读方式三档可切换，默认滑动翻页",
+    check("阅读方式六档可切换，默认滑动翻页",
           "enum PageTurnMode" in prefs_src and "case page = 1" in prefs_src
-          and "case slide = 2" in prefs_src
+          and "case slide = 2" in prefs_src and "case cover = 3" in prefs_src
+          and "case vertical = 4" in prefs_src and "case none = 5" in prefs_src
           and "defaults.object(forKey: Keys.pageTurn) as? Int" in prefs_src
           and "@Published var pageTurn: PageTurnMode = .slide" in prefs_src)
     check("设置页提供阅读方式切换",
@@ -712,8 +713,9 @@ def main():
     check("文档正文含双格式包一节",
           "### 5. 同一部书按格式分成两个包（PDF 包 + 图片包）"
           in (ROOT / "Docs" / "漫画目录结构说明.md").read_text(encoding="utf-8"))
-    check("版本升到 2.11 / build 1",
-          "<string>2.11</string>" in plist and "<key>CFBundleVersion</key>\n\t<string>1</string>" in plist)
+    check("版本升到 2.11.1 / build 2",
+          "<string>2.11.1</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>2</string>" in plist)
 
 
     print("\n== N. 本轮：底部三页 / 短剧 / NAS 连接 ==")
@@ -954,9 +956,9 @@ def main():
     check("NAS 书目录里直接放文件时仍当作一本书",
           "把目录本身当成一本书" in nas_lib_views
           and "hasMedia ? 1 : nil" in nas_lib)
-    check("版本升到 2.11 / build 1",
-          "<string>2.11</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>1</string>" in plist)
+    check("版本升到 2.11.1 / build 2",
+          "<string>2.11.1</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>2</string>" in plist)
 
     print("\n== S. 本轮：txt 乱码（UTF-16 误判 / GBK / Big5） ==")
     encoding_src = (APP / "Core" / "TextEncoding.swift").read_text(encoding="utf-8")
@@ -1040,7 +1042,7 @@ def main():
     hider_path = APP / "Views" / "TabBarAutoHide.swift"
     hider = hider_path.read_text(encoding="utf-8") if hider_path.exists() else ""
 
-    check("阅读方式三档：滚动 / 仿真卷曲 / 滑动",
+    check("阅读方式六档：滚动 / 仿真 / 平移 / 覆盖 / 上下翻页 / 无动画",
           "case scroll = 0" in pref_src and "case page = 1" in pref_src
           and "case slide = 2" in pref_src and "var isPaged: Bool" in pref_src)
     check("滑动翻页用 UIScrollView 分页（整页跟手横移）",
@@ -1049,10 +1051,13 @@ def main():
     check("滑动页有左右页边阴影（纸张叠压感）",
           "UIColor.black.withAlphaComponent(0.16).cgColor" in paged
           and 'leftEdge.name = "edge.left"' in paged)
-    check("两套引擎共用分页 / 定位 / 锚点（切换模式不丢位置）",
+    check("五套引擎共用分页 / 定位 / 锚点（切换模式不丢位置）",
           "class PagedBaseController: UIViewController" in paged
           and "final class CurlPageController: PagedBaseController" in paged
-          and "final class SlidePageController: PagedBaseController" in paged)
+          and "class SlidePageController: PagedBaseController" in paged
+          and "final class CoverPageController: PagedBaseController" in paged
+          and "final class InstantPageController: PagedBaseController" in paged
+          and "final class VerticalPageController: SlidePageController" in paged)
     check("未翻页前始终用记忆段落定位（首帧尺寸变化不挤走位置）",
           "let anchor = didNavigate ? nearestParagraph(at: currentIndex) : restoreParagraph" in paged
           and "func clampedParagraph(_ value: Int) -> Int" in paged)
@@ -1218,6 +1223,46 @@ def main():
           and 'sliderRow("段距"' in controls
           and 'sliderRow("字距"' in controls
           and 'sliderRow("边距"' in controls)
+
+    print("\n== Y. 本轮：翻页引擎六档（覆盖 / 上下翻页 / 无动画 / 动画时长 / 预取） ==")
+    prefs_src = (APP / "Core" / "Preferences.swift").read_text(encoding="utf-8")
+    paged = (APP / "Views" / "PagedReaderView.swift").read_text(encoding="utf-8")
+    reader = (APP / "Views" / "ReaderView.swift").read_text(encoding="utf-8")
+    controls = (APP / "Views" / "ReaderControlsView.swift").read_text(encoding="utf-8")
+
+    check("六档翻页模式：滚动 / 仿真 / 平移 / 覆盖 / 上下翻页 / 无动画",
+          all(k in prefs_src for k in ["case cover = 3", "case vertical = 4", "case none = 5"])
+          and all(k in prefs_src for k in ['return "覆盖"', 'return "上下翻页"', 'return "无动画"']))
+    check("每档映射到独立的呈现引擎",
+          "case .cover:    return .cover" in prefs_src
+          and "case .vertical: return .vertical" in prefs_src
+          and "case .none:     return .none" in prefs_src
+          and "case .cover:    controller = CoverPageController()" in paged
+          and "case .vertical: controller = VerticalPageController()" in paged
+          and "case .none:     controller = InstantPageController()" in paged)
+    check("覆盖翻页：跟手拖拽 + 位移/速度阈值 + 松手回弹",
+          "final class CoverPageController" in paged
+          and "dx < -width * 0.28 || velocity < -700" in paged
+          and "func dropIncoming()" in paged
+          and "func commit()" in paged)
+    check("上下翻页复用滑动引擎，只把轴换成纵向",
+          "var isVertical: Bool { false }" in paged
+          and "final class VerticalPageController: SlidePageController" in paged
+          and "isVertical ? height : width" in paged)
+    check("无动画模式：左右滑 + 点击直接换页，不加过渡",
+          "final class InstantPageController" in paged
+          and "move(by: gesture.direction == .left ? 1 : -1)" in paged)
+    check("翻页动画时长可调，只对覆盖生效",
+          "var flipDuration: Double = 0.28" in prefs_src
+          and "let flipDuration: Double" in paged
+          and "if prefs.pageTurn == .cover" in controls)
+    check("翻页方式改成菜单选择（六档放不下一排分段）",
+          ".pickerStyle(.menu)" in controls)
+    check("相邻章正文预取（切章不空等）",
+          "func warmNextChapter()" in reader
+          and "library.paragraphs(for: next)" in reader)
+    check("版本已升到 2.11.1 / build 2",
+          "2.11.1" in (APP / "Info.plist").read_text(encoding="utf-8"))
 
     print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")
     if FAIL:

@@ -74,6 +74,15 @@ struct ReaderView: View {
         UIApplication.shared.isIdleTimerDisabled = prefs.keepScreenOn
     }
 
+    /// 预取下一章正文：本地书不用等网络，但切章要重新读文件 + 分段 + 切章判断，
+    /// 提前在主线程上「空转」一次，翻到下一章时内容已经在缓存里。
+    private func warmNextChapter() {
+        guard category == .novel, let next = nextChapter else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+            _ = library.paragraphs(for: next)
+        }
+    }
+
     /// 这一章只有媒体、没有正文（短剧的每一集视频 / 单集音频）
     private var isMediaOnly: Bool {
         content.textURL == nil && paragraphs.isEmpty && !content.avMedia.isEmpty
@@ -266,6 +275,7 @@ struct ReaderView: View {
         .onAppear {
             ReadingChrome.shared.enter()
             syncIdleTimer()
+            warmNextChapter()
         }
         .onChange(of: prefs.keepScreenOn) { _, _ in syncIdleTimer() }
         .onDisappear {
@@ -495,7 +505,8 @@ struct ReaderView: View {
                                     headerMode: prefs.headerMode,
                                     footerMode: prefs.footerMode,
                                     headerTopPadding: prefs.headerTopPadding,
-                                    footerBottomPadding: prefs.footerBottomPadding),
+                                    footerBottomPadding: prefs.footerBottomPadding,
+                                    flipDuration: prefs.flipDuration),
             onProgress: { paragraph in
                 ProgressStore.shared.noteAnchor("blk-p\(paragraph)", for: chapter.id)
             },
