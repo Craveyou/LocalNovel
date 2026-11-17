@@ -299,6 +299,26 @@ struct ReaderTheme: Identifiable, Codable, Equatable, Hashable {
     }
 }
 
+// MARK: 自定义主题
+
+extension ReaderTheme {
+    /// 以内置主题为底稿新建一套自定义主题（id 用时间戳，避免和内置撞车）
+    static func newCustom(from base: ReaderTheme, name: String) -> ReaderTheme {
+        ReaderTheme(id: "custom-\(Int(Date().timeIntervalSince1970))-\(Int.random(in: 100...999))",
+                    name: name,
+                    isBuiltIn: false,
+                    isNight: base.isNight,
+                    textColor: base.textColor,
+                    backgroundColor: base.backgroundColor,
+                    titleColor: base.titleColor,
+                    pageIndexColor: base.pageIndexColor,
+                    headerFooterColor: base.headerFooterColor,
+                    separatorColor: base.separatorColor,
+                    backgroundImage: base.backgroundImage,
+                    backgroundImageMode: base.backgroundImageMode)
+    }
+}
+
 // MARK: 颜色换算
 
 extension Color {
@@ -313,6 +333,20 @@ extension UIColor {
         let (r, g, b) = ReaderTheme.rgbComponents(hex)
         self.init(red: CGFloat(r), green: CGFloat(g), blue: CGFloat(b), alpha: 1)
     }
+
+    /// 取回 #RRGGBB，供 ColorPicker 回写
+    var hexRGB: String {
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        getRed(&r, green: &g, blue: &b, alpha: &a)
+        return String(format: "#%02X%02X%02X",
+                      Int((min(max(r, 0), 1)) * 255),
+                      Int((min(max(g, 0), 1)) * 255),
+                      Int((min(max(b, 0), 1)) * 255))
+    }
+}
+
+extension Color {
+    var hexRGB: String { UIColor(self).hexRGB }
 }
 
 // MARK: 主题背景图

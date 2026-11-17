@@ -349,8 +349,8 @@ def main():
           and "DocumentsBootstrap.guideFileName" in resolver)
     check("切回前台补写说明文件", "DocumentsBootstrap.ensureVisibleInFilesApp()" in store)
     check("版本号提升以刷新系统元数据",
-          "<string>2.11.3</string>" in plist and "CURRENT_PROJECT_VERSION = 4" in pbx
-          and "MARKETING_VERSION = 2.11.3" in pbx)
+          "<string>2.11.4</string>" in plist and "CURRENT_PROJECT_VERSION = 5" in pbx
+          and "MARKETING_VERSION = 2.11.4" in pbx)
     check("UI 给出「文件 App 搜索本地小说」兜底路径",
           "搜索框搜「本地小说」" in welcome and "搜索「本地小说」" in store)
     check("AppIcon asset catalog（1024 + Contents.json）",
@@ -713,9 +713,9 @@ def main():
     check("文档正文含双格式包一节",
           "### 5. 同一部书按格式分成两个包（PDF 包 + 图片包）"
           in (ROOT / "Docs" / "漫画目录结构说明.md").read_text(encoding="utf-8"))
-    check("版本升到 2.11.3 / build 4",
-          "<string>2.11.3</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>4</string>" in plist)
+    check("版本升到 2.11.4 / build 5",
+          "<string>2.11.4</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>5</string>" in plist)
 
 
     print("\n== N. 本轮：底部三页 / 短剧 / NAS 连接 ==")
@@ -956,9 +956,9 @@ def main():
     check("NAS 书目录里直接放文件时仍当作一本书",
           "把目录本身当成一本书" in nas_lib_views
           and "hasMedia ? 1 : nil" in nas_lib)
-    check("版本升到 2.11.3 / build 4",
-          "<string>2.11.3</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>4</string>" in plist)
+    check("版本升到 2.11.4 / build 5",
+          "<string>2.11.4</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>5</string>" in plist)
 
     print("\n== S. 本轮：txt 乱码（UTF-16 误判 / GBK / Big5） ==")
     encoding_src = (APP / "Core" / "TextEncoding.swift").read_text(encoding="utf-8")
@@ -1263,8 +1263,8 @@ def main():
     check("相邻章正文预取（切章不空等）",
           "func warmNextChapter()" in reader
           and "library.paragraphs(for: next)" in reader)
-    check("版本已升到 2.11.3 / build 4",
-          "2.11.3" in (APP / "Info.plist").read_text(encoding="utf-8"))
+    check("版本已升到 2.11.4 / build 5",
+          "2.11.4" in (APP / "Info.plist").read_text(encoding="utf-8"))
 
     print("\n== Z. 本轮：上下菜单栏 + 进度滑杆 + 目录面板 ==")
     bars = (APP / "Views" / "ReaderChromeBars.swift").read_text(encoding="utf-8")
@@ -1337,6 +1337,41 @@ def main():
     check("字体落在沙盒并幂等注册，启动时刷新列表",
           "CTFontManagerRegisterFontsForURL" in fontlib
           and "ReaderFontLibrary.registerInstalled()" in (APP / "App" / "LocalNovelApp.swift").read_text(encoding="utf-8"))
+
+    print("\n== AB. 本轮：自定义主题编辑器 ==")
+    editor = (APP / "Views" / "ThemeEditorView.swift").read_text(encoding="utf-8")
+    style = (APP / "Core" / "ReaderStyle.swift").read_text(encoding="utf-8")
+    controls = (APP / "Views" / "ReaderControlsView.swift").read_text(encoding="utf-8")
+    settings = (APP / "Views" / "SettingsView.swift").read_text(encoding="utf-8")
+    reader = (APP / "Views" / "ReaderView.swift").read_text(encoding="utf-8")
+    prefs_src = (APP / "Core" / "Preferences.swift").read_text(encoding="utf-8")
+
+    check("主题管理：新建 / 复制内置 / 删除 / 夜间标记",
+          "struct ThemeManagerView" in editor
+          and "static func newCustom(from base: ReaderTheme" in style
+          and ".onDelete { indexSet in" in editor
+          and 'Toggle("作为夜间主题"' in editor)
+    check("编辑器可改 6 个颜色 + 名称，并带实时预览",
+          editor.count("ColorPicker(") >= 6
+          and 'TextField("主题名字"' in editor
+          and 'Section("预览")' in editor)
+    check("背景图从相册选，落盘后只存文件名",
+          "PhotosPicker(selection: $pickerItem" in editor
+          and "ReaderBackgroundImage.save(imageData:" in editor
+          and "loadTransferable(type: Data.self)" in editor)
+    check("颜色双向转换（hex → Color / Color → hex）",
+          "var hexRGB: String" in style
+          and "var hexRGB: String { UIColor(self).hexRGB }" in style)
+    check("保存可「仅保存」或「保存并应用」；删掉在用的主题回退纸白",
+          'Button("保存并应用")' in editor and 'Button("仅保存")' in editor
+          and "prefs.themeId = draft.id" in editor
+          and "prefs.themeId = ReaderTheme.builtIns[0].id" in editor)
+    check("阅读面板与设置页都能进主题管理",
+          "onThemeEditor: { showThemeManager = true }" in reader
+          and 'Button("管理") { onThemeEditor() }' in controls
+          and "showThemeManager = true" in settings)
+    check("自定义主题随 Preferences 一起持久化（JSON）",
+          "JSONEncoder().encode(customThemes)" in prefs_src)
 
     print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")
     if FAIL:

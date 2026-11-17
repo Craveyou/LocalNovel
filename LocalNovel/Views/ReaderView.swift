@@ -54,6 +54,8 @@ struct ReaderView: View {
     @State private var pageCommandDelta = 0
     /// 音量键监听器（开启时才创建）
     @State private var volumePager: VolumeKeyPager?
+    /// 主题管理（自定义主题增删改）
+    @State private var showThemeManager = false
     /// 滚动模式：到底之后的上拉是否还有效（切过章或松手回弹后重新武装，保证一次一记）
     @State private var bottomPullArmed = true
 
@@ -399,6 +401,7 @@ struct ReaderView: View {
                     encodingMenu: AnyView(encodingMenu),
                     onTOC: { showStylePanel = false; showCatalog = true },
                     onSettings: { showSettings = true },
+                    onThemeEditor: { showThemeManager = true },
                     onExit: onExit,
                     onDismiss: { showStylePanel = false }
                 )
@@ -406,6 +409,7 @@ struct ReaderView: View {
             }
         }
         .sheet(isPresented: $showSettings) { SettingsView() }
+        .sheet(isPresented: $showThemeManager) { ThemeManagerView() }
         .fullScreenCover(item: $galleryItem) { item in
             // 关闭时回传当前图片 → 换算成插图锚点，滚动定位回这张
             MediaGalleryView(items: content.images, initial: item) { closed in

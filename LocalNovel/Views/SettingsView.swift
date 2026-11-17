@@ -13,6 +13,7 @@ struct SettingsView: View {
     /// NAS 图片缓存占用（进入设置时扫一次，改上限 / 清理后刷新）
     @State private var cacheUsage = RemoteImageCache.Usage()
     @State private var showCacheConfirm = false
+    @State private var showThemeManager = false
 
     init(showsDoneButton: Bool = true) {
         self.showsDoneButton = showsDoneButton
@@ -240,6 +241,11 @@ struct SettingsView: View {
                     Text("亮度只压阅读页，不修改系统亮度。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
+                    Button {
+                        showThemeManager = true
+                    } label: {
+                        Label("主题管理（新建 / 编辑 / 删除）", systemImage: "paintpalette")
+                    }
                 }
 
                 Section("外观") {
@@ -354,6 +360,7 @@ struct SettingsView: View {
             } message: {
                 Text("只删除本机缓存文件，NAS 上的原图不受影响；下次浏览会重新下载。")
             }
+            .sheet(isPresented: $showThemeManager) { ThemeManagerView() }
             .navigationTitle("设置")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

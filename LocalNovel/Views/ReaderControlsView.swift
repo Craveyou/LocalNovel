@@ -20,6 +20,8 @@ struct ReaderControlsPanel: View {
     let encodingMenu: AnyView
     let onTOC: () -> Void
     let onSettings: () -> Void
+    /// 打开「主题管理」（自定义主题的增删改）
+    let onThemeEditor: () -> Void
     let onExit: () -> Void
     let onDismiss: () -> Void
 
@@ -278,7 +280,7 @@ struct ReaderControlsPanel: View {
             HStack {
                 sectionTitle("主题")
                 Spacer()
-                Button("自定义") { onSettings() }
+                Button("管理") { onThemeEditor() }
                     .font(.caption)
             }
             ScrollView(.horizontal, showsIndicators: false) {
