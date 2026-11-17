@@ -349,7 +349,7 @@ final class LibraryStore: ObservableObject {
         ensureChapters(for: book) { [weak self] in
             guard let self else { return }
             let fresh = self.library?.books.first(where: { $0.id == book.id }) ?? book
-            self.prefetchBody(fresh) { completion(fresh) }
+            self.prefetchBody(for: fresh) { completion(fresh) }
         }
     }
 
