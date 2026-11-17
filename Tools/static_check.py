@@ -350,8 +350,8 @@ def main():
           and "DocumentsBootstrap.guideFileName" in resolver)
     check("切回前台补写说明文件", "DocumentsBootstrap.ensureVisibleInFilesApp()" in store)
     check("版本号提升以刷新系统元数据",
-          "<string>2.14.1</string>" in plist and "CURRENT_PROJECT_VERSION = 16" in pbx
-          and "MARKETING_VERSION = 2.14.1" in pbx)
+          "<string>2.14.2</string>" in plist and "CURRENT_PROJECT_VERSION = 17" in pbx
+          and "MARKETING_VERSION = 2.14.2" in pbx)
     check("UI 给出「文件 App 搜索本地小说」兜底路径",
           "搜索框搜「本地小说」" in welcome and "搜索「本地小说」" in store)
     check("AppIcon asset catalog（1024 + Contents.json）",
@@ -566,7 +566,7 @@ def main():
     check("小说扫描只给占位章，进入书时才后台切章（大书库启动不卡）",
           "chaptersDeferred" in models
           and "chaptersDeferred: true" in sections
-          and "func ensureChapters(for book: Book)" in store
+          and "func ensureChapters(for book: Book, completion:" in store
           and "DispatchQueue.global" in store)
     check("epub 自解析：zip 中央目录 + container.xml + opf + spine",
           "struct ZipArchive" in zip_src
@@ -718,9 +718,9 @@ def main():
     check("文档正文含双格式包一节",
           "### 5. 同一部书按格式分成两个包（PDF 包 + 图片包）"
           in (ROOT / "Docs" / "漫画目录结构说明.md").read_text(encoding="utf-8"))
-    check("版本升到 2.14.1 / build 16",
-          "<string>2.14.1</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>16</string>" in plist)
+    check("版本升到 2.14.2 / build 17",
+          "<string>2.14.2</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>17</string>" in plist)
 
 
     print("\n== N. 本轮：底部三页 / 短剧 / NAS 连接 ==")
@@ -971,9 +971,9 @@ def main():
     check("远端文件缓存有上限并会按最久未修改淘汰",
           "static let byteLimit: Int64 = 512 * 1024 * 1024" in nas_lib
           and "Task.detached(priority: .utility) { trim(folder: folder, limit: byteLimit) }" in nas_lib)
-    check("版本升到 2.14.1 / build 16",
-          "<string>2.14.1</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>16</string>" in plist)
+    check("版本升到 2.14.2 / build 17",
+          "<string>2.14.2</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>17</string>" in plist)
 
     print("\n== S. 本轮：txt 乱码（UTF-16 误判 / GBK / Big5） ==")
     encoding_src = (APP / "Core" / "TextEncoding.swift").read_text(encoding="utf-8")
@@ -1282,8 +1282,8 @@ def main():
     check("相邻章正文预取（切章不空等）",
           "func warmNextChapter()" in reader
           and "library.paragraphs(for: next)" in reader)
-    check("版本已升到 2.14.1 / build 16",
-          "2.14.1" in (APP / "Info.plist").read_text(encoding="utf-8"))
+    check("版本已升到 2.14.2 / build 17",
+          "2.14.2" in (APP / "Info.plist").read_text(encoding="utf-8"))
 
     print("\n== Z. 本轮：上下菜单栏 + 进度滑杆 + 目录面板 ==")
     bars = (APP / "Views" / "ReaderChromeBars.swift").read_text(encoding="utf-8")
@@ -1683,9 +1683,9 @@ def main():
     check("小说书行不再显示章数与「正在分章…」",
           'if book.category == .novel {' in sidebar_src
           and "} else if library.isSplitting(book) {" in sidebar_src)
-    check("书名单面不触发分章（分章留到阅读页）",
+    check("书名单面不触发分章（分章留到打开阅读页时）",
           "ensureChapters" not in strip_non_code(sidebar_src)
-          and "library.ensureChapters(for: book)" in root_src)
+          and "library.prepareNovel(book)" in root_src)
     check("删除确认按文件说明，不再报「1 章」",
           "private func deleteMessage(_ book: Book) -> String" in sidebar_src
           and 'book.category == .novel\n            ? NovelScanner.formatLabel(for: book.folderURL)' in sidebar_src)
@@ -1723,9 +1723,32 @@ def main():
           "ProgressStore.shared.setAnchor" not in clist_src
           and "ProgressStore.shared.setLastChapter" not in clist_src)
 
-    check("版本已升到 2.14.1 / build 16",
-          "<string>2.14.1</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>16</string>" in plist)
+    # ------------------------------------------------------------------
+    # X3. 2.14.2：点小说不再卡住（切章 + 解码 + 净化全部后置到后台）
+    # ------------------------------------------------------------------
+    print("\n== X3. 本轮：点书不再卡主线程（2.14.2） ==")
+    check("打开小说前先准备（切章 + 解码），准备完再进阅读器",
+          "func prepareNovel(_ book: Book, completion: @escaping (Book) -> Void)" in store
+          and "private func prefetchBody(for book: Book" in store
+          and "library.prepareNovel(book)" in root_src)
+    check("准备期间显示进度页，不再拿占位章直接进分页器",
+          "struct PreparingNovelView" in root_src
+          and "if let book = preparingBook {" in root_src
+          and "preparingBook = book" in root_src)
+    check("准备中的书不被 chapterSignature 抢先进页",
+          "guard preparingBook == nil else { return }" in root_src)
+    check("净化 / 繁简在后台预计算（主线程只写缓存）",
+          "static func precompute(chapterId: String" in purify_src
+          and "private static func store(key: String, value: [String])" in purify_src
+          and "library.prefetchParagraphs(for: target)" in root_src)
+    check("切章完成 / 无需切章都会回调（waiters 一起放行）",
+          "private var splitWaiters: [String: [() -> Void]] = [:]" in store
+          and "let waiters = self.splitWaiters.removeValue(forKey: book.id) ?? []" in store
+          and "waiters.forEach { $0() }" in store)
+
+    check("版本已升到 2.14.2 / build 17",
+          "<string>2.14.2</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>17</string>" in plist)
 
     print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")
     if FAIL:

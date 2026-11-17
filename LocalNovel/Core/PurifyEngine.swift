@@ -99,6 +99,52 @@ enum ReaderTextPipeline {
         return result
     }
 
+    /// 后台预计算某一章的净化 / 繁简结果，算完在主线程写缓存再回调。
+    ///
+    /// 净化是逐段跑正则、繁简是逐段跑 ICU 转换，几千段放主线程会明显卡顿。
+    /// 阅读器在「点书 → 进章」之间先调它，首帧就只剩分页排版。
+    /// 没启用任何规则时零成本：不复制数组，直接回调。
+    static func precompute(chapterId: String,
+                           raw: [String],
+                           rules: [PurifyRule],
+                           traditional: Bool,
+                           completion: @escaping () -> Void) {
+        let active = rules.filter { $0.isEnabled && !$0.pattern.isEmpty }
+        guard !active.isEmpty || traditional else {
+            completion()
+            return
+        }
+        let key = "\(chapterId)|\(traditional ? 1 : 0)|\(PurifyEngine.fingerprint(active))"
+        if cache[key] != nil {
+            completion()
+            return
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            var result = raw
+            if !active.isEmpty {
+                result = result.map { PurifyEngine.apply(active, to: $0) }
+                result = result.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            }
+            if traditional {
+                result = result.map { ChineseScript.toTraditional($0) }
+            }
+            let value = result
+            DispatchQueue.main.async {
+                store(key: key, value: value)
+                completion()
+            }
+        }
+    }
+
+    /// 缓存只允许主线程写（读者可能在另一章取用）
+    private static func store(key: String, value: [String]) {
+        cache[key] = value
+        order.append(key)
+        if order.count > 3 {
+            cache[order.removeFirst()] = nil
+        }
+    }
+
     static func reset() {
         cache.removeAll()
         order.removeAll()

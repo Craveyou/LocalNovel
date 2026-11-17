@@ -20,6 +20,10 @@ struct RootView: View {
     /// 由「打开小说自动定位」或「恢复上次章节」设进来的章节 id。
     /// 它的 selection 变化不算用户主动选章：保留该章的段落锚点，从上次位置续读。
     @State private var autoRestoredChapterId: String?
+    /// 正在准备打开的小说（后台切章 / 解码整本）。非 nil 时 detail 显示进度而不是阅读器。
+    @State private var preparingBook: Book?
+    /// 防止「准备完之前用户又点了别的书」：旧任务回来时直接丢弃（序号比对）
+    @State private var prepareSeq = 0
 
     var body: some View {
         // 小说只有两栏：书库 → 阅读器（小说没有「章节目录」中间页，换章走阅读器目录面板）。
@@ -72,8 +76,10 @@ struct RootView: View {
                 selectedChapter = nil
             }
         }
-        // 切章完成（占位章 → 真实章节）后，若当前章已失效或还没选中，重新定位到记忆章节
+        // 切章完成（占位章 → 真实章节）后，若当前章已失效或还没选中，重新定位到记忆章节。
+        // 准备中的打开由 openNovel 自己接手：这里再抢一次会让阅读器在正文没解码完时就渲染。
         .onChange(of: chapterSignature) { _, _ in
+            guard preparingBook == nil else { return }
             guard let book = selectedBook, book.category == .novel else { return }
             let fresh = latestBook() ?? book
             let stale = selectedChapter.map { current in
@@ -124,6 +130,7 @@ struct RootView: View {
             if mode != .font {
                 selectedBook = nil
                 selectedChapter = nil
+                preparingBook = nil
             }
         }
     }
@@ -150,7 +157,9 @@ struct RootView: View {
 
     @ViewBuilder
     private var readerDetail: some View {
-        if let chapter = selectedChapter {
+        if let book = preparingBook {
+            PreparingNovelView(title: book.title)
+        } else if let chapter = selectedChapter {
             ReaderView(chapter: chapter,
                        nextChapter: nextChapter(after: chapter),
                        chapters: (latestBook()?.chapters ?? []).filter { !$0.isPlaceholder },
@@ -162,6 +171,7 @@ struct RootView: View {
                        onExit: {
                            selectedChapter = nil
                            selectedBook = nil   // 回到书库首页，再点同一本也会重新触发「选书即读」
+                           preparingBook = nil
                        })
                 .id(chapter.id) // 切章时重建，重置滚动与播放器
         } else {
@@ -181,20 +191,40 @@ struct RootView: View {
         (latestBook()?.chapters ?? []).map(\.id).joined(separator: "|")
     }
 
-    /// 选书即读（仅小说）：直接打开上次读到的那一章（没有记忆就第一章）。
-    /// 小说要先把占位章换成真实章节；漫画 / 短剧 / 整理扫描时就是真实章节，走中间栏选章。
+    /// 选书：小说走「先准备再进阅读器」，漫画 / 短剧 / 整理停在中间栏选章。
     private func openBook(_ book: Book) {
-        if book.category == .novel {
-            library.ensureChapters(for: book)
-        }
-        let fresh = latestBook() ?? book
-        guard let target = preferredChapter(in: fresh, allowFirst: true) else {
-            // 极少数情况（书是空的 / 文件被移走）：留在欢迎页，别推一个空阅读页
+        guard book.category == .novel else {
             selectedChapter = nil
             return
         }
-        autoRestoredChapterId = target.id
-        selectedChapter = target
+        openNovel(book)
+    }
+
+    /// 小说「选书即读」：后台切章 + 解码整本，准备妥了再进阅读器。
+    ///
+    /// 以前是立刻拿占位章（= 整本书）进阅读页：主线程上要先解码整个文件，
+    /// 分页器还要对整本正文做一遍 CoreText 排版，大书点一下能僵好几秒。
+    /// 现在准备阶段全部在后台，界面只显示一个明确的进度。
+    private func openNovel(_ book: Book) {
+        prepareSeq += 1
+        let token = prepareSeq
+        preparingBook = book
+        selectedChapter = nil
+        library.prepareNovel(book) { fresh in
+            // 准备期间用户可能已经点了别的书 / 退出：旧任务直接丢弃
+            guard prepareSeq == token, selectedBook?.id == book.id else { return }
+            guard let target = preferredChapter(in: fresh, allowFirst: true) else {
+                preparingBook = nil
+                return
+            }
+            // 净化 / 繁简也先在后台算好，进页时只剩分页排版
+            library.prefetchParagraphs(for: target) {
+                guard prepareSeq == token, selectedBook?.id == book.id else { return }
+                preparingBook = nil
+                autoRestoredChapterId = target.id
+                selectedChapter = target
+            }
+        }
     }
 
     /// 记忆章节优先；allowFirst = true 时没有记忆则退到第一章（还没有真实章时用占位章）。
@@ -226,6 +256,32 @@ struct RootView: View {
               let index = chapters.firstIndex(where: { $0.id == chapter.id }),
               index + 1 < chapters.count else { return nil }
         return chapters[index + 1]
+    }
+}
+
+// MARK: - 打开小说前的准备页
+
+/// 点小说后到正文出现之间的过渡页。
+/// 这一版把切章与整本解码都放到后台，所以这里会短暂出现；
+/// 关键是它期间**界面不卡**（主线程不再解码整本、不再对整本排版）。
+struct PreparingNovelView: View {
+    let title: String
+
+    var body: some View {
+        VStack(spacing: 14) {
+            ProgressView()
+                .controlSize(.large)
+            Text("正在准备《\(title)》")
+                .font(.headline)
+                .multilineTextAlignment(.center)
+            Text("第一次打开会先把整本切成章节、读进内存，之后点开就是秒进。")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 320)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(uiColor: .systemBackground))
     }
 }
 

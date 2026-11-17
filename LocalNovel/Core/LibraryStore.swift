@@ -49,6 +49,8 @@ final class LibraryStore: ObservableObject {
     private var splitCache: [String: [Chapter]] = [:]
     /// 正在切章的书，防止 onAppear 反复触发
     private var splittingBooks: Set<String> = []
+    /// 同一本书切章期间又有人来要结果：挂在这里等这次切完一起回调
+    private var splitWaiters: [String: [() -> Void]] = [:]
     /// 扫描进行中又有新的重扫请求（连续删除时）
     private var pendingRescan = false
     /// 扫描进行中被挡下的那次 rescan 的 completion：必须一起补执行，
@@ -300,10 +302,22 @@ final class LibraryStore: ObservableObject {
     // MARK: - 小说分章（首次打开时解析正文）
 
     /// 小说区的书扫描时只给一章占位；进入该书时在后台按「第X章」切分。
-    func ensureChapters(for book: Book) {
-        guard book.chaptersDeferred, book.category == .novel else { return }
-        guard !splittingBooks.contains(book.id) else { return }
-        if splitCache[book.id] != nil { return }
+    /// 切完 / 无需切章都会在主线程回调 completion。
+    /// 需要 completion 的场景是「点书 → 先等切好再进阅读器」，避免拿占位章（整本书）
+    /// 直接进分页器：那等于在主线程对整本书排版，点一下能卡好几秒。
+    func ensureChapters(for book: Book, completion: (() -> Void)? = nil) {
+        guard book.chaptersDeferred, book.category == .novel else {
+            completion?()
+            return
+        }
+        if splitCache[book.id] != nil {
+            completion?()
+            return
+        }
+        if splittingBooks.contains(book.id) {
+            if let completion { splitWaiters[book.id, default: []].append(completion) }
+            return
+        }
         splittingBooks.insert(book.id)
         let clean = Preferences.shared.cleanTitles
         let fileURL = book.folderURL
@@ -316,10 +330,49 @@ final class LibraryStore: ObservableObject {
                                                          preferred: preferred)
             DispatchQueue.main.async {
                 self.splittingBooks.remove(book.id)
-                guard !chapters.isEmpty else { return }
-                self.splitCache[book.id] = chapters
-                self.applySplit(bookId: book.id, chapters: chapters)
+                let waiters = self.splitWaiters.removeValue(forKey: book.id) ?? []
+                if !chapters.isEmpty {
+                    self.splitCache[book.id] = chapters
+                    self.applySplit(bookId: book.id, chapters: chapters)
+                }
+                waiters.forEach { $0() }
+                completion?()
             }
+        }
+    }
+
+    /// 打开小说前的准备（仅小说）：后台切章 + 后台把整本正文解码进缓存，
+    /// 完成后再由调用方选章进阅读器。
+    /// 这样点书的瞬间不会卡：以前是先拿「占位章 = 整本书」进阅读页，主线程既要
+    /// 解码整本文件、又要对整本正文做 CoreText 分页，大书能僵住好几秒。
+    func prepareNovel(_ book: Book, completion: @escaping (Book) -> Void) {
+        ensureChapters(for: book) { [weak self] in
+            guard let self else { return }
+            let fresh = self.library?.books.first(where: { $0.id == book.id }) ?? book
+            self.prefetchBody(fresh) { completion(fresh) }
+        }
+    }
+
+    /// 进阅读页前把这一章的段落 / 净化结果也准备好（后台），首帧只做分页排版。
+    /// 段落切分本身很快（几十 KB 级），耗时的是净化正则与繁简转换，那部分丢给后台。
+    func prefetchParagraphs(for chapter: Chapter, completion: @escaping () -> Void = {}) {
+        let raw = paragraphs(for: chapter)
+        ReaderTextPipeline.precompute(chapterId: chapter.id,
+                                      raw: raw,
+                                      rules: Preferences.shared.activePurifyRules,
+                                      traditional: Preferences.shared.isTraditional,
+                                      completion: completion)
+    }
+
+    /// 后台把整本正文读进 TextLoader 的文档缓存（NSCache，线程安全），
+    /// 之后切片只是内存取子串，阅读器首帧不再碰磁盘解码。
+    /// 命中缓存时只有一次文件属性查询，重复调用无压力，所以不做额外标记。
+    private func prefetchBody(for book: Book, completion: @escaping () -> Void) {
+        let preferred = preferredEncoding(for: book)
+        let fileURL = book.folderURL
+        DispatchQueue.global(qos: .userInitiated).async {
+            _ = try? TextLoader.loadDocument(fileURL, preferred: preferred)
+            DispatchQueue.main.async { completion() }
         }
     }
 
