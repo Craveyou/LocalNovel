@@ -11,13 +11,10 @@ import Foundation
 enum ImportMode: String {
     case folder
     case file
-    /// 字体导入：复用同一个 fileImporter（全工程只能有一个），只换过滤类型
-    case font
     var label: String {
         switch self {
         case .folder: return "选择书籍文件夹"
         case .file:   return "选择书籍文件"
-        case .font:   return "导入字体文件"
         }
     }
 }
@@ -144,16 +141,6 @@ final class LibraryStore: ObservableObject {
 
     func handleImport(_ result: Result<[URL], Error>) { performImport(result) }
     func handleFileImport(_ result: Result<[URL], Error>) { performImport(result) }
-
-    /// 字体导入：复制进沙盒并注册，然后把可选字体列表刷新一遍
-    func handleFontImport(_ result: Result<[URL], Error>) {
-        guard case .success(let urls) = result else { return }
-        for url in urls { _ = ReaderFontLibrary.importFont(from: url) }
-        let installed = ReaderFontLibrary.registerInstalled()
-        if !installed.isEmpty {
-            Preferences.shared.customFontFamilies = installed
-        }
-    }
 
     private func performImport(_ result: Result<[URL], Error>) {
         switch result {
@@ -360,7 +347,6 @@ final class LibraryStore: ObservableObject {
         ReaderTextPipeline.precompute(chapterId: chapter.id,
                                       raw: raw,
                                       rules: Preferences.shared.activePurifyRules,
-                                      traditional: Preferences.shared.isTraditional,
                                       completion: completion)
     }
 

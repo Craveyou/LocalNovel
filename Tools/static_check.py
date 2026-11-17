@@ -350,8 +350,8 @@ def main():
           and "DocumentsBootstrap.guideFileName" in resolver)
     check("切回前台补写说明文件", "DocumentsBootstrap.ensureVisibleInFilesApp()" in store)
     check("版本号提升以刷新系统元数据",
-          "<string>2.14.2</string>" in plist and "CURRENT_PROJECT_VERSION = 17" in pbx
-          and "MARKETING_VERSION = 2.14.2" in pbx)
+          "<string>2.15.0</string>" in plist and "CURRENT_PROJECT_VERSION = 18" in pbx
+          and "MARKETING_VERSION = 2.15.0" in pbx)
     check("UI 给出「文件 App 搜索本地小说」兜底路径",
           "搜索框搜「本地小说」" in welcome and "搜索「本地小说」" in store)
     check("AppIcon asset catalog（1024 + Contents.json）",
@@ -718,9 +718,9 @@ def main():
     check("文档正文含双格式包一节",
           "### 5. 同一部书按格式分成两个包（PDF 包 + 图片包）"
           in (ROOT / "Docs" / "漫画目录结构说明.md").read_text(encoding="utf-8"))
-    check("版本升到 2.14.2 / build 17",
-          "<string>2.14.2</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>17</string>" in plist)
+    check("版本升到 2.15.0 / build 18",
+          "<string>2.15.0</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>18</string>" in plist)
 
 
     print("\n== N. 本轮：底部三页 / 短剧 / NAS 连接 ==")
@@ -971,9 +971,9 @@ def main():
     check("远端文件缓存有上限并会按最久未修改淘汰",
           "static let byteLimit: Int64 = 512 * 1024 * 1024" in nas_lib
           and "Task.detached(priority: .utility) { trim(folder: folder, limit: byteLimit) }" in nas_lib)
-    check("版本升到 2.14.2 / build 17",
-          "<string>2.14.2</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>17</string>" in plist)
+    check("版本升到 2.15.0 / build 18",
+          "<string>2.15.0</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>18</string>" in plist)
 
     print("\n== S. 本轮：txt 乱码（UTF-16 误判 / GBK / Big5） ==")
     encoding_src = (APP / "Core" / "TextEncoding.swift").read_text(encoding="utf-8")
@@ -1189,21 +1189,25 @@ def main():
     paged = (APP / "Views" / "PagedReaderView.swift").read_text(encoding="utf-8")
     reader = (APP / "Views" / "ReaderView.swift").read_text(encoding="utf-8")
 
-    check("排版参数集中成 ReaderTypography（字号/字重/行距/段距/字距/边距/对齐/缩进/繁简/标题）",
+    check("排版参数集中成 ReaderTypography（字号/字重/行距/段距/字距/边距/对齐/缩进/标题）",
           "struct ReaderTypography" in style
-          and all(k in style for k in ["var fontSize", "var fontFamily", "var weight",
+          and all(k in style for k in ["var fontSize", "var weight",
                                        "var lineSpacing", "var paragraphSpacing", "var wordSpacing",
                                        "var horizontalPadding", "var alignment",
-                                       "var firstLineIndent", "var isTraditional"]))
+                                       "var firstLineIndent"]))
+    check("正文固定系统字体（不再有字体家族 / 简繁字段）",
+          "var fontFamily" not in style and "var isTraditional" not in style
+          and "static func font(size: CGFloat, weight: ReaderFontWeight" in style
+          and "UIFont.systemFont(ofSize: size, weight: weight.weight)" in style)
     check("主题模型含正文/背景/标题/页码/页眉页脚/分隔线 6 色 + 背景图",
           "struct ReaderTheme: Identifiable, Codable" in style
           and all(k in style for k in ["var textColor", "var backgroundColor", "var titleColor",
                                        "var pageIndexColor", "var headerFooterColor",
                                        "var separatorColor", "var backgroundImage"]))
-    check("内置 6 套主题 + 自定义主题可持久化（JSON）",
+    check("固定六套内置主题（自定义主题已移除）",
           style.count("isBuiltIn: true") >= 6
           and "static let builtIns" in style
-          and "JSONEncoder().encode(customThemes)" in prefs_src)
+          and "customThemes" not in prefs_src)
     check("章节标题作为标题块排进正文第一页（不是另起一页）",
           "static func titleAttributed" in paginator
           and "titleOffset: Int = 0" in paginator
@@ -1222,11 +1226,10 @@ def main():
           "private var bodyFont: UIFont" in reader
           and "private var chapterTitleBlock" in reader
           and "chapterTitleBlock" in reader)
-    check("繁简用 ICU 转换，不维护映射表",
-          'StringTransform(rawValue: id)' in style
-          and '"Simplified-Traditional"' in style
-          and "ReaderTextPipeline.paragraphs(chapterId: chapter.id" in reader
-          and "ChineseScript.toTraditional" in (APP / "Core" / "PurifyEngine.swift").read_text(encoding="utf-8"))
+    check("简繁切换已移除（正文按原文显示）",
+          "ChineseScript" not in style
+          and "ChineseScript" not in (APP / "Core" / "PurifyEngine.swift").read_text(encoding="utf-8")
+          and "isTraditional" not in reader)
     check("阅读亮度只压阅读层 + 常亮退出即还原",
           "brightnessOverlay" in reader
           and "(1 - prefs.readerBrightness) * 0.8" in reader
@@ -1282,8 +1285,8 @@ def main():
     check("相邻章正文预取（切章不空等）",
           "func warmNextChapter()" in reader
           and "library.paragraphs(for: next)" in reader)
-    check("版本已升到 2.14.2 / build 17",
-          "2.14.2" in (APP / "Info.plist").read_text(encoding="utf-8"))
+    check("版本已升到 2.15.0 / build 18",
+          "2.15.0" in (APP / "Info.plist").read_text(encoding="utf-8"))
 
     print("\n== Z. 本轮：上下菜单栏 + 进度滑杆 + 目录面板 ==")
     bars = (APP / "Views" / "ReaderChromeBars.swift").read_text(encoding="utf-8")
@@ -1318,9 +1321,9 @@ def main():
           "showMenu.toggle()" in reader
           and "showMenu = false" in reader
           and "ReaderCatalogView(chapters: chapters" in reader)
-    check("白天 / 夜间一键切换（按主题的 isNight 挑）",
+    check("白天 / 夜间一键切换（从六套内置里按 isNight 挑）",
           "private func toggleDayNight()" in reader
-          and "$0.isNight == wantNight" in reader)
+          and "ReaderTheme.night(wantNight)" in reader)
 
     print("\n== AA. 本轮：点击区可配 / 音量键翻页 / 启动进上次书 / 字体导入 ==")
     paged = (APP / "Views" / "PagedReaderView.swift").read_text(encoding="utf-8")
@@ -1328,69 +1331,51 @@ def main():
     prefs_src = (APP / "Core" / "Preferences.swift").read_text(encoding="utf-8")
     settings = (APP / "Views" / "SettingsView.swift").read_text(encoding="utf-8")
     root = (APP / "Views" / "RootView.swift").read_text(encoding="utf-8")
-    fontlib = (APP / "Core" / "ReaderFontLibrary.swift").read_text(encoding="utf-8")
-    vol = (APP / "Core" / "VolumeKeyPager.swift").read_text(encoding="utf-8")
 
     check("三块点击区各自可选「上一页 / 下一页 / 菜单 / 无」",
           "enum TapZoneAction" in (APP / "Core" / "ReaderStyle.swift").read_text(encoding="utf-8")
           and all(k in prefs_src for k in ["var tapLeft", "var tapCenter", "var tapRight"])
           and "zone = input?.tapLeft ?? .prevPage" in paged
           and "private func perform(_ zone: TapZoneAction)" in paged)
-    check("音量键翻页：KVO 监听系统音量 + 隐藏 MPVolumeView + 拨回基准值",
-          "outputVolume" in vol and "MPVolumeView" in vol
-          and "slider.value = target" in vol
-          and "setCategory(.ambient" in vol)
-    check("音量键只给小说分页模式，且用指令号驱动（不触发重排）",
-          "guard category == .novel, prefs.pageTurn.isPaged, prefs.volumeKeyFlip" in reader
-          and "let pageCommand: Int" in paged
+    check("音量键翻页已移除（不再监听系统音量）",
+          not (APP / "Core" / "VolumeKeyPager.swift").exists()
+          and "VolumeKeyPager" not in reader
+          and "volumeKeyFlip" not in prefs_src)
+    check("启动不再直进上次阅读（每次回到书库）",
+          "autoOpenLastBookIfNeeded" not in root
+          and "autoOpenLastBook" not in prefs_src
+          and "didAutoOpen" not in root)
+    check("字体导入已移除（只留唯一的书籍 fileImporter）",
+          not (APP / "Core" / "ReaderFontLibrary.swift").exists()
+          and "case font" not in (APP / "Core" / "LibraryStore.swift").read_text(encoding="utf-8")
+          and "ReaderFontLibrary" not in settings
+          and "handleFontImport" not in root)
+    check("分页指令号仍只驱动翻页、不触发重排",
+          "let pageCommand: Int" in paged
           and "if new.pageCommand != lastPageCommand" in paged)
-    check("启动可直接进入上次读的书（书库到位后再跳）",
-          "autoOpenLastBookIfNeeded" in root
-          and "ProgressStore.shared.lastChapterId(for: book.id)" in root
-          and "didAutoOpen" in root)
-    check("字体导入复用唯一的 fileImporter（不新增第二个）",
-          "case font" in (APP / "Core" / "LibraryStore.swift").read_text(encoding="utf-8")
-          and "library.activeImport = .font" in settings
-          and "handleFontImport" in root
-          and ".fileImporter" not in settings)
-    check("字体落在沙盒并幂等注册，启动时刷新列表",
-          "CTFontManagerRegisterFontsForURL" in fontlib
-          and "ReaderFontLibrary.registerInstalled()" in (APP / "App" / "LocalNovelApp.swift").read_text(encoding="utf-8"))
 
-    print("\n== AB. 本轮：自定义主题编辑器 ==")
-    editor = (APP / "Views" / "ThemeEditorView.swift").read_text(encoding="utf-8")
+    print("\n== AB. 本轮：自定义主题编辑器（已移除，只留六套内置） ==")
     style = (APP / "Core" / "ReaderStyle.swift").read_text(encoding="utf-8")
     controls = (APP / "Views" / "ReaderControlsView.swift").read_text(encoding="utf-8")
     settings = (APP / "Views" / "SettingsView.swift").read_text(encoding="utf-8")
     reader = (APP / "Views" / "ReaderView.swift").read_text(encoding="utf-8")
     prefs_src = (APP / "Core" / "Preferences.swift").read_text(encoding="utf-8")
 
-    check("主题管理：新建 / 复制内置 / 删除 / 夜间标记",
-          "struct ThemeManagerView" in editor
-          and "static func newCustom(from base: ReaderTheme" in style
-          and ".onDelete { indexSet in" in editor
-          and 'Toggle("作为夜间主题"' in editor)
-    check("编辑器可改 6 个颜色 + 名称，并带实时预览",
-          editor.count("ColorPicker(") >= 6
-          and 'TextField("主题名字"' in editor
-          and 'Section("预览")' in editor)
-    check("背景图从相册选，落盘后只存文件名",
-          "PhotosPicker(selection: $pickerItem" in editor
-          and "ReaderBackgroundImage.save(imageData:" in editor
-          and "loadTransferable(type: Data.self)" in editor)
-    check("颜色双向转换（hex → Color / Color → hex）",
+    check("自定义主题编辑器已移除（设置页 / 阅读面板都不再进得去）",
+          not (APP / "Views" / "ThemeEditorView.swift").exists()
+          and "ThemeManagerView" not in controls
+          and "ThemeManagerView" not in settings
+          and "onThemeEditor" not in reader)
+    check("主题查找只认六套内置，未知 id（老的自定义主题）回退纸白",
+          "static func theme(id: String) -> ReaderTheme" in style
+          and "builtIns.first(where: { $0.id == id }) ?? fallback" in style
+          and "ReaderTheme.theme(id: themeId)" in prefs_src)
+    check("颜色双向转换保留（hex ↔ Color，内置主题与背景图仍用）",
           "var hexRGB: String" in style
           and "var hexRGB: String { UIColor(self).hexRGB }" in style)
-    check("保存可「仅保存」或「保存并应用」；删掉在用的主题回退纸白",
-          'Button("保存并应用")' in editor and 'Button("仅保存")' in editor
-          and "prefs.themeId = draft.id" in editor
-          and "prefs.themeId = ReaderTheme.builtIns[0].id" in editor)
-    check("阅读面板与设置页都能进主题管理",
-          "onThemeEditor: { showThemeManager = true }" in reader
-          and 'Button("管理") { onThemeEditor() }' in controls
-          and "showThemeManager = true" in settings)
-    check("自定义主题随 Preferences 一起持久化（JSON）",
-          "JSONEncoder().encode(customThemes)" in prefs_src)
+    check("主题选择器只列内置六套（设置页 + 阅读面板）",
+          "ForEach(ReaderTheme.builtIns) { theme in" in settings
+          and "ForEach(ReaderTheme.builtIns) { theme in" in controls)
 
     print("\n== AC. 本轮：净化（正则替换） ==")
     purify = (APP / "Core" / "PurifyEngine.swift").read_text(encoding="utf-8")
@@ -1634,7 +1619,7 @@ def main():
           and '#\\(item.id)' in media_view_src)
     check("分页指纹含正文内容戳（改净化规则会重建）",
           "let contentStamp: String" in paged_src
-          and "static func stamp(rules: [PurifyRule], traditional: Bool)" in purify_src
+          and "static func stamp(rules: [PurifyRule]) -> String" in purify_src
           and "ReaderTextPipeline.stamp(" in reader)
     check("导入同名文件自动改名，不再静默覆盖",
           "private static func uniqueName(" in importer_src
@@ -1724,9 +1709,9 @@ def main():
           and "ProgressStore.shared.setLastChapter" not in clist_src)
 
     # ------------------------------------------------------------------
-    # X3. 2.14.2：点小说不再卡住（切章 + 解码 + 净化全部后置到后台）
+    # X3. 2.15.0：点小说不再卡住（切章 + 解码 + 净化全部后置到后台）
     # ------------------------------------------------------------------
-    print("\n== X3. 本轮：点书不再卡主线程（2.14.2） ==")
+    print("\n== X3. 本轮：点书不再卡主线程（2.15.0） ==")
     check("打开小说前先准备（切章 + 解码），准备完再进阅读器",
           "func prepareNovel(_ book: Book, completion: @escaping (Book) -> Void)" in store
           and "private func prefetchBody(for book: Book" in store
@@ -1746,9 +1731,45 @@ def main():
           and "let waiters = self.splitWaiters.removeValue(forKey: book.id) ?? []" in store
           and "waiters.forEach { $0() }" in store)
 
-    check("版本已升到 2.14.2 / build 17",
-          "<string>2.14.2</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>17</string>" in plist)
+    check("版本已升到 2.15.0 / build 18",
+          "<string>2.15.0</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>18</string>" in plist)
+
+    # ------------------------------------------------------------------
+    # X4. 2.15.0：删掉字体/简繁/音量键/启动直进/自定义主题 + 修跳转
+    # ------------------------------------------------------------------
+    print("\n== X4. 本轮：精简设置项 + 修页面跳转（2.15.0） ==")
+    style_src = (APP / "Core" / "ReaderStyle.swift").read_text(encoding="utf-8")
+    prefs_now = (APP / "Core" / "Preferences.swift").read_text(encoding="utf-8")
+    reader_now = (APP / "Views" / "ReaderView.swift").read_text(encoding="utf-8")
+    root_now = (APP / "Views" / "RootView.swift").read_text(encoding="utf-8")
+    settings_now = (APP / "Views" / "SettingsView.swift").read_text(encoding="utf-8")
+    controls_now = (APP / "Views" / "ReaderControlsView.swift").read_text(encoding="utf-8")
+
+    removed = ["isTraditional", "fontFamily", "customThemes", "customFontFamilies",
+               "volumeKeyFlip", "autoOpenLastBook"]
+    check("六个开关已从偏好里彻底删除",
+          all(k not in prefs_now for k in removed))
+    check("界面不再出现字体切换 / 繁体 / 音量键 / 启动直进 / 自定义主题入口",
+          all(k not in settings_now for k in ["字体\", selection", "繁体正文", "音量键翻页",
+                                              "上次读的书", "主题管理"])
+          and all(k not in controls_now for k in ["fontOptions", "繁体", "onThemeEditor"]))
+    check("字体固定系统默认（无家族参数）",
+          "UIFont.systemFont(ofSize: size, weight: weight.weight)" in style_src
+          and "family:" not in (APP / "Core" / "TextPaginator.swift").read_text(encoding="utf-8"))
+
+    check("进度条按「章 + 章内比例」定位，不再只跳到章首",
+          "private func jumpWithinChapter(fraction: Double)" in reader_now
+          and "onJumpToChapter(target, fraction)" in reader_now
+          and "private func jumpToChapter(_ chapter: Chapter, fraction: Double)" in root_now
+          and 'ProgressStore.shared.setAnchor("blk-p\\(paragraph)", for: chapter.id)' in root_now)
+    check("跨章跳转的锚点不被 onChange 覆盖成章首",
+          "autoRestoredChapterId = chapter.id" in root_now)
+    check("末段锚点不再被当脏数据（读完退出再进来不会回章首）",
+          "value >= paragraphs.count - 1 { return 0 }" not in reader_now)
+    check("滚动模式恢复位置会分批重试（LazyVStack 首屏没建好时也能定位）",
+          "for delay in [0.12, 0.4, 0.9]" in reader_now
+          and "for delay in [0.45, 0.9]" in reader_now)
 
     print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")
     if FAIL:

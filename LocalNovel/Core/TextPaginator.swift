@@ -59,7 +59,6 @@ enum TextPaginator {
         }
         var attrs: [NSAttributedString.Key: Any] = [
             .font: ReaderFonts.font(size: type.fontSize,
-                                    family: type.fontFamily,
                                     weight: type.weight),
             .paragraphStyle: style,
             .foregroundColor: theme.uiTextColor
@@ -98,7 +97,6 @@ enum TextPaginator {
 
         let attrs: [NSAttributedString.Key: Any] = [
             .font: ReaderFonts.font(size: size,
-                                    family: typography.fontFamily,
                                     weight: style.weight,
                                     italic: style.isItalic),
             .foregroundColor: color,
@@ -115,7 +113,6 @@ enum TextPaginator {
             small.paragraphSpacing = style.bottomPadding
             small.paragraphSpacingBefore = 2
             secondAttrs[.font] = ReaderFonts.font(size: max(12, size * 0.72),
-                                                  family: typography.fontFamily,
                                                   weight: .regular,
                                                   italic: style.isItalic)
             secondAttrs[.paragraphStyle] = small

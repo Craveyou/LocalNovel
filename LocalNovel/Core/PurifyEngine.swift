@@ -61,35 +61,29 @@ enum ReaderTextPipeline {
     private static var cache: [String: [String]] = [:]
     private static var order: [String] = []
 
-    /// 正文内容的决定性因素（净化规则 + 繁简）的指纹。
+    /// 正文内容的决定性因素（净化规则）的指纹。
     /// 分页重建判断要用它：只看「段数 + 首末段长度」的话，
     /// 改了一条只影响中间段落的净化规则，段数和首末段都没变 → 不重建，
     /// 屏幕上还是没净化的旧正文，直到切章或改字号才刷新。
-    static func stamp(rules: [PurifyRule], traditional: Bool) -> String {
+    static func stamp(rules: [PurifyRule]) -> String {
         let active = rules.filter { $0.isEnabled && !$0.pattern.isEmpty }
-        guard !active.isEmpty || traditional else { return "raw" }
-        return "\(traditional ? 1 : 0)|\(PurifyEngine.fingerprint(active))"
+        guard !active.isEmpty else { return "raw" }
+        return PurifyEngine.fingerprint(active)
     }
 
-    /// 全书可能几千段，这里只在「章节 + 规则 + 繁简」变化时重算
+    /// 全书可能几千段，这里只在「章节 + 规则」变化时重算
     static func paragraphs(chapterId: String,
                            raw: [String],
-                           rules: [PurifyRule],
-                           traditional: Bool) -> [String] {
+                           rules: [PurifyRule]) -> [String] {
         let active = rules.filter { $0.isEnabled && !$0.pattern.isEmpty }
-        guard !active.isEmpty || traditional else { return raw }
+        guard !active.isEmpty else { return raw }
 
-        let key = "\(chapterId)|\(traditional ? 1 : 0)|\(PurifyEngine.fingerprint(active))"
+        let key = "\(chapterId)|\(PurifyEngine.fingerprint(active))"
         if let hit = cache[key] { return hit }
 
-        var result = raw
-        if !active.isEmpty {
-            result = result.map { PurifyEngine.apply(active, to: $0) }
-            result = result.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-        }
-        if traditional {
-            result = result.map { ChineseScript.toTraditional($0) }
-        }
+        let result = raw
+            .map { PurifyEngine.apply(active, to: $0) }
+            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
         cache[key] = result
         order.append(key)
@@ -99,35 +93,28 @@ enum ReaderTextPipeline {
         return result
     }
 
-    /// 后台预计算某一章的净化 / 繁简结果，算完在主线程写缓存再回调。
-    ///
-    /// 净化是逐段跑正则、繁简是逐段跑 ICU 转换，几千段放主线程会明显卡顿。
+    /// 后台预计算某一章的净化结果，算完在主线程写缓存再回调。
+    /// 净化是逐段跑正则，几千段放主线程会明显卡顿；
     /// 阅读器在「点书 → 进章」之间先调它，首帧就只剩分页排版。
     /// 没启用任何规则时零成本：不复制数组，直接回调。
     static func precompute(chapterId: String,
                            raw: [String],
                            rules: [PurifyRule],
-                           traditional: Bool,
                            completion: @escaping () -> Void) {
         let active = rules.filter { $0.isEnabled && !$0.pattern.isEmpty }
-        guard !active.isEmpty || traditional else {
+        guard !active.isEmpty else {
             completion()
             return
         }
-        let key = "\(chapterId)|\(traditional ? 1 : 0)|\(PurifyEngine.fingerprint(active))"
+        let key = "\(chapterId)|\(PurifyEngine.fingerprint(active))"
         if cache[key] != nil {
             completion()
             return
         }
         DispatchQueue.global(qos: .userInitiated).async {
-            var result = raw
-            if !active.isEmpty {
-                result = result.map { PurifyEngine.apply(active, to: $0) }
-                result = result.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-            }
-            if traditional {
-                result = result.map { ChineseScript.toTraditional($0) }
-            }
+            let result = raw
+                .map { PurifyEngine.apply(active, to: $0) }
+                .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
             let value = result
             DispatchQueue.main.async {
                 store(key: key, value: value)

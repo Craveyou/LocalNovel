@@ -21,7 +21,6 @@ struct ReaderControlsPanel: View {
     let onTOC: () -> Void
     let onSettings: () -> Void
     /// 打开「主题管理」（自定义主题的增删改）
-    let onThemeEditor: () -> Void
     let onExit: () -> Void
     let onDismiss: () -> Void
 
@@ -99,31 +98,6 @@ struct ReaderControlsPanel: View {
             sliderRow("字号", value: binding(for: \.fontSize), range: 14...34, step: 1,
                       format: { "\(Int($0))" })
 
-            // 字体
-            HStack {
-                Text("字体").font(.subheadline)
-                Spacer(minLength: 8)
-                Menu {
-                    ForEach(prefs.fontOptions) { option in
-                        Button {
-                            prefs.fontFamily = option.id
-                        } label: {
-                            if option.id == prefs.fontFamily {
-                                Label(option.label, systemImage: "checkmark")
-                            } else {
-                                Text(option.label)
-                            }
-                        }
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        Text(currentFontLabel).font(.subheadline.weight(.medium))
-                        Image(systemName: "chevron.up.chevron.down").font(.caption2)
-                    }
-                    .foregroundStyle(.tint)
-                }
-            }
-
             // 字重
             HStack {
                 Text("字重").font(.subheadline)
@@ -161,14 +135,9 @@ struct ReaderControlsPanel: View {
             HStack(spacing: 16) {
                 Toggle("首行缩进", isOn: binding(for: \.firstLineIndent))
                     .font(.subheadline)
-                Toggle("繁体", isOn: binding(for: \.isTraditional))
-                    .font(.subheadline)
+                Spacer(minLength: 0)
             }
         }
-    }
-
-    private var currentFontLabel: String {
-        prefs.fontOptions.first { $0.id == prefs.fontFamily }?.label ?? "系统默认"
     }
 
     // MARK: 标题样式
@@ -282,15 +251,10 @@ struct ReaderControlsPanel: View {
             HStack {
                 sectionTitle("主题")
                 Spacer()
-                Button("管理") { onThemeEditor() }
-                    .font(.caption)
             }
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 10) {
                     ForEach(ReaderTheme.builtIns) { theme in
-                        themeSwatch(theme)
-                    }
-                    ForEach(prefs.customThemes) { theme in
                         themeSwatch(theme)
                     }
                 }

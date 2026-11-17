@@ -32,6 +32,8 @@ struct ReaderView: View {
     let onOpenNext: (Chapter) -> Void
     /// 目录弹层里主动跳章
     let onSelectChapter: (Chapter) -> Void
+    /// 进度条跨章跳转：带章内比例（0-1），由上层换算成段落锚点后再切章
+    let onJumpToChapter: (Chapter, Double) -> Void
     /// 退出阅读回到书库
     let onExit: () -> Void
 
@@ -50,18 +52,11 @@ struct ReaderView: View {
     @State private var showCatalog = false
     /// 拖动进度滑杆时浮出的目标章节名
     @State private var scrubTitle: String?
-    /// 音量键翻页：给分页引擎发指令（序号 + 方向）
-    @State private var pageCommandSeq = 0
-    @State private var pageCommandDelta = 0
     /// 同章内精确跳段：给分页引擎发指令（目标段落 + 序号）。
     /// 点「属于当前章」的书签 / 笔记时用 —— RootView 那边靠 selectedChapter.id
     /// 变化驱动，同一章 id 不变，onChange 根本不会触发。
     @State private var jumpParagraph = 0
     @State private var jumpSeq = 0
-    /// 音量键监听器（开启时才创建）
-    @State private var volumePager: VolumeKeyPager?
-    /// 主题管理（自定义主题增删改）
-    @State private var showThemeManager = false
     /// 净化规则管理
     @State private var showPurifyManager = false
     /// 书签 / 笔记数据（右侧浮钮上的书签状态要用）
@@ -130,12 +125,41 @@ struct ReaderView: View {
         return chapters[index].displayTitle
     }
 
+    /// 拖进度条松手：按「章索引 + 章内比例」定位。
+    /// 只按章跳的话，拖到某章中间也会停在章首，进度条一松手又弹回去，
+    /// 看起来就是「跳转不正确」。
     private func jump(to progress: Double) {
         guard !chapters.isEmpty else { return }
-        let index = min(max(Int(progress * Double(chapters.count)), 0), chapters.count - 1)
+        let clamped = min(max(progress, 0), 1)
+        let scaled = clamped * Double(chapters.count)
+        var index = Int(scaled)
+        var fraction = scaled - Double(index)
+        if index >= chapters.count {
+            index = chapters.count - 1
+            fraction = 1
+        }
+        fraction = min(max(fraction, 0), 1)
         let target = chapters[index]
-        guard target.id != chapter.id else { return }
-        open(target)
+
+        if target.id == chapter.id {
+            jumpWithinChapter(fraction: fraction)
+        } else {
+            withAnimation(.easeOut(duration: 0.18)) { showMenu = false }
+            onJumpToChapter(target, fraction)
+        }
+    }
+
+    /// 同章按比例跳段（分页走 jumpSeq 指令，滚动走 pendingAnchor）
+    private func jumpWithinChapter(fraction: Double) {
+        let count = paragraphs.count
+        guard count > 0 else { return }
+        let paragraph = min(max(Int((Double(count - 1) * fraction).rounded()), 0), count - 1)
+        if usePaging {
+            jumpParagraph = paragraph
+            jumpSeq += 1
+        } else {
+            pendingAnchor = "blk-p\(paragraph)"
+        }
     }
 
     /// 切章（菜单栏操作后收起菜单，回到正文）
@@ -144,11 +168,10 @@ struct ReaderView: View {
         onSelectChapter(target)
     }
 
-    /// 白天 / 夜间一键切：在主题里挑对应的一套
+    /// 白天 / 夜间一键切：在六套内置主题里挑同类型的第一套
     private func toggleDayNight() {
         let wantNight = !prefs.theme.isNight
-        let pool = ReaderTheme.builtIns + prefs.customThemes
-        if let hit = pool.first(where: { $0.isNight == wantNight }) {
+        if let hit = ReaderTheme.night(wantNight) {
             prefs.themeId = hit.id
         }
     }
@@ -156,22 +179,6 @@ struct ReaderView: View {
     /// 阅读时常亮（小说设置项，退出阅读自动还原）
     private func syncIdleTimer() {
         UIApplication.shared.isIdleTimerDisabled = prefs.keepScreenOn
-    }
-
-    /// 音量键翻页：只给小说开，且必须是分页模式（滚动模式没有「翻一页」的概念）
-    private func syncVolumePager() {
-        guard category == .novel, prefs.pageTurn.isPaged, prefs.volumeKeyFlip else {
-            volumePager?.stop()
-            volumePager = nil
-            return
-        }
-        if volumePager == nil {
-            let pager = VolumeKeyPager()
-            pager.onUp = { sendPageCommand(1) }
-            pager.onDown = { sendPageCommand(-1) }
-            pager.start()
-            volumePager = pager
-        }
     }
 
     /// 当前段落（阅读记忆里的锚点），书签 / 笔记用它记位置
@@ -267,11 +274,6 @@ struct ReaderView: View {
         }
     }
 
-    private func sendPageCommand(_ delta: Int) {
-        pageCommandDelta = delta
-        pageCommandSeq += 1
-    }
-
     /// 删除 / 隐藏章节（目录面板里的「管理」与长按删除走这里）。
     /// 当前章被删掉时必须先切走：否则阅读页会停在一个已经不存在的章节上变成空白。
     private func deleteChapters(_ targets: [Chapter]) {
@@ -336,13 +338,12 @@ struct ReaderView: View {
         // 净化 → 繁简，一条流水线（带缓存，规则或章节变了才重算）
         return ReaderTextPipeline.paragraphs(chapterId: chapter.id,
                                              raw: raw,
-                                             rules: prefs.activePurifyRules,
-                                             traditional: prefs.isTraditional)
+                                             rules: prefs.activePurifyRules)
     }
 
     /// 滚动模式的正文字体（家族 / 字重 / 字号都跟面板设置）
     private var bodyFont: UIFont {
-        ReaderFonts.font(size: prefs.fontSize, family: prefs.fontFamily, weight: prefs.fontWeight)
+        ReaderFonts.font(size: prefs.fontSize, weight: prefs.fontWeight)
     }
 
     /// 章节标题块（滚动模式）。分页模式由 TextPaginator 排版到第一页顶部，两边样式同源。
@@ -356,20 +357,17 @@ struct ReaderView: View {
             if let parts {
                 Text(parts.0)
                     .font(Font(ReaderFonts.font(size: size,
-                                                family: prefs.fontFamily,
                                                 weight: style.weight,
                                                 italic: style.isItalic)))
                     .foregroundStyle(color)
                 Text(parts.1)
                     .font(Font(ReaderFonts.font(size: max(12, size * 0.72),
-                                                family: prefs.fontFamily,
                                                 weight: .regular,
                                                 italic: style.isItalic)))
                     .foregroundStyle(color.opacity(0.82))
             } else {
                 Text(title)
                     .font(Font(ReaderFonts.font(size: size,
-                                                family: prefs.fontFamily,
                                                 weight: style.weight,
                                                 italic: style.isItalic)))
                     .foregroundStyle(color)
@@ -571,7 +569,6 @@ struct ReaderView: View {
                     encodingMenu: AnyView(encodingMenu),
                     onTOC: { showStylePanel = false; showCatalog = true },
                     onSettings: { showSettings = true },
-                    onThemeEditor: { showThemeManager = true },
                     onExit: onExit,
                     onDismiss: { showStylePanel = false }
                 )
@@ -579,7 +576,6 @@ struct ReaderView: View {
             }
         }
         .sheet(isPresented: $showSettings) { SettingsView() }
-        .sheet(isPresented: $showThemeManager) { ThemeManagerView() }
         .sheet(isPresented: $showPurifyManager) { PurifyManagerView() }
         .fullScreenCover(item: $galleryItem) { item in
             // 关闭时回传当前图片 → 换算成插图锚点，滚动定位回这张
@@ -590,19 +586,15 @@ struct ReaderView: View {
         .onAppear {
             ReadingChrome.shared.enter()
             syncIdleTimer()
-            syncVolumePager()
             warmNextChapter()
         }
         .onChange(of: prefs.keepScreenOn) { _, _ in syncIdleTimer() }
-        .onChange(of: prefs.volumeKeyFlip) { _, _ in syncVolumePager() }
         .onDisappear {
             ReadingChrome.shared.leave()
             // 兜底隐藏是在布局阶段强制设置的，退出阅读时显式还原一次，
             // 避免 representable 销毁顺序不同导致标签栏一直不回来
             TabBarVisibility.setHidden(false, animated: false)
             UIApplication.shared.isIdleTimerDisabled = false
-            volumePager?.stop()
-            volumePager = nil
             ProgressStore.shared.flushAnchors()
         }
     }
@@ -793,9 +785,8 @@ struct ReaderView: View {
     /// 锚点必须落在本章段落范围内：章节内容变了（重新切章 / 换源）时旧锚点会越界，
     /// 越界后 pageIndex 会把页码收敛到最后一页 —— 表现就是「点开章节直接翻到末尾」。
     ///
-    /// 另外，旧版本曾把「插图 / 章末页」的页码误写成最后一段，这类锚点至今还留在
-    /// UserDefaults 里，会让每次进这一章都停在末页。落在本章末尾的锚点按脏数据处理：
-    /// 真正读到最后一段的场景极少，从章首重读的代价远小于「每次都跳末页」。
+    /// 注意：**不能**把「落在最后一段」的锚点当脏数据归零 —— 读到本章最后一页写下的
+    /// 就是末段锚点，一归零就变成「读完退出、再进来回到章首」，位置全丢。
     private var restoreParagraph: Int {
         // 书签 / 笔记跨章跳转：pendingJump 就是本次的目标段落，优先用它。
         // RootView 的 onChange 何时执行不确定，若晚于本帧 body 求值，
@@ -811,7 +802,6 @@ struct ReaderView: View {
               let value = Int(anchor.dropFirst("blk-p".count)),
               value >= 0,
               value < paragraphs.count else { return 0 }
-        if paragraphs.count > 3, value >= paragraphs.count - 1 { return 0 }
         return value
     }
 
@@ -839,13 +829,13 @@ struct ReaderView: View {
                                     tapLeft: prefs.tapLeft,
                                     tapCenterAction: prefs.tapCenter,
                                     tapRight: prefs.tapRight,
-                                    pageCommand: pageCommandSeq,
-                                    pageCommandDelta: pageCommandDelta,
+                                    // 音量键翻页已移除；指令通道保留给引擎内部，恒为 0（不触发）
+                                    pageCommand: 0,
+                                    pageCommandDelta: 0,
                                     jumpParagraph: jumpParagraph,
                                     jumpSeq: jumpSeq,
                                     contentStamp: ReaderTextPipeline.stamp(
-                                        rules: prefs.activePurifyRules,
-                                        traditional: prefs.isTraditional)),
+                                        rules: prefs.activePurifyRules)),
             onProgress: { paragraph in
                 ProgressStore.shared.noteAnchor("blk-p\(paragraph)", for: chapter.id)
             },
@@ -882,20 +872,29 @@ struct ReaderView: View {
 
     private func restoreAnchor(_ proxy: ScrollViewProxy) {
         guard let anchor = ProgressStore.shared.anchor(for: chapter.id) else { return }
-        // LazyVStack 首屏布局需要一点时间，太早 scrollTo 会被忽略，导致「记忆不生效」
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-            proxy.scrollTo(anchor, anchor: .top)
+        // LazyVStack 首屏布局需要时间，一次 scrollTo 很容易被忽略（段落还没构建），
+        // 表现就是「记忆不生效、回到章首」。分批重试：越靠后的锚点需要的布局时间越长。
+        for delay in [0.12, 0.4, 0.9] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                proxy.scrollTo(anchor, anchor: .top)
+            }
         }
     }
 
     private func scrollToPendingAnchor(_ anchor: String?, proxy: ScrollViewProxy) {
         guard let anchor else { return }
-        // 等 fullScreenCover 收起动画结束再定位，避免滚动被覆盖视图吞掉
+        // 等 fullScreenCover 收起动画结束再定位，避免滚动被覆盖视图吞掉；
+        // 只尝试一次时远端段落常常还没构建，跳段会静默失败，所以补两次重试。
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
             withAnimation(.easeInOut(duration: 0.25)) {
                 proxy.scrollTo(anchor, anchor: .center)
             }
             ProgressStore.shared.noteAnchor(anchor, for: chapter.id)
+            for delay in [0.45, 0.9] {
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                    proxy.scrollTo(anchor, anchor: .center)
+                }
+            }
             pendingAnchor = nil
         }
     }

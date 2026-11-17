@@ -15,8 +15,6 @@ struct RootView: View {
     /// restore 只在首次出现时跑一次；此前每次 onAppear 都全量重扫 + 清缓存，
     /// 会让阅读器内容反复失效，也是「再次点书一直载入」的诱因之一。
     @State private var didRestore = false
-    /// 启动直进上次读的书：只尝试一次，避免每次回到书库又被弹进阅读
-    @State private var didAutoOpen = false
     /// 由「打开小说自动定位」或「恢复上次章节」设进来的章节 id。
     /// 它的 selection 变化不算用户主动选章：保留该章的段落锚点，从上次位置续读。
     @State private var autoRestoredChapterId: String?
@@ -54,11 +52,6 @@ struct RootView: View {
             guard !didRestore else { return }
             didRestore = true
             library.restore()
-            autoOpenLastBookIfNeeded()
-        }
-        // 扫描是后台跑的，书库到位后再试一次
-        .onChange(of: library.library?.books.count) { _, _ in
-            autoOpenLastBookIfNeeded()
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { library.refreshOnForeground() }
@@ -114,39 +107,22 @@ struct RootView: View {
             ),
             // 两种模式都同时允许选文件夹和选文件：用户点文件夹是「进入浏览」，
             // 点文件则会立即回调；这样任一操作都能进入导入流程，不再出现「点了没反应」。
-            allowedContentTypes: library.activeImport == .font
-                ? [.font]
-                : (library.activeImport == .folder ? [.folder, .item] : [.item, .folder]),
+            allowedContentTypes: library.activeImport == .folder
+                ? [.folder, .item]
+                : [.item, .folder],
             allowsMultipleSelection: false
         ) { result in
             let mode = library.activeImport
             library.activeImport = nil
-            switch mode {
-            case .some(.folder): library.handleImport(result)
-            case .some(.font):   library.handleFontImport(result)
-            default:             library.handleFileImport(result)
+            if mode == .folder {
+                library.handleImport(result)
+            } else {
+                library.handleFileImport(result)
             }
-            // 字体导入不该把用户踢出当前阅读
-            if mode != .font {
-                selectedBook = nil
-                selectedChapter = nil
-                preparingBook = nil
-            }
+            selectedBook = nil
+            selectedChapter = nil
+            preparingBook = nil
         }
-    }
-
-    /// 启动直接打开上次在读的那本书（设置里可关）。
-    /// 记忆里只存「某本书上次读到哪一章」，所以这里反查：哪本书的章节 id 命中就用哪本。
-    private func autoOpenLastBookIfNeeded() {
-        guard prefs.autoOpenLastBook, !didAutoOpen, selectedBook == nil else { return }
-        guard let books = library.library?.books, !books.isEmpty else { return }
-        let hit = books.first { book in
-            guard let last = ProgressStore.shared.lastChapterId(for: book.id) else { return false }
-            return book.chapters.contains { $0.id == last }
-        }
-        guard let target = hit else { return }
-        didAutoOpen = true
-        selectedBook = target
     }
 
     /// 是否保留中间「章节列表」栏：只有小说不要。
@@ -168,6 +144,9 @@ struct RootView: View {
                        category: latestBook()?.category ?? .novel,
                        onOpenNext: { next in selectChapter(next) },
                        onSelectChapter: { chapter in selectChapter(chapter) },
+                       onJumpToChapter: { chapter, fraction in
+                           jumpToChapter(chapter, fraction: fraction)
+                       },
                        onExit: {
                            selectedChapter = nil
                            selectedBook = nil   // 回到书库首页，再点同一本也会重新触发「选书即读」
@@ -247,6 +226,22 @@ struct RootView: View {
         autoRestoredChapterId = nil
         if chapter.id != selectedChapter?.id, !chapter.isPlaceholder {
             ProgressStore.shared.setAnchor("blk-p0", for: chapter.id)
+        }
+        selectedChapter = chapter
+    }
+
+    /// 进度条跨章跳转：按章内比例换算出目标段落，先把锚点写好再切章，
+    /// 这样目标章首帧就落在拖动的位置，而不是章首（也不会被 selectChapter 覆盖成 blk-p0）。
+    private func jumpToChapter(_ chapter: Chapter, fraction: Double) {
+        // 锚点已经按拖动位置写好：标记成「自动恢复」，让 onChange 不要再覆盖成 blk-p0
+        autoRestoredChapterId = chapter.id
+        if !chapter.isPlaceholder {
+            let count = library.paragraphs(for: chapter).count
+            let clamped = min(max(fraction, 0), 1)
+            let paragraph = count > 0
+                ? min(max(Int((Double(count - 1) * clamped).rounded()), 0), count - 1)
+                : 0
+            ProgressStore.shared.setAnchor("blk-p\(paragraph)", for: chapter.id)
         }
         selectedChapter = chapter
     }

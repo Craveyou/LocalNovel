@@ -13,7 +13,6 @@ struct SettingsView: View {
     /// NAS 图片缓存占用（进入设置时扫一次，改上限 / 清理后刷新）
     @State private var cacheUsage = RemoteImageCache.Usage()
     @State private var showCacheConfirm = false
-    @State private var showThemeManager = false
 
     init(showsDoneButton: Bool = true) {
         self.showsDoneButton = showsDoneButton
@@ -41,12 +40,6 @@ struct SettingsView: View {
                 .foregroundStyle(.secondary)
                 .frame(width: 48, alignment: .trailing)
         }
-    }
-
-    private func removeFont(_ family: String) {
-        ReaderFontLibrary.remove(family: family)
-        prefs.customFontFamilies = ReaderFontLibrary.registerInstalled()
-        if prefs.fontFamily == family { prefs.fontFamily = "" }
     }
 
     /// 主题色块
@@ -109,11 +102,6 @@ struct SettingsView: View {
                     valueSlider("段距", binding(for: \.paragraphSpacing), 0...24, 1) { "\(Int($0))" }
                     valueSlider("字距", binding(for: \.wordSpacing), 0...6, 0.5) { String(format: "%.1f", $0) }
                     valueSlider("左右边距", binding(for: \.horizontalPadding), 12...40, 2) { "\(Int($0))" }
-                    Picker("字体", selection: binding(for: \.fontFamily)) {
-                        ForEach(prefs.fontOptions) { option in
-                            Text(option.label).tag(option.id)
-                        }
-                    }
                     Picker("字重", selection: binding(for: \.fontWeight)) {
                         ForEach(ReaderFontWeight.allCases) { weight in
                             Text(weight.label).tag(weight)
@@ -127,7 +115,6 @@ struct SettingsView: View {
                     }
                     .pickerStyle(.segmented)
                     Toggle("首行缩进两字", isOn: binding(for: \.firstLineIndent))
-                    Toggle("繁体正文", isOn: binding(for: \.isTraditional))
                 }
 
                 Section("手势（仅小说，分页模式）") {
@@ -144,37 +131,6 @@ struct SettingsView: View {
                     Picker("右侧点击", selection: binding(for: \.tapRight)) {
                         ForEach(TapZoneAction.allCases) { action in
                             Text(action.label).tag(action)
-                        }
-                    }
-                    Toggle("音量键翻页", isOn: binding(for: \.volumeKeyFlip))
-                    Text("开启后音量键不再调音量，改为翻页；其他 App 的音频可能被暂停。滚动模式不受影响。")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-
-                Section("启动") {
-                    Toggle("打开 App 直接进入上次读的书", isOn: binding(for: \.autoOpenLastBook))
-                }
-
-                Section("自定义字体") {
-                    Button {
-                        library.activeImport = .font
-                    } label: {
-                        Label("导入字体文件（ttf / otf）", systemImage: "plus.circle")
-                    }
-                    if prefs.customFontFamilies.isEmpty {
-                        Text("还没有导入字体。导入后可在「排版 → 字体」里选。")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        ForEach(prefs.customFontFamilies, id: \.self) { family in
-                            HStack {
-                                Text(family)
-                                Spacer()
-                                Button("删除") { removeFont(family) }
-                                    .font(.footnote)
-                                    .foregroundStyle(.red)
-                            }
                         }
                     }
                 }
@@ -229,9 +185,6 @@ struct SettingsView: View {
                             ForEach(ReaderTheme.builtIns) { theme in
                                 themeSwatch(theme)
                             }
-                            ForEach(prefs.customThemes) { theme in
-                                themeSwatch(theme)
-                            }
                         }
                         .padding(.vertical, 4)
                     }
@@ -242,11 +195,6 @@ struct SettingsView: View {
                     Text("亮度只压阅读页，不修改系统亮度。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
-                    Button {
-                        showThemeManager = true
-                    } label: {
-                        Label("主题管理（新建 / 编辑 / 删除）", systemImage: "paintpalette")
-                    }
                 }
 
                 Section("外观") {
@@ -361,7 +309,6 @@ struct SettingsView: View {
             } message: {
                 Text("只删除本机缓存文件，NAS 上的原图不受影响；下次浏览会重新下载。")
             }
-            .sheet(isPresented: $showThemeManager) { ThemeManagerView() }
             .navigationTitle("设置")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

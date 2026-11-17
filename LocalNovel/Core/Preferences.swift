@@ -145,14 +145,6 @@ final class Preferences: ObservableObject {
     @Published var firstLineIndent: Bool = true {
         didSet { if loaded { save() } }
     }
-    /// 简体 → 繁体
-    @Published var isTraditional: Bool = false {
-        didSet { if loaded { save() } }
-    }
-    /// 字体家族；空串 = 系统默认
-    @Published var fontFamily: String = "" {
-        didSet { if loaded { save() } }
-    }
     @Published var fontWeight: ReaderFontWeight = .regular {
         didSet { if loaded { save() } }
     }
@@ -218,9 +210,6 @@ final class Preferences: ObservableObject {
     @Published var themeId: String = "paper" {
         didSet { if loaded { save() } }
     }
-    @Published var customThemes: [ReaderTheme] = [] {
-        didSet { if loaded { save() } }
-    }
     /// 阅读页内亮度：1 = 原样，越小越暗（只压阅读层，不改系统亮度）
     @Published var readerBrightness: Double = 1.0 {
         didSet { if loaded { save() } }
@@ -244,14 +233,6 @@ final class Preferences: ObservableObject {
         didSet { if loaded { save() } }
     }
     @Published var tapRight: TapZoneAction = .nextPage {
-        didSet { if loaded { save() } }
-    }
-    /// 音量键翻页（开启后其他 App 的音频可能被抢占，默认关）
-    @Published var volumeKeyFlip: Bool = false {
-        didSet { if loaded { save() } }
-    }
-    /// 启动直接打开上次在读的那本书
-    @Published var autoOpenLastBook: Bool = false {
         didSet { if loaded { save() } }
     }
 
@@ -335,9 +316,9 @@ final class Preferences: ObservableObject {
 
     // MARK: 派生值
 
-    /// 当前主题（内置或自定义）
+    /// 当前主题（六套内置之一）
     var theme: ReaderTheme {
-        ReaderTheme.theme(id: themeId, custom: customThemes)
+        ReaderTheme.theme(id: themeId)
     }
 
     var titleStyle: ChapterTitleStyle {
@@ -357,7 +338,6 @@ final class Preferences: ObservableObject {
     /// 一次排版所需的全部参数
     var typography: ReaderTypography {
         ReaderTypography(fontSize: fontSize,
-                         fontFamily: fontFamily,
                          weight: fontWeight,
                          lineSpacing: lineSpacing,
                          paragraphSpacing: paragraphSpacing,
@@ -365,18 +345,7 @@ final class Preferences: ObservableObject {
                          horizontalPadding: horizontalPadding,
                          alignment: textAlign,
                          firstLineIndent: firstLineIndent,
-                         isTraditional: isTraditional,
                          title: titleStyle)
-    }
-
-    /// 全部可选字体（内置 + 已导入）
-    var fontOptions: [ReaderFontOption] {
-        ReaderFonts.builtIn + customFontFamilies.map { ReaderFontOption(id: $0, label: $0) }
-    }
-
-    /// 已导入的自定义字体家族名（由 ReaderFontLibrary 维护）
-    @Published var customFontFamilies: [String] = [] {
-        didSet { if loaded { save() } }
     }
 
     // MARK: 读写
@@ -419,16 +388,10 @@ final class Preferences: ObservableObject {
 
         // 主题：老用户如果之前选了「深色」外观，第一次升级直接给夜间主题，避免白底黑字闪一下
         if let id = defaults.string(forKey: Keys.themeId), !id.isEmpty {
-            themeId = id
+            // 老数据里可能存着已删掉的自定义主题 id：归一化到内置六套，避免每次启动都兜底
+            themeId = ReaderTheme.theme(id: id).id
         } else if appearance == .dark {
             themeId = "night"
-        }
-        if let data = defaults.data(forKey: Keys.customThemes),
-           let list = try? JSONDecoder().decode([ReaderTheme].self, from: data) {
-            customThemes = list
-        }
-        if let list = defaults.array(forKey: Keys.customFonts) as? [String] {
-            customFontFamilies = list
         }
 
         fontSize = number(Keys.fontSize, 18, 14, 34)
@@ -451,7 +414,6 @@ final class Preferences: ObservableObject {
                                   ? 2 : defaults.integer(forKey: Keys.tapCenter)) ?? .menu
         tapRight = TapZoneAction(rawValue: defaults.object(forKey: Keys.tapRight) == nil
                                  ? 1 : defaults.integer(forKey: Keys.tapRight)) ?? .nextPage
-        volumeKeyFlip = defaults.bool(forKey: Keys.volumeKeyFlip)
         purifyEnabled = defaults.object(forKey: Keys.purifyEnabled) == nil
             ? true : defaults.bool(forKey: Keys.purifyEnabled)
         if let data = defaults.data(forKey: Keys.purifyRules),
@@ -462,12 +424,9 @@ final class Preferences: ObservableObject {
            let map = try? JSONDecoder().decode([String: String].self, from: data) {
             chapterRules = map
         }
-        autoOpenLastBook = defaults.bool(forKey: Keys.autoOpenLastBook)
         firstLineIndent = defaults.object(forKey: Keys.indent) == nil
             ? true : defaults.bool(forKey: Keys.indent)
         keepScreenOn = defaults.bool(forKey: Keys.keepScreenOn)
-        isTraditional = defaults.bool(forKey: Keys.traditional)
-        fontFamily = defaults.string(forKey: Keys.fontFamily) ?? ""
         textAlign = ReaderTextAlign(rawValue: defaults.object(forKey: Keys.align) == nil
                                     ? 0 : defaults.integer(forKey: Keys.align)) ?? .justified
         fontWeight = ReaderFontWeight(rawValue: defaults.integer(forKey: Keys.fontWeight)) ?? .regular
@@ -507,10 +466,7 @@ final class Preferences: ObservableObject {
         static let hPadding = "LocalNovel.hPadding"
         static let align = "LocalNovel.textAlign"
         static let indent = "LocalNovel.firstLineIndent"
-        static let traditional = "LocalNovel.traditional"
-        static let fontFamily = "LocalNovel.fontFamily"
         static let fontWeight = "LocalNovel.fontWeight"
-        static let customFonts = "LocalNovel.customFonts"
 
         static let titleScale = "LocalNovel.titleScale"
         static let titleFixed = "LocalNovel.titleFixed"
@@ -531,14 +487,11 @@ final class Preferences: ObservableObject {
         static let showProgress = "LocalNovel.showReadingProgress"
 
         static let themeId = "LocalNovel.themeId"
-        static let customThemes = "LocalNovel.customThemes"
         static let brightness = "LocalNovel.readerBrightness"
         static let flipDuration = "LocalNovel.flipDuration"
         static let tapLeft = "LocalNovel.tapLeft"
         static let tapCenter = "LocalNovel.tapCenter"
         static let tapRight = "LocalNovel.tapRight"
-        static let volumeKeyFlip = "LocalNovel.volumeKeyFlip"
-        static let autoOpenLastBook = "LocalNovel.autoOpenLastBook"
         static let purifyEnabled = "LocalNovel.purifyEnabled"
         static let purifyRules = "LocalNovel.purifyRules"
         static let chapterRules = "LocalNovel.chapterRules"
@@ -559,10 +512,7 @@ final class Preferences: ObservableObject {
         defaults.set(Double(horizontalPadding), forKey: Keys.hPadding)
         defaults.set(textAlign.rawValue, forKey: Keys.align)
         defaults.set(firstLineIndent, forKey: Keys.indent)
-        defaults.set(isTraditional, forKey: Keys.traditional)
-        defaults.set(fontFamily, forKey: Keys.fontFamily)
         defaults.set(fontWeight.rawValue, forKey: Keys.fontWeight)
-        defaults.set(customFontFamilies, forKey: Keys.customFonts)
 
         defaults.set(titleScale, forKey: Keys.titleScale)
         defaults.set(titleFixedSize, forKey: Keys.titleFixed)
@@ -583,16 +533,11 @@ final class Preferences: ObservableObject {
         defaults.set(showReadingProgress, forKey: Keys.showProgress)
 
         defaults.set(themeId, forKey: Keys.themeId)
-        if let data = try? JSONEncoder().encode(customThemes) {
-            defaults.set(data, forKey: Keys.customThemes)
-        }
         defaults.set(readerBrightness, forKey: Keys.brightness)
         defaults.set(flipDuration, forKey: Keys.flipDuration)
         defaults.set(tapLeft.rawValue, forKey: Keys.tapLeft)
         defaults.set(tapCenter.rawValue, forKey: Keys.tapCenter)
         defaults.set(tapRight.rawValue, forKey: Keys.tapRight)
-        defaults.set(volumeKeyFlip, forKey: Keys.volumeKeyFlip)
-        defaults.set(autoOpenLastBook, forKey: Keys.autoOpenLastBook)
         defaults.set(purifyEnabled, forKey: Keys.purifyEnabled)
         if let data = try? JSONEncoder().encode(purifyRules) {
             defaults.set(data, forKey: Keys.purifyRules)

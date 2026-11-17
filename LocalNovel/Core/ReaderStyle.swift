@@ -65,44 +65,16 @@ enum ReaderFontWeight: Int, CaseIterable, Identifiable {
 
 // MARK: 字体
 
-struct ReaderFontOption: Identifiable, Hashable {
-    /// 家族名；空串表示系统默认（iOS 中文即苹方）
-    let id: String
-    let label: String
-}
-
+/// 正文 / 标题统一用系统默认字体（iOS 中文即苹方）。
+/// 这一版去掉了字体家族切换与字体导入：只保留字重、斜体这类系统原生变体，
+/// 避免「用户导入的字体在某些字号下缺字 / 行高诡异」这类问题。
 enum ReaderFonts {
-    /// 内置可选字体。都是 iOS 自带、无需下载的家族；装了自定义字体后由 Preferences 追加。
-    static let builtIn: [ReaderFontOption] = [
-        ReaderFontOption(id: "", label: "系统默认"),
-        ReaderFontOption(id: "Songti SC", label: "宋体"),
-        ReaderFontOption(id: "Kaiti SC", label: "楷体"),
-        ReaderFontOption(id: "Yuanti SC", label: "圆体"),
-        ReaderFontOption(id: "PingFang SC", label: "苹方"),
-        ReaderFontOption(id: "Hiragino Sans GB", label: "冬青黑"),
-        ReaderFontOption(id: "STFangsong", label: "仿宋")
-    ]
-
-    /// 正文 / 标题统一取字体的入口；家族不存在时静默退回系统字体，不让排版崩掉
-    static func font(size: CGFloat, family: String, weight: ReaderFontWeight, italic: Bool = false) -> UIFont {
-        var base: UIFont
-        if !family.isEmpty, let custom = UIFont(name: family, size: size) {
-            base = custom
-            if weight.needsBoldTrait || italic {
-                var traits: UIFontDescriptor.SymbolicTraits = []
-                if weight.needsBoldTrait { traits.insert(.traitBold) }
-                if italic { traits.insert(.traitItalic) }
-                if let d = base.fontDescriptor.withSymbolicTraits(traits) {
-                    base = UIFont(descriptor: d, size: size)
-                }
-            }
-        } else {
-            base = UIFont.systemFont(ofSize: size, weight: weight.weight)
-            if italic, let d = base.fontDescriptor.withSymbolicTraits([.traitItalic]) {
-                base = UIFont(descriptor: d, size: size)
-            }
+    static func font(size: CGFloat, weight: ReaderFontWeight, italic: Bool = false) -> UIFont {
+        let base = UIFont.systemFont(ofSize: size, weight: weight.weight)
+        guard italic, let d = base.fontDescriptor.withSymbolicTraits([.traitItalic]) else {
+            return base
         }
-        return base
+        return UIFont(descriptor: d, size: size)
     }
 }
 
@@ -162,7 +134,6 @@ struct ChapterTitleStyle: Equatable {
 
 struct ReaderTypography: Equatable {
     var fontSize: CGFloat
-    var fontFamily: String
     var weight: ReaderFontWeight
     var lineSpacing: CGFloat
     var paragraphSpacing: CGFloat
@@ -170,20 +141,18 @@ struct ReaderTypography: Equatable {
     var horizontalPadding: CGFloat
     var alignment: ReaderTextAlign
     var firstLineIndent: Bool
-    var isTraditional: Bool
     var title: ChapterTitleStyle
 
     /// 影响分页结果的全部参数（改任何一项都要重建排版）
     var identity: String {
-        "\(fontSize)|\(fontFamily)|\(weight.rawValue)|\(lineSpacing)|\(paragraphSpacing)"
+        "\(fontSize)|\(weight.rawValue)|\(lineSpacing)|\(paragraphSpacing)"
             + "|\(wordSpacing)|\(horizontalPadding)|\(alignment.rawValue)"
-            + "|\(firstLineIndent)|\(isTraditional)|\(title.identity)"
+            + "|\(firstLineIndent)|\(title.identity)"
     }
 
     /// 兜底参数（输入尚未就绪时用，正常不会走到）
     static let fallback = ReaderTypography(
         fontSize: 18,
-        fontFamily: "",
         weight: .regular,
         lineSpacing: 10,
         paragraphSpacing: 6,
@@ -191,7 +160,6 @@ struct ReaderTypography: Equatable {
         horizontalPadding: 20,
         alignment: .justified,
         firstLineIndent: true,
-        isTraditional: false,
         title: ChapterTitleStyle(scale: 1.3, isFixed: false, fixedSize: 20, weight: .bold,
                                  isItalic: false, colorMode: 0, colorHex: "#333333",
                                  topPadding: 16, bottomPadding: 16,
@@ -287,35 +255,14 @@ struct ReaderTheme: Identifiable, Codable, Equatable, Hashable {
 
     static let fallback = builtIns[0]
 
-    static func theme(id: String, custom: [ReaderTheme]) -> ReaderTheme {
-        if let hit = builtIns.first(where: { $0.id == id }) { return hit }
-        if let hit = custom.first(where: { $0.id == id }) { return hit }
-        return fallback
+    /// 主题固定六套内置；未知 id（老数据里的自定义主题）退回纸白
+    static func theme(id: String) -> ReaderTheme {
+        builtIns.first(where: { $0.id == id }) ?? fallback
     }
 
     /// 某一天的日/夜主题（跟随系统或手动切换时用）
-    static func night(_ isNight: Bool, custom: [ReaderTheme]) -> ReaderTheme? {
-        (builtIns + custom).first { $0.isNight == isNight }
-    }
-}
-
-// MARK: 自定义主题
-
-extension ReaderTheme {
-    /// 以内置主题为底稿新建一套自定义主题（id 用时间戳，避免和内置撞车）
-    static func newCustom(from base: ReaderTheme, name: String) -> ReaderTheme {
-        ReaderTheme(id: "custom-\(Int(Date().timeIntervalSince1970))-\(Int.random(in: 100...999))",
-                    name: name,
-                    isBuiltIn: false,
-                    isNight: base.isNight,
-                    textColor: base.textColor,
-                    backgroundColor: base.backgroundColor,
-                    titleColor: base.titleColor,
-                    pageIndexColor: base.pageIndexColor,
-                    headerFooterColor: base.headerFooterColor,
-                    separatorColor: base.separatorColor,
-                    backgroundImage: base.backgroundImage,
-                    backgroundImageMode: base.backgroundImageMode)
+    static func night(_ isNight: Bool) -> ReaderTheme? {
+        builtIns.first { $0.isNight == isNight }
     }
 }
 
@@ -382,45 +329,3 @@ enum ReaderBackgroundImage {
     }
 }
 
-// MARK: 繁简
-
-enum ChineseScript {
-    /// 简体 → 繁体。
-    ///
-    /// Foundation 没有把「简繁转换」暴露成 StringTransform 的静态成员，
-    /// 但 StringTransform 是 RawRepresentable，可以直接用 ICU 的转换器名：
-    ///   · "Simplified-Traditional"（ICU 标准名）
-    ///   · "Hans-Hant"（语言标签写法，部分系统只认这个）
-    /// 两个都不认时原样返回，绝不能因为转换失败把正文吞掉。
-    private static let traditionalTransformIDs = ["Simplified-Traditional", "Hans-Hant"]
-
-    static func toTraditional(_ text: String) -> String {
-        guard !text.isEmpty else { return text }
-        for id in traditionalTransformIDs {
-            if let converted = text.applyingTransform(StringTransform(rawValue: id), reverse: false) {
-                return converted
-            }
-        }
-        return text
-    }
-
-    /// 小容量缓存：同一章反复重绘时不必重复转换
-    private static var cache: [String: [String]] = [:]
-    private static var order: [String] = []
-
-    static func paragraphs(_ key: String, _ raw: [String]) -> [String] {
-        if let hit = cache[key] { return hit }
-        let converted = raw.map(toTraditional)
-        cache[key] = converted
-        order.append(key)
-        if order.count > 3 {
-            cache[order.removeFirst()] = nil
-        }
-        return converted
-    }
-
-    static func reset() {
-        cache.removeAll()
-        order.removeAll()
-    }
-}
