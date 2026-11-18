@@ -55,11 +55,8 @@ public struct TextReaderRootView: View {
                         if session.book?.id != book.id { session.open(book) }
                     }
             }
-            .fileImporter(isPresented: $showImporter,
-                          allowedContentTypes: Self.importableTypes,
-                          allowsMultipleSelection: true) { result in
-                switch result {
-                case .success(let urls):
+            .sheet(isPresented: $showImporter) {
+                DocumentPicker { urls in
                     let failures = urls.compactMap { library.importBook(from: $0) }
                     if let first = failures.first {
                         importError = failures.count == 1
@@ -67,11 +64,8 @@ public struct TextReaderRootView: View {
                             : "\(failures.count) 个文件导入失败，例如：\(first)"
                         showImportError = true
                     }
-                case .failure(let error):
-                    // 选择器本身出错也要可见，不能静默吞掉
-                    importError = "无法打开文件选择结果：\(error.localizedDescription)"
-                    showImportError = true
                 }
+                .ignoresSafeArea()
             }
             .alert("导入失败", isPresented: $showImportError) {
                 Button("好", role: .cancel) {}
@@ -84,6 +78,41 @@ public struct TextReaderRootView: View {
     }
 
     /// txt / md / text；兜底放行 data，避免个别系统把 txt 标成冷门 UTI 选不了。
+    private static let importableTypes: [UTType] = [.plainText, .data]
+}
+
+/// SwiftUI 的 fileImporter 在部分 iOS 版本上回调不触发；
+/// 直接用 UIKit 的文档选择器，didPickDocumentsAt 由系统保证调用。
+private struct DocumentPicker: UIViewControllerRepresentable {
+    let onPick: ([URL]) -> Void
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: Self.importableTypes,
+                                                    asCopy: false)
+        picker.allowsMultipleSelection = true
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onPick: onPick)
+    }
+
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        let onPick: ([URL]) -> Void
+
+        init(onPick: @escaping ([URL]) -> Void) {
+            self.onPick = onPick
+        }
+
+        func documentPicker(_ controller: UIDocumentPickerViewController,
+                            didPickDocumentsAt urls: [URL]) {
+            DispatchQueue.main.async { self.onPick(urls) }
+        }
+    }
+
     private static let importableTypes: [UTType] = [.plainText, .data]
 }
 
