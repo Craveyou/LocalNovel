@@ -237,15 +237,14 @@ struct ReaderMenuOverlay: View {
             .font(.subheadline)
             .foregroundStyle(theme.text)
             .disabled(session.chapterIndex == 0)
-            Slider(value: $chapterDraft, in: 0...Double(max(session.chapters.count - 1, 0)))
-                .tint(theme.accent)
-                .onEditingChanged { editing in
-                    if !editing {
-                        session.goChapter(Int(chapterDraft),
-                                          paragraph: Int(chapterDraft) == session.chapterIndex ? nil : 0)
-                    }
+            Slider(value: $chapterDraft, in: 0...Double(max(session.chapters.count - 1, 0))) { editing in
+                if !editing {
+                    session.goChapter(Int(chapterDraft),
+                                      paragraph: Int(chapterDraft) == session.chapterIndex ? nil : 0)
                 }
-                .accessibilityLabel("章节滑杆")
+            }
+            .tint(theme.accent)
+            .accessibilityLabel("章节滑杆")
             Button("下一章") {
                 if session.chapterIndex + 1 < session.chapters.count {
                     session.goChapter(session.chapterIndex + 1, paragraph: 0)

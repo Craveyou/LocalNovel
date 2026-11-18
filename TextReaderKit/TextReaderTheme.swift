@@ -84,14 +84,13 @@ public enum TextFontDesign: String, CaseIterable, Identifiable, Codable {
     }
 
     public func uiFont(size: CGFloat) -> UIFont {
+        let base = UIFontDescriptor.preferredFontDescriptor(withTextStyle: .body)
         switch self {
         case .system: return UIFont.systemFont(ofSize: size)
         case .rounded:
-            let descriptor = UIFontDescriptor.default.withDesign(.rounded)
-            return UIFont(descriptor: descriptor ?? .default, size: size)
+            return UIFont(descriptor: base.withDesign(.rounded), size: size)
         case .serif:
-            let descriptor = UIFontDescriptor.default.withDesign(.serif)
-            return UIFont(descriptor: descriptor ?? .default, size: size)
+            return UIFont(descriptor: base.withDesign(.serif), size: size)
         }
     }
 
