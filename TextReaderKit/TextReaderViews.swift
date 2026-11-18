@@ -1,15 +1,62 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import UIKit
 
 public struct TextReaderRootView: View {
     @StateObject private var library: TextLibraryStore
     @StateObject private var session = TextReaderSession()
-    @State private var showImporter = false
     @State private var importError: String?
     @State private var showImportError = false
+    @State private var debugLog: [String] = []
+    @State private var showDebug = false
+    /// 命令式弹出的文档选择器 delegate 必须强持有到回调结束，
+    /// 否则回调被丢弃 —— 这正是之前 sheet 方案「点打开无反应」的根因。
+    @State private var pickerKeeper: NSObject?
 
     public init(bundledBooks: [TextBook] = []) {
         _library = StateObject(wrappedValue: TextLibraryStore(bundled: bundledBooks))
+    }
+
+    private func log(_ line: String) {
+        let stamp = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
+        debugLog.append("[\(stamp)] \(line)")
+        if debugLog.count > 300 { debugLog.removeFirst(debugLog.count - 300) }
+    }
+
+    private func handlePicked(_ urls: [URL]) {
+        pickerKeeper = nil
+        guard !urls.isEmpty else {
+            log("选择器：用户取消")
+            return
+        }
+        log("选择器回调：\(urls.count) 个文件")
+        let failures = urls.compactMap { library.importBook(from: $0) }
+        if let first = failures.first {
+            importError = failures.count == 1
+                ? first
+                : "\(failures.count) 个文件导入失败，例如：\(first)"
+            showImportError = true
+        }
+    }
+
+    /// 不经 sheet、不经 SwiftUI 包装，直接把 UIKit 选择器压到当前视图栈顶。
+    /// delegate 由 pickerKeeper 强持有，回调保证可达。
+    private func presentPicker() {
+        log("准备弹出文档选择器")
+        let coordinator = PickerCoordinator(onPick: handlePicked)
+        pickerKeeper = coordinator
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: Self.importableTypes,
+                                                    asCopy: false)
+        picker.allowsMultipleSelection = true
+        picker.delegate = coordinator
+        guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+              var top = scene.keyWindow?.rootViewController else {
+            log("错误：找不到根视图控制器")
+            return
+        }
+        while let presented = top.presentedViewController { top = presented }
+        top.present(picker, animated: true)
+        log("选择器已弹出")
     }
 
     public var body: some View {
@@ -42,11 +89,19 @@ public struct TextReaderRootView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
-                        showImporter = true
+                        presentPicker()
                     } label: {
                         Image(systemName: "plus")
                     }
                     .accessibilityLabel("导入小说")
+                }
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        showDebug = true
+                    } label: {
+                        Image(systemName: "terminal")
+                    }
+                    .accessibilityLabel("调试日志")
                 }
             }
             .navigationDestination(for: TextBook.self) { book in
@@ -55,22 +110,49 @@ public struct TextReaderRootView: View {
                         if session.book?.id != book.id { session.open(book) }
                     }
             }
-            .sheet(isPresented: $showImporter) {
-                DocumentPicker { urls in
-                    let failures = urls.compactMap { library.importBook(from: $0) }
-                    if let first = failures.first {
-                        importError = failures.count == 1
-                            ? first
-                            : "\(failures.count) 个文件导入失败，例如：\(first)"
-                        showImportError = true
-                    }
+            .onOpenURL { url in
+                // 第二条导入路：文件 App 里分享 → 拷贝到本 App
+                log("外部打开：\(url.lastPathComponent)")
+                if let failure = library.importBook(from: url) {
+                    importError = failure
+                    showImportError = true
                 }
-                .ignoresSafeArea()
             }
+            .onAppear { library.onLog = log }
             .alert("导入失败", isPresented: $showImportError) {
                 Button("好", role: .cancel) {}
             } message: {
                 Text(importError ?? "")
+            }
+            .sheet(isPresented: $showDebug) {
+                NavigationStack {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 4) {
+                            if debugLog.isEmpty {
+                                Text("暂无日志。点 + 导入一次，这里会显示每一步。")
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                            }
+                            ForEach(Array(debugLog.enumerated()), id: \.offset) { _, line in
+                                Text(line)
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .textSelection(.enabled)
+                            }
+                        }
+                        .padding()
+                    }
+                    .navigationTitle("调试日志")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("关闭") { showDebug = false }
+                        }
+                        ToolbarItem(placement: .destructiveAction) {
+                            Button("清空") { debugLog.removeAll() }
+                        }
+                    }
+                }
             }
         }
         .environmentObject(session)
@@ -81,39 +163,21 @@ public struct TextReaderRootView: View {
     private static let importableTypes: [UTType] = [.plainText, .data]
 }
 
-/// SwiftUI 的 fileImporter 在部分 iOS 版本上回调不触发；
-/// 直接用 UIKit 的文档选择器，didPickDocumentsAt 由系统保证调用。
-private struct DocumentPicker: UIViewControllerRepresentable {
+final class PickerCoordinator: NSObject, UIDocumentPickerDelegate {
     let onPick: ([URL]) -> Void
 
-    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes: Self.importableTypes,
-                                                    asCopy: false)
-        picker.allowsMultipleSelection = true
-        picker.delegate = context.coordinator
-        return picker
+    init(onPick: @escaping ([URL]) -> Void) {
+        self.onPick = onPick
     }
 
-    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(onPick: onPick)
+    func documentPicker(_ controller: UIDocumentPickerViewController,
+                        didPickDocumentsAt urls: [URL]) {
+        DispatchQueue.main.async { self.onPick(urls) }
     }
 
-    final class Coordinator: NSObject, UIDocumentPickerDelegate {
-        let onPick: ([URL]) -> Void
-
-        init(onPick: @escaping ([URL]) -> Void) {
-            self.onPick = onPick
-        }
-
-        func documentPicker(_ controller: UIDocumentPickerViewController,
-                            didPickDocumentsAt urls: [URL]) {
-            DispatchQueue.main.async { self.onPick(urls) }
-        }
+    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+        DispatchQueue.main.async { self.onPick([]) }
     }
-
-    private static let importableTypes: [UTType] = [.plainText, .data]
 }
 
 public struct TextReaderView: View {

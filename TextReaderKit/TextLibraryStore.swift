@@ -6,6 +6,10 @@ import Foundation
 public final class TextLibraryStore: ObservableObject {
     @Published public private(set) var books: [TextBook] = []
 
+    /// 调试日志钩子：每一步导入动作都会回调，Demo 用它显示在界面上。
+    public var onLog: ((String) -> Void)?
+    private func emit(_ line: String) { onLog?(line) }
+
     /// 内置书（bundle 里的样例）永远排在最前，且不可删除。
     private let bundled: [TextBook]
     private let libraryDir: URL
@@ -27,12 +31,15 @@ public final class TextLibraryStore: ObservableObject {
     /// 返回值：nil = 成功；String = 用户可读的失败原因。
     @discardableResult
     public func importBook(from url: URL) -> String? {
+        emit("导入请求：\(url.lastPathComponent)")
         let ext = url.pathExtension.lowercased()
         guard TextFileLoader.supportedExtensions.contains(ext) else {
+            emit("拒绝：不支持扩展名 .\(ext)")
             return "暂不支持的格式：.\(ext)（只认 txt / md / text）"
         }
 
         let gotAccess = url.startAccessingSecurityScopedResource()
+        emit("安全作用域：\(gotAccess ? "已获取" : "不需要")")
         defer { if gotAccess { url.stopAccessingSecurityScopedResource() } }
 
         // 同名文件不静默覆盖：加序号成《书名 2.txt》
@@ -58,12 +65,16 @@ public final class TextLibraryStore: ObservableObject {
             }
         }
         if let coordinatorError {
+            emit("协调读取失败：\(coordinatorError.localizedDescription)")
             return "读取失败：\(coordinatorError.localizedDescription)"
         }
         if let copyError {
+            emit("复制失败：\(copyError.localizedDescription)")
             return "复制失败：\(copyError.localizedDescription)"
         }
+        emit("复制完成 → \(target.lastPathComponent)")
         reload()
+        emit("书库更新：共 \(books.count) 本（样例 \(bundled.count) + 导入 \(books.count - bundled.count)）")
         return nil
     }
 
