@@ -49,7 +49,7 @@ public struct TextReaderRootView: View {
     private func presentPicker() {
         log("准备弹出文档选择器（拷贝模式）")
         let coordinator = PickerCoordinator(onPick: handlePicked)
-        coordinator.onEvent = { [weak self] line in self?.log(line) }
+        coordinator.onEvent = { line in log(line) }
         pickerKeeper = coordinator
         let picker = UIDocumentPickerViewController(forOpeningContentTypes: Self.importableTypes,
                                                     asCopy: true)
