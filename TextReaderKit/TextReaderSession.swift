@@ -62,8 +62,7 @@ public final class TextReaderSession: ObservableObject {
     public func goChapter(_ index: Int, paragraph: Int? = nil) {
         guard chapters.indices.contains(index) else { return }
         chapterIndex = index
-        let key = anchorKey
-        rebuildPages(restoreParagraph: paragraph ?? store.anchor(for: key))
+        rebuildPages(restoreParagraph: paragraph ?? anchorKey.flatMap { store.anchor(for: $0) })
     }
 
     public func movePage(_ delta: Int) {
