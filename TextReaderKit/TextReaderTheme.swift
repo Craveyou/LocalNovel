@@ -197,7 +197,7 @@ public enum TextPurifier {
             #"www\."#,
             #"\.(com|net|cc|org|info|la|me|top|vip|xyz)\b"#,
             #"笔趣阁|笔趣库|顶点小说|乐文|听风|书楼|言情|武侠楼|海棠|po18|PO18"#,
-            #"最新章节|章节目录|无错|手打|首发|更新最快|完本|TXT下载|txt下载|下载本书|本书来自|本章未完|点击下一页|求收藏|求推荐|求月票|书友群#",
+            #"最新章节|章节目录|无错|手打|首发|更新最快|完本|TXT下载|txt下载|下载本书|本书来自|本章未完|点击下一页|求收藏|求推荐|求月票|书友群"#,
         ]
         return raw.compactMap { try? NSRegularExpression(pattern: $0) }
     }()
