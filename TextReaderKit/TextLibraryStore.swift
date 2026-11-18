@@ -44,10 +44,24 @@ public final class TextLibraryStore: ObservableObject {
             suffix += 1
         }
 
-        do {
-            try FileManager.default.copyItem(at: url, to: target)
-        } catch {
-            return "复制失败：\(error.localizedDescription)"
+        // 文档选择器返回的 URL（尤其是「最近项目」/ iCloud / 第三方网盘里的）
+        // 必须经 NSFileCoordinator 协调读取，直接 copyItem 会拿不到内容。
+        var coordinatorError: NSError?
+        var copyError: Error?
+        NSFileCoordinator().coordinate(readingItemAt: url,
+                                       options: .withoutChanges,
+                                       error: &coordinatorError) { readURL in
+            do {
+                try FileManager.default.copyItem(at: readURL, to: target)
+            } catch {
+                copyError = error
+            }
+        }
+        if let coordinatorError {
+            return "读取失败：\(coordinatorError.localizedDescription)"
+        }
+        if let copyError {
+            return "复制失败：\(copyError.localizedDescription)"
         }
         reload()
         return nil

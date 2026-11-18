@@ -58,12 +58,18 @@ public struct TextReaderRootView: View {
             .fileImporter(isPresented: $showImporter,
                           allowedContentTypes: Self.importableTypes,
                           allowsMultipleSelection: true) { result in
-                guard case .success(let urls) = result else { return }
-                let failures = urls.compactMap { library.importBook(from: $0) }
-                if let first = failures.first {
-                    importError = failures.count == 1
-                        ? first
-                        : "\(failures.count) 个文件导入失败，例如：\(first)"
+                switch result {
+                case .success(let urls):
+                    let failures = urls.compactMap { library.importBook(from: $0) }
+                    if let first = failures.first {
+                        importError = failures.count == 1
+                            ? first
+                            : "\(failures.count) 个文件导入失败，例如：\(first)"
+                        showImportError = true
+                    }
+                case .failure(let error):
+                    // 选择器本身出错也要可见，不能静默吞掉
+                    importError = "无法打开文件选择结果：\(error.localizedDescription)"
                     showImportError = true
                 }
             }
