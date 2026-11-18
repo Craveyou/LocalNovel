@@ -59,25 +59,53 @@ final class AnnotationStore: ObservableObject {
     /// 书签或笔记指向的章节还在不在。
     /// 重新分章后 chapterId（路径#区间起点）全变，老条目就成了死链 ——
     /// 列表里要明确标出来，不能点了没反应。
-    func isDangling(bookmark: ReaderBookmark, validChapterIds: Set<String>) -> Bool {
-        !validChapterIds.contains(bookmark.chapterId)
+    /// chapterId 还在，但重新分章可能复用同一个 id 却改变了正文范围。
+    /// 有 paragraphCounts 时额外校验段落号是否仍在新章范围内，避免静默错指。
+    func isDangling(bookmark: ReaderBookmark,
+                    validChapterIds: Set<String>,
+                    paragraphCounts: [String: Int]? = nil) -> Bool {
+        guard validChapterIds.contains(bookmark.chapterId) else { return true }
+        guard let counts = paragraphCounts, let count = counts[bookmark.chapterId] else { return false }
+        return bookmark.paragraph >= count
     }
 
-    func isDangling(note: ReaderNote, validChapterIds: Set<String>) -> Bool {
-        !validChapterIds.contains(note.chapterId)
+    func isDangling(note: ReaderNote,
+                    validChapterIds: Set<String>,
+                    paragraphCounts: [String: Int]? = nil) -> Bool {
+        guard validChapterIds.contains(note.chapterId) else { return true }
+        guard let counts = paragraphCounts, let count = counts[note.chapterId] else { return false }
+        return note.paragraph >= count
     }
 
-    func danglingCount(in bookId: String, validChapterIds: Set<String>) -> (bookmarks: Int, notes: Int) {
-        let marks = bookmarks(in: bookId).filter { !validChapterIds.contains($0.chapterId) }.count
-        let notesCount = notes(in: bookId).filter { !validChapterIds.contains($0.chapterId) }.count
+    func danglingCount(in bookId: String,
+                       validChapterIds: Set<String>,
+                       paragraphCounts: [String: Int]? = nil) -> (bookmarks: Int, notes: Int) {
+        let marks = bookmarks(in: bookId).filter {
+            isDangling(bookmark: $0, validChapterIds: validChapterIds,
+                       paragraphCounts: paragraphCounts)
+        }.count
+        let notesCount = notes(in: bookId).filter {
+            isDangling(note: $0, validChapterIds: validChapterIds,
+                       paragraphCounts: paragraphCounts)
+        }.count
         return (marks, notesCount)
     }
 
     /// 一键清掉某本书里指向已不存在章节的书签 / 笔记，返回清掉的条数
     @discardableResult
-    func pruneDangling(in bookId: String, validChapterIds: Set<String>) -> Int {
-        let staleMarks = bookmarks.filter { $0.bookId == bookId && !validChapterIds.contains($0.chapterId) }
-        let staleNotes = notes.filter { $0.bookId == bookId && !validChapterIds.contains($0.chapterId) }
+    func pruneDangling(in bookId: String,
+                       validChapterIds: Set<String>,
+                       paragraphCounts: [String: Int]? = nil) -> Int {
+        let staleMarks = bookmarks.filter {
+            $0.bookId == bookId && isDangling(bookmark: $0,
+                                              validChapterIds: validChapterIds,
+                                              paragraphCounts: paragraphCounts)
+        }
+        let staleNotes = notes.filter {
+            $0.bookId == bookId && isDangling(note: $0,
+                                              validChapterIds: validChapterIds,
+                                              paragraphCounts: paragraphCounts)
+        }
         guard !staleMarks.isEmpty || !staleNotes.isEmpty else { return 0 }
         let markIds = Set(staleMarks.map(\.id))
         let noteIds = Set(staleNotes.map(\.id))

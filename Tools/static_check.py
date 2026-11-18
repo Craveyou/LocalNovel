@@ -350,8 +350,8 @@ def main():
           and "DocumentsBootstrap.guideFileName" in resolver)
     check("切回前台补写说明文件", "DocumentsBootstrap.ensureVisibleInFilesApp()" in store)
     check("版本号提升以刷新系统元数据",
-          "<string>2.17.1</string>" in plist and "CURRENT_PROJECT_VERSION = 24" in pbx
-          and "MARKETING_VERSION = 2.17.1" in pbx)
+          "<string>2.17.2</string>" in plist and "CURRENT_PROJECT_VERSION = 25" in pbx
+          and "MARKETING_VERSION = 2.17.2" in pbx)
     check("UI 给出「文件 App 搜索本地小说」兜底路径",
           "搜索框搜「本地小说」" in welcome and "搜索「本地小说」" in store)
     check("AppIcon asset catalog（1024 + Contents.json）",
@@ -718,9 +718,9 @@ def main():
     check("文档正文含双格式包一节",
           "### 5. 同一部书按格式分成两个包（PDF 包 + 图片包）"
           in (ROOT / "Docs" / "漫画目录结构说明.md").read_text(encoding="utf-8"))
-    check("版本升到 2.17.1 / build 24",
-          "<string>2.17.1</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>24</string>" in plist)
+    check("版本升到 2.17.2 / build 25",
+          "<string>2.17.2</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>25</string>" in plist)
 
 
     print("\n== N. 本轮：底部三页 / 短剧 / NAS 连接 ==")
@@ -971,9 +971,9 @@ def main():
     check("远端文件缓存有上限并会按最久未修改淘汰",
           "static let byteLimit: Int64 = 512 * 1024 * 1024" in nas_lib
           and "Task.detached(priority: .utility) { trim(folder: folder, limit: byteLimit) }" in nas_lib)
-    check("版本升到 2.17.1 / build 24",
-          "<string>2.17.1</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>24</string>" in plist)
+    check("版本升到 2.17.2 / build 25",
+          "<string>2.17.2</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>25</string>" in plist)
 
     print("\n== S. 本轮：txt 乱码（UTF-16 误判 / GBK / Big5） ==")
     encoding_src = (APP / "Core" / "TextEncoding.swift").read_text(encoding="utf-8")
@@ -1023,7 +1023,7 @@ def main():
           "if case .text(let slice) = pages[currentIndex] { return slice.paragraph }" in paged
           and "if let paragraph = currentParagraph { onProgress?(paragraph) }" in paged)
     check("锚点越界回落到本章开头（重新切章后不跳末尾）",
-          "value < paragraphs.count else { return 0 }" in reader)
+          "value >= 0, value < paragraphs.count { return value }" in reader)
     check("整章只建一份排版文本（不再每页一份全文）",
           "private(set) var measureAttributed" in paged
           and "let attributed = measureAttributed" in paged)
@@ -1287,8 +1287,8 @@ def main():
     check("相邻章正文预取（切章不空等；已下沉到纯 UIKit 阅读核心）",
           "func schedulePrefetch()" in (APP / "Core" / "BookReaderCore.swift").read_text(encoding="utf-8")
           and "library.paragraphs(for: next)" in (APP / "Core" / "BookReaderCore.swift").read_text(encoding="utf-8"))
-    check("版本已升到 2.17.1 / build 24",
-          "2.17.1" in (APP / "Info.plist").read_text(encoding="utf-8"))
+    check("版本已升到 2.17.2 / build 25",
+          "2.17.2" in (APP / "Info.plist").read_text(encoding="utf-8"))
 
     print("\n== Z. 本轮：上下菜单栏 + 进度滑杆 + 目录面板 ==")
     bars = (APP / "Views" / "ReaderChromeBars.swift").read_text(encoding="utf-8")
@@ -1783,9 +1783,9 @@ def main():
           and "let waiters = self.splitWaiters.removeValue(forKey: book.id) ?? []" in store
           and "waiters.forEach { $0() }" in store)
 
-    check("版本已升到 2.17.1 / build 24",
-          "<string>2.17.1</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>24</string>" in plist)
+    check("版本已升到 2.17.2 / build 25",
+          "<string>2.17.2</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>25</string>" in plist)
 
     # ------------------------------------------------------------------
     # X4. 2.15.0：删掉字体/简繁/音量键/启动直进/自定义主题 + 修跳转
@@ -1854,7 +1854,7 @@ def main():
                "VerticalPageController()", "InstantPageController()"])
           and "fresh.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]" in core_src)
     check("越界锚点回章首的约定在核心里同样成立",
-          "value >= 0, value < count else { return 0 }" in core_src)
+          "value >= 0, value < count { return value }" in core_src)
     check("SwiftUI 侧命令通道：面板按钮下发指令，核心回传「当前章变了」",
           "final class ReaderCoreHandle" in core_src
           and "fileprivate weak var controller: BookReaderController?" in core_src
@@ -1867,7 +1867,8 @@ def main():
           and "ProgressStore.shared.lastChapterId(for: bookId)" in core_src)
     check("ReaderView 分页分支换成核心；指令走 handle，不再走 RootView 换章",
           "BookReaderView(" in reader_now
-          and "coreHandle.goChapter(target, paragraph: 0)" in reader_now
+          and "coreHandle.goChapter(target," in reader_now
+          and "paragraph: target.id == displayChapter.id ? nil : 0" in reader_now
           and "coreHandle.jumpToParagraph(paragraph)" in reader_now
           and "coreHandle.jumpTo(chapter: target, fraction: fraction)" in reader_now
           and "PagedReaderView(" not in reader_now
@@ -1904,7 +1905,7 @@ def main():
     check("跳段落到段首而不是跨页段尾",
           "slices.firstIndex(where: { $0.paragraph == paragraph })" in paginator)
     check("书签段号越界回落章首",
-          "guard value >= 0, value < paragraphs.count else { return 0 }" in reader_now)
+          "value >= 0, value < paragraphs.count { return value }" in reader_now)
     check("新核心消费入口明确段落",
           "initialRestore = max(0, entry.paragraph)" in core_src
           and "let restore = initialRestore" in core_src)
@@ -1912,9 +1913,29 @@ def main():
           "if dir > 0, target >= pages.count" in paged_src
           and "_ = advanceToNextChapter(at: displayedIndex)" in paged_src)
 
-    check("版本已升到 2.17.1 / build 24",
-          "<string>2.17.1</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>24</string>" in plist)
+    # ------------------------------------------------------------------
+    # X11. 2.17.2：修小说书签 / 阅读记忆 4 项
+    # ------------------------------------------------------------------
+    print("\n== X11. 本轮：修小说书签 / 阅读记忆（2.17.2） ==")
+    ann_src = (APP / "Core" / "ReaderAnnotations.swift").read_text(encoding="utf-8")
+    check("点目录当前章不再重置阅读位置",
+          "paragraph: target.id == displayChapter.id ? nil : 0" in reader_now)
+    check("媒体锚点统一映射到最后正文段（SwiftUI 侧）",
+          'anchor.hasPrefix("blk-i") || anchor.hasPrefix("blk-a-")' in reader_now)
+    check("媒体锚点统一映射到最后正文段（UIKit 核心侧）",
+          'anchor.hasPrefix("blk-i") || anchor.hasPrefix("blk-a-")' in core_src)
+    check("书签 / 笔记失效判据包含段落越界",
+          "paragraphCounts: [String: Int]? = nil" in ann_src
+          and "bookmark.paragraph >= count" in ann_src)
+    check("目录面板用段落数标注失效并清理",
+          "validParagraphCounts" in cat
+          and "paragraphCounts: validParagraphCounts" in cat)
+    check("重分章统计失效标注时包含段落越界",
+          "paragraphCounts: counts" in store)
+
+    check("版本已升到 2.17.2 / build 25",
+          "<string>2.17.2</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>25</string>" in plist)
 
     print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")
     if FAIL:

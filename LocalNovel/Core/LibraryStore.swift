@@ -436,8 +436,18 @@ final class LibraryStore: ObservableObject {
                 self.splitCache[book.id] = chapters
                 self.applySplit(bookId: book.id, chapters: chapters)
                 let valid = Set(chapters.map(\.id))
+                // chapterId 可能被复用但正文范围变了，段落号也要一起验。
+                var counts: [String: Int] = [:]
+                counts.reserveCapacity(chapters.count)
+                for chapter in chapters {
+                    counts[chapter.id] = ReaderTextPipeline.displayCount(
+                        chapterId: chapter.id,
+                        raw: self.paragraphs(for: chapter),
+                        rules: Preferences.shared.activePurifyRules)
+                }
                 let dangling = AnnotationStore.shared.danglingCount(in: book.id,
-                                                                    validChapterIds: valid)
+                                                                    validChapterIds: valid,
+                                                                    paragraphCounts: counts)
                 completion?(ResplitResult(chapters: chapters.count,
                                           danglingMarks: dangling.bookmarks + dangling.notes,
                                           restoredHidden: restoredHidden))

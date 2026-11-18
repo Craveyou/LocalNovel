@@ -133,9 +133,7 @@ struct ReaderView: View {
         var ratio = 0.0
         let count = paragraphs.count
         if count > 1,
-           let anchor = ProgressStore.shared.anchor(for: displayChapter.id),
-           anchor.hasPrefix("blk-p"),
-           let value = Int(anchor.dropFirst("blk-p".count)) {
+           let value = paragraphIndex(from: ProgressStore.shared.anchor(for: displayChapter.id)) {
             ratio = Double(min(max(value, 0), count - 1)) / Double(count - 1)
         }
         return min(max((Double(index) + ratio) / Double(chapters.count), 0), 1)
@@ -192,7 +190,10 @@ struct ReaderView: View {
     private func open(_ target: Chapter) {
         withAnimation(.easeOut(duration: 0.18)) { showMenu = false }
         if usePaging {
-            coreHandle.goChapter(target, paragraph: 0)
+            // 点当前章 = 只收面板，不重置位置；核心对「当前章 + nil」有 no-op 守卫。
+            // 以前无条件下发 0，等于主动跳段首，把用户位置写回 blk-p0。
+            coreHandle.goChapter(target,
+                                 paragraph: target.id == displayChapter.id ? nil : 0)
         } else {
             onSelectChapter(target, nil)
         }
@@ -211,15 +212,23 @@ struct ReaderView: View {
         UIApplication.shared.isIdleTimerDisabled = prefs.keepScreenOn
     }
 
+    /// 阅读锚点 → 正文段号。
+    /// blk-pN 直接用 N；blk-iN / blk-a-* 是滚动模式的插图 / 媒体锚点。
+    /// 内容顺序是「正文 → 插图 → 媒体」，所以这类锚点回退到最后一段正文，
+    /// 而不是 0 —— 否则停在插图页加书签会记成第 1 段，切翻页也会回章首。
+    private func paragraphIndex(from anchor: String?) -> Int? {
+        guard let anchor else { return nil }
+        if anchor.hasPrefix("blk-p"),
+           let value = Int(anchor.dropFirst("blk-p".count)),
+           value >= 0, value < paragraphs.count { return value }
+        if (anchor.hasPrefix("blk-i") || anchor.hasPrefix("blk-a-")),
+           !paragraphs.isEmpty { return paragraphs.count - 1 }
+        return nil
+    }
+
     /// 当前段落（阅读记忆里的锚点），书签 / 笔记用它记位置
     private var currentParagraphIndex: Int {
-        guard let anchor = ProgressStore.shared.anchor(for: displayChapter.id),
-              anchor.hasPrefix("blk-p"),
-              let value = Int(anchor.dropFirst("blk-p".count)) else { return 0 }
-        // 与 restoreParagraph / anchorParagraph 同口径：重分章后旧锚点可能越界，
-        // 不加书签时会把书签记到不存在的段落，preview 空、跳回静默失败。
-        guard value >= 0, value < paragraphs.count else { return 0 }
-        return value
+        paragraphIndex(from: ProgressStore.shared.anchor(for: displayChapter.id)) ?? 0
     }
 
     /// 当前位置是否已有书签
@@ -818,12 +827,9 @@ struct ReaderView: View {
         if let startParagraph {
             return max(0, min(startParagraph, max(paragraphs.count - 1, 0)))
         }
-        guard let anchor = ProgressStore.shared.anchor(for: chapter.id),
-              anchor.hasPrefix("blk-p"),
-              let value = Int(anchor.dropFirst("blk-p".count)),
-              value >= 0,
-              value < paragraphs.count else { return 0 }
-        return value
+        // 滚动模式可能留下 blk-iN / blk-a-*；统一由 paragraphIndex(from:) 映射，
+        // 切到翻页时落到插图前的最后一段正文，而不是章首。
+        return paragraphIndex(from: ProgressStore.shared.anchor(for: displayChapter.id)) ?? 0
     }
 
     private func pagedBody() -> some View {

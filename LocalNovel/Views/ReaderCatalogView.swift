@@ -66,6 +66,8 @@ struct ReaderCatalogView: View {
     let onResplit: (String?) -> Void
     let onDismiss: () -> Void
 
+    @EnvironmentObject private var library: LibraryStore
+    @EnvironmentObject private var prefs: Preferences
     @ObservedObject private var annotations = AnnotationStore.shared
     /// 短剧每集的大小 / 时长（行滚到才读）
     @ObservedObject private var videoMeta = VideoMetaStore.shared
@@ -336,6 +338,20 @@ struct ReaderCatalogView: View {
         Set(chapters.map(\.id))
     }
 
+    /// 重分章可能复用 chapterId 但正文范围变了：额外记录净化后段数，
+    /// 用来把「段落号越界」的老书签 / 笔记也标成失效。
+    private var validParagraphCounts: [String: Int] {
+        var counts: [String: Int] = [:]
+        counts.reserveCapacity(chapters.count)
+        for chapter in chapters {
+            counts[chapter.id] = ReaderTextPipeline.displayCount(
+                chapterId: chapter.id,
+                raw: library.paragraphs(for: chapter),
+                rules: prefs.activePurifyRules)
+        }
+        return counts
+    }
+
     /// 章节列表指纹（只看数量和首末 id，O(1)）：重分章后用来作废旧的搜索结果
     private var chaptersFingerprint: String {
         "\(chapters.count)|\(chapters.first?.id ?? "")|\(chapters.last?.id ?? "")"
@@ -343,10 +359,10 @@ struct ReaderCatalogView: View {
 
     /// 失效标注条数（重新分章 / 删章之后）
     private var danglingCount: Int {
-        let ids = validChapterIds
-        let marks = annotations.bookmarks(in: bookId).filter { !ids.contains($0.chapterId) }.count
-        let notes = annotations.notes(in: bookId).filter { !ids.contains($0.chapterId) }.count
-        return marks + notes
+        let result = annotations.danglingCount(in: bookId,
+                                               validChapterIds: validChapterIds,
+                                               paragraphCounts: validParagraphCounts)
+        return result.bookmarks + result.notes
     }
 
     private var subtitle: String {
@@ -633,11 +649,14 @@ struct ReaderCatalogView: View {
     private var bookmarkList: some View {
         let list = annotations.bookmarks(in: bookId)
         let ids = validChapterIds
+        let counts = validParagraphCounts
         return ScrollView {
             LazyVStack(spacing: 0) {
                 if list.isEmpty { emptyHint("还没有书签。下方「加书签」会记住当前位置。") }
                 ForEach(list) { mark in
-                    let stale = !ids.contains(mark.chapterId)
+                    let stale = annotations.isDangling(bookmark: mark,
+                                                       validChapterIds: ids,
+                                                       paragraphCounts: counts)
                     Button {
                         if let chapter = chapters.first(where: { $0.id == mark.chapterId }) {
                             onSelectParagraph(chapter, mark.paragraph)
@@ -682,11 +701,14 @@ struct ReaderCatalogView: View {
     private var noteList: some View {
         let list = annotations.notes(in: bookId)
         let ids = validChapterIds
+        let counts = validParagraphCounts
         return ScrollView {
             LazyVStack(spacing: 0) {
                 if list.isEmpty { emptyHint("还没有笔记。下方「记笔记」会记录当前章节与段落。") }
                 ForEach(list) { note in
-                    let stale = !ids.contains(note.chapterId)
+                    let stale = annotations.isDangling(note: note,
+                                                       validChapterIds: ids,
+                                                       paragraphCounts: counts)
                     Button {
                         if let chapter = chapters.first(where: { $0.id == note.chapterId }) {
                             onSelectParagraph(chapter, note.paragraph)
@@ -779,7 +801,9 @@ struct ReaderCatalogView: View {
                     footerButton("加书签") { onAddBookmark(currentParagraph) }
                     if danglingCount > 0 {
                         footerButton("清理失效") {
-                            annotations.pruneDangling(in: bookId, validChapterIds: validChapterIds)
+                            annotations.pruneDangling(in: bookId,
+                                                          validChapterIds: validChapterIds,
+                                                          paragraphCounts: validParagraphCounts)
                         }
                     }
                 case .note:
@@ -801,7 +825,9 @@ struct ReaderCatalogView: View {
                     }
                     if danglingCount > 0 {
                         footerButton("清理失效") {
-                            annotations.pruneDangling(in: bookId, validChapterIds: validChapterIds)
+                            annotations.pruneDangling(in: bookId,
+                                                          validChapterIds: validChapterIds,
+                                                          paragraphCounts: validParagraphCounts)
                         }
                     }
                 }

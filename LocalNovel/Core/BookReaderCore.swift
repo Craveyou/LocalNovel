@@ -376,11 +376,14 @@ final class BookReaderController: UIViewController {
     /// 记忆锚点换算成段落；没有记忆或越界都回章首
     private func anchorParagraph(for chapter: Chapter, count: Int) -> Int {
         guard count > 0,
-              let anchor = ProgressStore.shared.anchor(for: chapter.id),
-              anchor.hasPrefix("blk-p"),
-              let value = Int(anchor.dropFirst("blk-p".count)),
-              value >= 0, value < count else { return 0 }
-        return value
+              let anchor = ProgressStore.shared.anchor(for: chapter.id) else { return 0 }
+        if anchor.hasPrefix("blk-p"),
+           let value = Int(anchor.dropFirst("blk-p".count)),
+           value >= 0, value < count { return value }
+        // 滚动模式留下的插图 / 媒体锚点：内容顺序是正文 → 插图 → 媒体，
+        // 翻页侧没有独立媒体页可精确恢复，落到最后一段正文（下一页就是插图）。
+        if anchor.hasPrefix("blk-i") || anchor.hasPrefix("blk-a-") { return count - 1 }
+        return 0
     }
 
     /// 预取下一章正文：提前「空转」一次，翻过去时内容已在缓存里
