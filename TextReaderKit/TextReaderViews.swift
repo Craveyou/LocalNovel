@@ -1,36 +1,84 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 public struct TextReaderRootView: View {
-    public let books: [TextBook]
+    @StateObject private var library: TextLibraryStore
     @StateObject private var session = TextReaderSession()
+    @State private var showImporter = false
+    @State private var importError: String?
+    @State private var showImportError = false
 
-    public init(books: [TextBook]) {
-        self.books = books
+    public init(bundledBooks: [TextBook] = []) {
+        _library = StateObject(wrappedValue: TextLibraryStore(bundled: bundledBooks))
     }
 
     public var body: some View {
         NavigationStack {
-            List(books) { book in
-                NavigationLink(value: book) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(book.title).font(.headline)
-                        Text(book.url.lastPathComponent)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+            Group {
+                if library.books.isEmpty {
+                    ContentUnavailableView("书架空空", systemImage: "book",
+                                           description: Text("右上角 + 导入 txt 小说"))
+                } else {
+                    List {
+                        ForEach(library.books) { book in
+                            NavigationLink(value: book) {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(book.title).font(.headline)
+                                    Text(library.isImported(book) ? "导入的书" : "内置样例")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                        .onDelete { indexSet in
+                            for index in indexSet {
+                                library.remove(library.books[index])
+                            }
+                        }
                     }
                 }
             }
             .navigationTitle("纯文本小说")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        showImporter = true
+                    } label: {
+                        Image(systemName: "plus")
+                    }
+                    .accessibilityLabel("导入小说")
+                }
+            }
             .navigationDestination(for: TextBook.self) { book in
                 TextReaderView()
                     .onAppear {
                         if session.book?.id != book.id { session.open(book) }
                     }
             }
+            .fileImporter(isPresented: $showImporter,
+                          allowedContentTypes: Self.importableTypes,
+                          allowsMultipleSelection: true) { result in
+                guard case .success(let urls) = result else { return }
+                let failures = urls.compactMap { library.importBook(from: $0) }
+                if let first = failures.first {
+                    importError = failures.count == 1
+                        ? first
+                        : "\(failures.count) 个文件导入失败，例如：\(first)"
+                    showImportError = true
+                }
+            }
+            .alert("导入失败", isPresented: $showImportError) {
+                Button("好", role: .cancel) {}
+            } message: {
+                Text(importError ?? "")
+            }
         }
         .environmentObject(session)
         .environmentObject(session.store)
     }
+
+    /// txt / md / text；兜底放行 data，避免个别系统把 txt 标成冷门 UTI 选不了。
+    private static let importableTypes: [UTType] = [.plainText, .data]
 }
 
 public struct TextReaderView: View {

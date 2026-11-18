@@ -5,7 +5,7 @@ import TextReaderKit
 struct TextReaderDemoApp: App {
     var body: some Scene {
         WindowGroup {
-            TextReaderRootView(books: Self.sampleBooks())
+            TextReaderRootView(bundledBooks: Self.sampleBooks())
         }
     }
 
