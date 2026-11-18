@@ -1,15 +1,24 @@
 import Foundation
 import SwiftUI
+import UIKit
 
 /// 新版阅读器唯一状态源：章节号 + 页码，所有导航都走这里，
 /// UI 不各自记一份位置，也不从滚动偏移反推页码。
 public final class TextReaderSession: ObservableObject {
     public let store: TextReaderStore
 
-    @Published public var mode: TextReaderMode = .paged
-    @Published public var fontSize: CGFloat = 18 {
-        didSet { rebuildPages(restoreParagraph: currentParagraph) }
+    /// 阅读偏好（主题/字号/翻页/净化/页眉页脚/点击区域），UserDefaults 持久化。
+    @Published public var settings: TextReaderSettings {
+        didSet {
+            TextReaderSettings.persist(settings)
+            if settings.needsRepagination(from: oldValue) {
+                rebuildPages(restoreParagraph: currentParagraph)
+            }
+        }
     }
+
+    /// paged = 翻页（UIKit 分页器）；scroll = 滚动（SwiftUI ScrollView）。
+    @Published public var mode: TextReaderMode = .paged
     @Published public private(set) var book: TextBook?
     @Published public private(set) var chapters: [TextChapter] = []
     @Published public var chapterIndex = 0
@@ -19,9 +28,11 @@ public final class TextReaderSession: ObservableObject {
     @Published public private(set) var pages: [TextPageSlice] = []
 
     private var contentSize = CGSize(width: 375, height: 600)
+    private var customPattern: String?
 
     public init(store: TextReaderStore = TextReaderStore()) {
         self.store = store
+        self.settings = TextReaderSettings.load()
     }
 
     public var currentChapter: TextChapter? {
@@ -39,6 +50,11 @@ public final class TextReaderSession: ObservableObject {
         return pages[pageIndex].paragraph
     }
 
+    /// 阅读字体由设置派生（字号 + 字体风格）。
+    public var readingFont: UIFont {
+        settings.fontDesign.uiFont(size: settings.fontSize)
+    }
+
     private var anchorKey: String? {
         guard let book else { return nil }
         return "\(book.id)#\(chapterIndex)"
@@ -52,8 +68,8 @@ public final class TextReaderSession: ObservableObject {
 
     public func open(_ book: TextBook, customPattern: String? = nil) {
         self.book = book
-        let text = TextFileLoader.load(url: book.url)
-        chapters = TextChapterSplitter.split(text: text, customPattern: customPattern)
+        self.customPattern = customPattern
+        chapters = splitCurrentText()
         chapterIndex = 0
         let key = "\(book.id)#0"
         rebuildPages(restoreParagraph: store.anchor(for: key))
@@ -80,6 +96,24 @@ public final class TextReaderSession: ObservableObject {
 
     public func jumpToParagraph(_ paragraph: Int) {
         pageIndex = TextPaginator.pageIndex(forParagraph: paragraph, in: pages)
+    }
+
+    /// 用当前设置（净化开关 / 自定义分章正则）重切全文，尽量保住阅读位置。
+    public func resplit(pattern: String?) {
+        customPattern = pattern?.isEmpty == true ? nil : pattern
+        guard let book else { return }
+        let oldChapter = chapterIndex
+        let oldParagraph = currentParagraph
+        chapters = splitCurrentText()
+        chapterIndex = min(oldChapter, max(chapters.count - 1, 0))
+        rebuildPages(restoreParagraph: oldParagraph)
+    }
+
+    /// 净化开关切换：重新装载文本。
+    public func setPurified(_ on: Bool) {
+        guard settings.purified != on else { return }
+        settings.purified = on
+        resplit(pattern: customPattern)
     }
 
     /// 滚动模式只记录位置，不改页码状态（翻页页码与滚动偏移彻底分离）。
@@ -121,12 +155,20 @@ public final class TextReaderSession: ObservableObject {
                                text: text))
     }
 
+    private func splitCurrentText() -> [TextChapter] {
+        guard let book else { return [] }
+        let raw = TextFileLoader.load(url: book.url)
+        let text = settings.purified ? TextPurifier.clean(raw) : raw
+        return TextChapterSplitter.split(text: text, customPattern: customPattern)
+    }
+
     private func rebuildPages(restoreParagraph: Int?) {
         let all = paragraphs
         pages = TextPaginator.paginate(paragraphs: all,
                                        size: contentSize,
-                                       fontSize: fontSize,
-                                       lineSpacing: 6)
+                                       font: readingFont,
+                                       lineSpacing: 6,
+                                       indent: settings.indentParagraphs)
         let fallback = anchorKey.flatMap { store.anchor(for: $0) } ?? 0
         let target = min(max(restoreParagraph ?? fallback, 0), max(all.count - 1, 0))
         pageIndex = TextPaginator.pageIndex(forParagraph: target, in: pages)

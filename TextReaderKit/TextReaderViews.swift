@@ -74,12 +74,8 @@ public struct TextReaderRootView: View {
                     List {
                         ForEach(library.books) { book in
                             NavigationLink(value: book) {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(book.title).font(.headline)
-                                    Text(library.isImported(book) ? "导入的书" : "内置样例")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
+                                LibraryBookRow(book: book,
+                                               subtitle: library.isImported(book) ? "导入的书" : "内置样例")
                             }
                         }
                         .onDelete { indexSet in
@@ -168,6 +164,191 @@ public struct TextReaderRootView: View {
     private static let importableTypes: [UTType] = [.plainText, .data]
 }
 
+/// 书架行：色块封面 + 书名 + 来源（对齐主 App 书架的观感）。
+struct LibraryBookRow: View {
+    let book: TextBook
+    let subtitle: String
+
+    private var coverColors: [Color] {
+        let palette: [[Color]] = [
+            [Color(red: 0.58, green: 0.44, blue: 0.86), Color(red: 0.42, green: 0.28, blue: 0.72)],
+            [Color(red: 0.36, green: 0.62, blue: 0.82), Color(red: 0.22, green: 0.44, blue: 0.68)],
+            [Color(red: 0.84, green: 0.55, blue: 0.40), Color(red: 0.68, green: 0.38, blue: 0.26)],
+            [Color(red: 0.44, green: 0.70, blue: 0.50), Color(red: 0.28, green: 0.52, blue: 0.36)],
+        ]
+        var hash = 0
+        for byte in book.title.utf8 { hash = (hash &* 31 &+ Int(byte)) & 0xFFFF }
+        return palette[abs(hash) % palette.count]
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(LinearGradient(colors: coverColors,
+                                         startPoint: .topLeading,
+                                         endPoint: .bottomTrailing))
+                Text(String(book.title.prefix(6)))
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.white)
+                    .multilineTextAlignment(.center)
+                    .padding(5)
+            }
+            .frame(width: 48, height: 66)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(book.title)
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 4)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("《\(book.title)》，\(subtitle)")
+    }
+}
+
+// MARK: - 阅读器：全屏正文 + 页眉页脚 + 菜单浮层 + 目录抽屉
+
+public struct TextReaderView: View {
+    @EnvironmentObject private var session: TextReaderSession
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var showMenu = false
+    @State private var showCatalog = false
+    @State private var showSearch = false
+    @State private var showMore = false
+    @State private var showTapEditor = false
+    @State private var showSettingsPanel = false
+    @State private var showThemePanel = false
+
+    private var theme: TextTheme { session.settings.theme }
+
+    public init() {}
+
+    public var body: some View {
+        GeometryReader { geo in
+            // 正文排版区：给页眉/页脚各留 44pt，左右各留 20pt 边距。
+            let viewport = CGSize(width: max(geo.size.width - 40, 60),
+                                  height: max(geo.size.height - 88, 100))
+            ZStack {
+                theme.background.ignoresSafeArea()
+                content
+                    .padding(.top, 44)
+                    .padding(.bottom, 44)
+                    .padding(.horizontal, 20)
+                VStack(spacing: 0) {
+                    ReaderHeader(theme: theme)
+                    Spacer(minLength: 0)
+                    ReaderFooter(theme: theme)
+                }
+                .allowsHitTesting(false)
+                if showMenu {
+                    ReaderMenuOverlay(isPresented: $showMenu,
+                                      theme: theme,
+                                      showSettingsPanel: $showSettingsPanel,
+                                      showThemePanel: $showThemePanel,
+                                      onCatalog: { showCatalog = true },
+                                      onSearch: { showSearch = true },
+                                      onBack: { dismiss() },
+                                      onMoreSettings: {
+                                          showMenu = false
+                                          showMore = true
+                                      },
+                                      onTapZoneEditor: {
+                                          showMenu = false
+                                          showTapEditor = true
+                                      })
+                        .transition(.opacity)
+                }
+                if showTapEditor {
+                    TapZoneEditorOverlay(isPresented: $showTapEditor, theme: theme)
+                        .transition(.opacity)
+                }
+                if showCatalog {
+                    catalogOverlay(width: geo.size.width)
+                }
+            }
+            .animation(.easeInOut(duration: 0.2), value: showMenu)
+            .animation(.easeInOut(duration: 0.25), value: showCatalog)
+            .animation(.easeInOut(duration: 0.2), value: showTapEditor)
+            .onAppear { session.setContentSize(viewport) }
+            .onChange(of: geo.size) { _, newSize in
+                session.setContentSize(CGSize(width: max(newSize.width - 40, 60),
+                                              height: max(newSize.height - 88, 100)))
+            }
+        }
+        .toolbar(.hidden, for: .navigationBar)
+        .navigationBarBackButtonHidden(true)
+        .sheet(isPresented: $showMore) {
+            MoreSettingsSheet(theme: theme)
+                .environmentObject(session)
+        }
+        .sheet(isPresented: $showSearch) {
+            ReaderSearchSheet(theme: theme, onJump: {})
+                .environmentObject(session)
+        }
+        .onDisappear {
+            if session.settings.keepAwake { UIApplication.shared.isIdleTimerDisabled = false }
+        }
+    }
+
+    // MARK: 正文
+
+    @ViewBuilder
+    private var content: some View {
+        if session.mode == .paged {
+            TextPagerView(theme: theme,
+                          onTapMenu: { showMenu = true })
+                .id(session.settings.transition)
+        } else {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 10) {
+                        ForEach(session.paragraphs.indices, id: \.self) { index in
+                            Text(indented(session.paragraphs[index]))
+                                .font(session.settings.fontDesign.swiftFont(size: session.settings.fontSize))
+                                .foregroundStyle(theme.text)
+                                .lineSpacing(6)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .id("p\(index)")
+                                .onAppear { session.noteParagraph(index) }
+                        }
+                    }
+                }
+                .onTapGesture { showMenu = true }
+                .onAppear {
+                    proxy.scrollTo("p\(session.currentParagraph)", anchor: .top)
+                }
+            }
+        }
+    }
+
+    private func indented(_ paragraph: String) -> String {
+        guard session.settings.indentParagraphs, !paragraph.isEmpty else { return paragraph }
+        return "　　" + paragraph
+    }
+
+    // MARK: 目录抽屉
+
+    private func catalogOverlay(width: CGFloat) -> some View {
+        ZStack(alignment: .leading) {
+            Color.black.opacity(0.45)
+                .ignoresSafeArea()
+                .onTapGesture { showCatalog = false }
+                .accessibilityLabel("关闭目录")
+            TextCatalogDrawer(theme: theme,
+                              onClose: { showCatalog = false })
+                .frame(width: width * 0.88)
+                .environmentObject(session)
+                .transition(.move(edge: .leading))
+        }
+    }
+}
+
 final class PickerCoordinator: NSObject, UIDocumentPickerDelegate {
     let onPick: ([URL]) -> Void
     var onEvent: ((String) -> Void)?
@@ -185,240 +366,5 @@ final class PickerCoordinator: NSObject, UIDocumentPickerDelegate {
     func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
         onEvent?("系统回调：wasCancelled（用户取消或文件提供方拒绝授权）")
         DispatchQueue.main.async { self.onPick([]) }
-    }
-}
-
-public struct TextReaderView: View {
-    @EnvironmentObject private var session: TextReaderSession
-    @EnvironmentObject private var store: TextReaderStore
-    @State private var showCatalog = false
-    @State private var showNote = false
-    @State private var noteText = ""
-
-    public init() {}
-
-    private var isBookmarked: Bool {
-        guard let book = session.book else { return false }
-        return store.bookmark(in: book.id,
-                              chapterIndex: session.chapterIndex,
-                              paragraph: session.currentParagraph) != nil
-    }
-
-    public var body: some View {
-        GeometryReader { geo in
-            Group {
-                if session.mode == .paged {
-                    TabView(selection: $session.pageIndex) {
-                        ForEach(session.pages.indices, id: \.self) { index in
-                            ScrollView {
-                                Text(session.pages[index].text)
-                                    .font(.system(size: session.fontSize))
-                                    .lineSpacing(6)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(.horizontal, 20)
-                                    .padding(.vertical, 12)
-                            }
-                            .tag(index)
-                        }
-                    }
-                    .tabViewStyle(.page(indexDisplayMode: .never))
-                } else {
-                    ScrollViewReader { proxy in
-                        ScrollView {
-                            LazyVStack(alignment: .leading, spacing: 10) {
-                                ForEach(session.paragraphs.indices, id: \.self) { index in
-                                    Text(session.paragraphs[index])
-                                        .font(.system(size: session.fontSize))
-                                        .lineSpacing(6)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                        .id("p\(index)")
-                                        .onAppear { session.noteParagraph(index) }
-                                }
-                            }
-                            .padding(.horizontal, 20)
-                            .padding(.vertical, 12)
-                        }
-                        .onAppear {
-                            proxy.scrollTo("p\(session.currentParagraph)", anchor: .top)
-                        }
-                    }
-                }
-            }
-            .onAppear { session.setContentSize(geo.size) }
-            .onChange(of: geo.size) { _, newSize in session.setContentSize(newSize) }
-        }
-        .navigationTitle(session.currentChapter?.title ?? "阅读")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Picker("阅读方式", selection: $session.mode) {
-                    ForEach(TextReaderMode.allCases) { mode in
-                        Text(mode.label).tag(mode)
-                    }
-                }
-                .pickerStyle(.menu)
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    session.toggleBookmark()
-                } label: {
-                    Image(systemName: isBookmarked ? "bookmark.fill" : "bookmark")
-                }
-                .accessibilityLabel(isBookmarked ? "取消书签" : "加书签")
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    showCatalog = true
-                } label: {
-                    Image(systemName: "list.bullet")
-                }
-                .accessibilityLabel("目录")
-            }
-            ToolbarItem(placement: .bottomBar) {
-                HStack(spacing: 24) {
-                    Button { session.movePage(-1) } label: { Image(systemName: "chevron.left") }
-                        .accessibilityLabel("上一页")
-                    Button { showNote = true } label: { Image(systemName: "note.text") }
-                        .accessibilityLabel("记笔记")
-                    Button { session.movePage(1) } label: { Image(systemName: "chevron.right") }
-                        .accessibilityLabel("下一页")
-                }
-            }
-        }
-        .sheet(isPresented: $showCatalog) { TextCatalogSheet() }
-        .alert("记笔记", isPresented: $showNote) {
-            TextField("笔记内容", text: $noteText)
-            Button("取消", role: .cancel) { noteText = "" }
-            Button("保存") {
-                session.addNote(text: noteText)
-                noteText = ""
-            }
-        }
-    }
-}
-
-private struct TextCatalogSheet: View {
-    @EnvironmentObject private var session: TextReaderSession
-    @EnvironmentObject private var store: TextReaderStore
-    @Environment(\.dismiss) private var dismiss
-    @State private var tab = 0
-    @State private var query = ""
-
-    private var hits: [TextSearchHit] {
-        TextSearchEngine.search(query: query, chapters: session.chapters)
-    }
-
-    var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                Picker("", selection: $tab) {
-                    Text("目录").tag(0)
-                    Text("书签").tag(1)
-                    Text("笔记").tag(2)
-                    Text("搜索").tag(3)
-                }
-                .pickerStyle(.segmented)
-                .padding()
-
-                Group {
-                    switch tab {
-                    case 0: chapterList
-                    case 1: bookmarkList
-                    case 2: noteList
-                    default: searchList
-                    }
-                }
-            }
-            .navigationTitle("目录与标注")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("关闭") { dismiss() }
-                }
-            }
-        }
-    }
-
-    private var chapterList: some View {
-        List(session.chapters.indices, id: \.self) { index in
-            Button {
-                session.goChapter(index, paragraph: index == session.chapterIndex ? nil : 0)
-                dismiss()
-            } label: {
-                HStack {
-                    Image(systemName: index == session.chapterIndex ? "checkmark.circle.fill" : "circle")
-                    Text(session.chapters[index].title)
-                        .foregroundStyle(.primary)
-                }
-            }
-            .buttonStyle(.plain)
-        }
-    }
-
-    private var bookmarkList: some View {
-        List {
-            if let book = session.book {
-                ForEach(store.bookmarks(in: book.id)) { mark in
-                    Button {
-                        session.goChapter(mark.chapterIndex, paragraph: mark.paragraph)
-                        dismiss()
-                    } label: {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(mark.chapterTitle).font(.subheadline.weight(.medium))
-                            Text("第 \(mark.paragraph + 1) 段 · \(mark.preview)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(2)
-                        }
-                    }
-                    .swipeActions {
-                        Button("删除", role: .destructive) { store.removeBookmark(mark) }
-                    }
-                }
-            }
-        }
-    }
-
-    private var noteList: some View {
-        List {
-            if let book = session.book {
-                ForEach(store.notes(in: book.id)) { note in
-                    Button {
-                        session.goChapter(note.chapterIndex, paragraph: note.paragraph)
-                        dismiss()
-                    } label: {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(note.chapterTitle).font(.subheadline.weight(.medium))
-                            Text(note.text.isEmpty ? "（空笔记）" : note.text)
-                                .font(.caption)
-                                .lineLimit(3)
-                        }
-                    }
-                    .swipeActions {
-                        Button("删除", role: .destructive) { store.removeNote(note) }
-                    }
-                }
-            }
-        }
-    }
-
-    private var searchList: some View {
-        List {
-            TextField("至少输入 2 个字", text: $query)
-                .textFieldStyle(.roundedBorder)
-            if query.count >= 2 {
-                ForEach(hits) { hit in
-                    Button {
-                        session.goChapter(hit.chapterIndex, paragraph: hit.paragraph)
-                        dismiss()
-                    } label: {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(hit.chapterTitle).font(.subheadline.weight(.medium))
-                            Text(hit.snippet).font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                }
-            }
-        }
     }
 }

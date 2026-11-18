@@ -33,28 +33,44 @@ public enum TextPaginator {
     }
 
     public static func attributed(paragraphs: [String],
-                                  fontSize: CGFloat,
-                                  lineSpacing: CGFloat) -> NSAttributedString {
+                                  font: UIFont,
+                                  lineSpacing: CGFloat,
+                                  indent: Bool) -> NSAttributedString {
         let style = NSMutableParagraphStyle()
         style.lineSpacing = lineSpacing
         style.paragraphSpacing = 6
         style.lineBreakMode = .byWordWrapping
+        // 首行缩进两字符；颜色交给宿主视图（UITextView.textColor），
+        // 分页排版只关心度量，不带 foregroundColor。
+        if indent { style.firstLineHeadIndent = font.pointSize * 2 }
         return NSAttributedString(string: paragraphs.joined(separator: "\n"),
                                   attributes: [
-                                      .font: UIFont.systemFont(ofSize: fontSize),
-                                      .foregroundColor: UIColor.label,
+                                      .font: font,
                                       .paragraphStyle: style
                                   ])
     }
 
+    /// 给切片文本按同一套样式重建属性串，保证渲染度量与分页一致。
+    public static func sliceAttributed(_ text: String,
+                                       font: UIFont,
+                                       lineSpacing: CGFloat,
+                                       indent: Bool) -> NSAttributedString {
+        return attributed(paragraphs: text.components(separatedBy: "\n"),
+                          font: font,
+                          lineSpacing: lineSpacing,
+                          indent: indent)
+    }
+
     public static func paginate(paragraphs: [String],
                                 size: CGSize,
-                                fontSize: CGFloat,
-                                lineSpacing: CGFloat) -> [TextPageSlice] {
+                                font: UIFont,
+                                lineSpacing: CGFloat,
+                                indent: Bool) -> [TextPageSlice] {
         guard !paragraphs.isEmpty, size.width > 40, size.height > 60 else { return [] }
         let attributed = self.attributed(paragraphs: paragraphs,
-                                         fontSize: fontSize,
-                                         lineSpacing: lineSpacing)
+                                         font: font,
+                                         lineSpacing: lineSpacing,
+                                         indent: indent)
         let starts = paragraphStarts(paragraphs)
         let framesetter = CTFramesetterCreateWithAttributedString(attributed as CFAttributedString)
         let path = CGPath(rect: CGRect(origin: .zero, size: size), transform: nil)
