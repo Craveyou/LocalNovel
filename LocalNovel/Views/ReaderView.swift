@@ -216,7 +216,10 @@ struct ReaderView: View {
         guard let anchor = ProgressStore.shared.anchor(for: displayChapter.id),
               anchor.hasPrefix("blk-p"),
               let value = Int(anchor.dropFirst("blk-p".count)) else { return 0 }
-        return max(0, value)
+        // 与 restoreParagraph / anchorParagraph 同口径：重分章后旧锚点可能越界，
+        // 不加书签时会把书签记到不存在的段落，preview 空、跳回静默失败。
+        guard value >= 0, value < paragraphs.count else { return 0 }
+        return value
     }
 
     /// 当前位置是否已有书签
@@ -832,8 +835,11 @@ struct ReaderView: View {
             chapters: chapters,
             bookId: bookId,
             bookTitle: bookTitle,
+            // 编码换一次，正文就换一份；stamp 不带编码会让分页指纹不变，
+            // 切 GB18030 后屏幕还停在旧（乱码）排版上。
             contentStamp: ReaderTextPipeline.stamp(
-                rules: prefs.activePurifyRules),
+                rules: prefs.activePurifyRules)
+                + "|enc-\(library.textEncoding(for: displayChapter).rawValue)",
             handle: coreHandle,
             library: library,
             prefs: prefs,

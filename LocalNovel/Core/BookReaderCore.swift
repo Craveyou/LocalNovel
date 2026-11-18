@@ -121,6 +121,9 @@ final class BookReaderController: UIViewController {
     /// 当前引擎对应的阅读方式；变了就换引擎（对齐旧版 `.id(pageTurn)` 的重建语义）
     private var engineStyleKey = ""
     private var didEnter = false
+    /// 进阅读器时那一次明确的起始段，只在首个 apply 消费。
+    /// 以前 entry.paragraph 完全没被读，等于丢掉了上层给的位置意图。
+    private var initialRestore: Int?
     private var warmWorkItem: DispatchWorkItem?
 
     init(entry: BookReaderEntry,
@@ -164,7 +167,10 @@ final class BookReaderController: UIViewController {
         relocateIfStale()
         if !didEnter { enter() }
         swapEngineIfNeeded()
-        applyCurrent(restoring: nil)
+        // 首帧用上层给的明确段落；之后一律读锚点，不再被入口意图顶住。
+        let restore = initialRestore
+        initialRestore = nil
+        applyCurrent(restoring: restore)
     }
 
     // MARK: 导航（全部在本层完成，不经 SwiftUI）
@@ -189,7 +195,11 @@ final class BookReaderController: UIViewController {
     /// 进度条跨章：按「章索引 + 章内比例」换算出目标段落再定位
     func jumpTo(chapter: Chapter, fraction: Double) {
         guard let index = chapters.firstIndex(where: { $0.id == chapter.id }) else { return }
-        let count = library.paragraphs(for: chapter).count
+        // 与阅读器 / RootView 同口径：净化删掉的空段不能算进章内比例
+        let count = ReaderTextPipeline.displayCount(
+            chapterId: chapter.id,
+            raw: library.paragraphs(for: chapter),
+            rules: prefs.activePurifyRules)
         let clamped = min(max(fraction, 0), 1)
         let paragraph = count > 0
             ? min(max(Int((Double(count - 1) * clamped).rounded()), 0), count - 1)
@@ -283,6 +293,7 @@ final class BookReaderController: UIViewController {
     /// 首次进入：按入口意图定位（点目录 / 书签 / 进度条带来的明确段落）
     private func enter() {
         didEnter = true
+        initialRestore = max(0, entry.paragraph)
         if let index = chapters.firstIndex(where: { $0.id == entry.chapterId }) {
             chapterIndex = index
         } else if let last = ProgressStore.shared.lastChapterId(for: bookId),

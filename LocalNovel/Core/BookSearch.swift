@@ -43,8 +43,10 @@ final class BookSearchModel: ObservableObject {
 
     // MARK: 对外
 
-    func start(query rawQuery: String, chapters: [Chapter]) {
+    /// rules 传 nil 时取当前生效的净化规则。必须在主线程调用（读 Preferences / 生成规则快照）。
+    func start(query rawQuery: String, chapters: [Chapter], rules: [PurifyRule]? = nil) {
         let keyword = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        let searchRules = rules ?? Preferences.shared.activePurifyRules
         cancel()
 
         guard keyword.count >= Self.minKeywordLength else {
@@ -87,14 +89,17 @@ final class BookSearchModel: ObservableObject {
                 let preferred = TextEncodingStore.option(for: TextEncodingStore.bookKey(for: chapter))
                 let body = Self.bodyText(of: chapter, preferred: preferred)
                 if !body.isEmpty {
-                    let paragraphs = TextLoader.paragraphs(body)
+                    let raw = TextLoader.paragraphs(body)
+                    // 与阅读器共用同一套净化 / 去空段变换：段号就是 blk-pN 的 N，
+                    // 否则净化开启后搜索命中下标和屏幕段落属于两个空间，点了跳错。
+                    let displayed = ReaderTextPipeline.displayPairs(raw: raw, rules: searchRules)
                     let title = chapter.displayTitle
-                    for (paragraphIndex, paragraph) in paragraphs.enumerated() {
-                        guard let snippet = Self.snippet(in: paragraph, keyword: keyword) else { continue }
+                    for pair in displayed {
+                        guard let snippet = Self.snippet(in: pair.text, keyword: keyword) else { continue }
                         buffer.append(SearchHit(chapterIndex: index,
                                                 chapterId: chapter.id,
                                                 chapterTitle: title,
-                                                paragraph: paragraphIndex,
+                                                paragraph: pair.index,
                                                 snippet: snippet))
                         totalHits += 1
                         if totalHits >= Self.maxHits { stopped = true; break }

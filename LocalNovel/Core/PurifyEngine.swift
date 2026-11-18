@@ -60,6 +60,10 @@ enum PurifyEngine {
 enum ReaderTextPipeline {
     private static var cache: [String: [String]] = [:]
     private static var order: [String] = []
+    /// 每次 reset（净化规则变 / 切编码 / 重分章）都+1。
+    /// 后台预计算拿的是进入时的 raw 副本，回来时若世代号已变，结果必须丢弃，
+    /// 否则旧编码的乱码会盖掉刚解出来的新正文。
+    private static var generation = 0
 
     /// 正文内容的决定性因素（净化规则）的指纹。
     /// 分页重建判断要用它：只看「段数 + 首末段长度」的话，
@@ -69,6 +73,33 @@ enum ReaderTextPipeline {
         let active = rules.filter { $0.isEnabled && !$0.pattern.isEmpty }
         guard !active.isEmpty else { return "raw" }
         return PurifyEngine.fingerprint(active)
+    }
+
+    /// 唯一一段「净化 → 去空段」的变换，阅读器/搜索/预计算必须共用。
+    /// 返回的 index 是净化后的段号（与 blk-pN 一致）；没启用规则时直接沿用原文段号。
+    private static func transformed(raw: [String],
+                                    active: [PurifyRule]) -> [(index: Int, text: String)] {
+        guard !active.isEmpty else {
+            return raw.enumerated().map { (index: $0.offset, text: $0.element) }
+        }
+        var result: [(index: Int, text: String)] = []
+        result.reserveCapacity(raw.count)
+        var index = 0
+        for item in raw {
+            let text = PurifyEngine.apply(active, to: item)
+            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+            result.append((index: index, text: text))
+            index += 1
+        }
+        return result
+    }
+
+    /// 搜索用：拿到与阅读器完全同口径的「段号 + 文本」对。
+    /// 只在后台读 raw，不碰任何共享缓存。
+    static func displayPairs(raw: [String],
+                             rules: [PurifyRule]) -> [(index: Int, text: String)] {
+        let active = rules.filter { $0.isEnabled && !$0.pattern.isEmpty }
+        return transformed(raw: raw, active: active)
     }
 
     /// 全书可能几千段，这里只在「章节 + 规则」变化时重算
@@ -81,16 +112,16 @@ enum ReaderTextPipeline {
         let key = "\(chapterId)|\(PurifyEngine.fingerprint(active))"
         if let hit = cache[key] { return hit }
 
-        let result = raw
-            .map { PurifyEngine.apply(active, to: $0) }
-            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        let value = transformed(raw: raw, active: active).map { $0.text }
+        store(key: key, value: value)
+        return value
+    }
 
-        cache[key] = result
-        order.append(key)
-        if order.count > 3 {
-            cache[order.removeFirst()] = nil
-        }
-        return result
+    /// 进度条 / 跨章跳转必须按「阅读器实际显示的段数」换算，不能拿原文段数。
+    static func displayCount(chapterId: String,
+                             raw: [String],
+                             rules: [PurifyRule]) -> Int {
+        paragraphs(chapterId: chapterId, raw: raw, rules: rules).count
     }
 
     /// 后台预计算某一章的净化结果，算完在主线程写缓存再回调。
@@ -111,12 +142,11 @@ enum ReaderTextPipeline {
             completion()
             return
         }
+        let token = generation
         DispatchQueue.global(qos: .userInitiated).async {
-            let result = raw
-                .map { PurifyEngine.apply(active, to: $0) }
-                .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-            let value = result
+            let value = transformed(raw: raw, active: active).map { $0.text }
             DispatchQueue.main.async {
+                guard token == generation else { completion(); return }
                 store(key: key, value: value)
                 completion()
             }
@@ -125,14 +155,16 @@ enum ReaderTextPipeline {
 
     /// 缓存只允许主线程写（读者可能在另一章取用）
     private static func store(key: String, value: [String]) {
+        if let position = order.firstIndex(of: key) { order.remove(at: position) }
         cache[key] = value
         order.append(key)
-        if order.count > 3 {
+        while order.count > 3 {
             cache[order.removeFirst()] = nil
         }
     }
 
     static func reset() {
+        generation &+= 1
         cache.removeAll()
         order.removeAll()
     }

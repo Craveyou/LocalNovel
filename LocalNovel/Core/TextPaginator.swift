@@ -218,14 +218,18 @@ enum TextPaginator {
         return result
     }
 
-    /// 段落下标 → 页码（取最后一个「起始段落 ≤ 目标」的页）
+    /// 段落下标 → 页码：定位到「这一段第一次出现的页」。
+    ///
+    /// 以前取最后一个 slice.paragraph <= 目标 的页：目标段跨 3 页时三页都满足，
+    /// 结果落在段尾。书签 / 续读记的是段首语义，必须取第一次出现。
+    /// 目标段本身没有独立起始页（被净化删空）时，退回它前面那一页。
     static func pageIndex(forParagraph paragraph: Int, in slices: [ReaderPageSlice]) -> Int {
         guard !slices.isEmpty else { return 0 }
-        var result = 0
-        for (index, slice) in slices.enumerated() {
-            if slice.paragraph <= paragraph { result = index } else { break }
+        if let index = slices.firstIndex(where: { $0.paragraph == paragraph }) { return index }
+        if let index = slices.firstIndex(where: { $0.paragraph > paragraph }) {
+            return max(0, index - 1)
         }
-        return min(result, slices.count - 1)
+        return slices.count - 1
     }
 
     /// 当前页的进度文案：「3 / 128」

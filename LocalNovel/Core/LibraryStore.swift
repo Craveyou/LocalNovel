@@ -402,6 +402,9 @@ final class LibraryStore: ObservableObject {
         textCache = textCache.filter { !$0.key.hasPrefix(prefix) }
         paragraphCache = paragraphCache.filter { !$0.key.hasPrefix(prefix) }
         splitCache.removeValue(forKey: book.id)
+        // 重切会换掉全部章节 id；旧的后台净化预计算也一起作废，
+        // 否则晚回来的结果会把新章节的内容写回旧键。
+        ReaderTextPipeline.reset()
         ProgressStore.shared.resetAnchors(chapterPathPrefix: prefix)
         // 隐藏记录存的也是 chapter.id，重切后全部失配 —— 不清掉会让
         // 之前「删掉」的章节以新 id 重新冒出来，还占着设置页的统计。
@@ -650,6 +653,9 @@ final class LibraryStore: ObservableObject {
         let keepParagraphs = paragraphCache.filter { !$0.key.hasPrefix(prefix) }
         textCache = keepText
         paragraphCache = keepParagraphs
+        // 净化缓存的 key 不含编码：不 reset 的话切到 GB18030 仍读到乱码结果。
+        // generation+1 同时作废旧编码的后台预计算，防止它晚回来覆盖。
+        ReaderTextPipeline.reset()
         objectWillChange.send()
     }
 
@@ -720,5 +726,6 @@ final class LibraryStore: ObservableObject {
         contentCache.removeAll()
         textCache.removeAll()
         paragraphCache.removeAll()
+        ReaderTextPipeline.reset()
     }
 }

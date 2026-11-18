@@ -1025,10 +1025,23 @@ final class CoverPageController: PagedBaseController {
     }
 
     private func prepare(direction dir: Int) {
+        guard dir != 0 else {
+            direction = 0
+            prepared = false
+            return
+        }
         // 以「屏幕上真正显示的那一页」为基准：程序化翻页的动画可能还在播，
         // 此时 currentIndex 已经前移，用它算目标会跳过一页。
         let target = displayedIndex + dir
-        guard dir != 0, target >= 0, target < pages.count else {
+        // 覆盖引擎没有平移 / 卷曲那种边缘 swipe：末页继续右滑必须在这里接上续章，
+        // 否则 prepare 直接失败，手势到边界就顶住（点击右侧虽然能进，手势不行）。
+        if dir > 0, target >= pages.count {
+            _ = advanceToNextChapter(at: displayedIndex)
+            direction = 0
+            prepared = false
+            return
+        }
+        guard target >= 0, target < pages.count else {
             direction = 0
             prepared = false
             return

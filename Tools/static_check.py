@@ -350,8 +350,8 @@ def main():
           and "DocumentsBootstrap.guideFileName" in resolver)
     check("切回前台补写说明文件", "DocumentsBootstrap.ensureVisibleInFilesApp()" in store)
     check("版本号提升以刷新系统元数据",
-          "<string>2.17.0</string>" in plist and "CURRENT_PROJECT_VERSION = 23" in pbx
-          and "MARKETING_VERSION = 2.17.0" in pbx)
+          "<string>2.17.1</string>" in plist and "CURRENT_PROJECT_VERSION = 24" in pbx
+          and "MARKETING_VERSION = 2.17.1" in pbx)
     check("UI 给出「文件 App 搜索本地小说」兜底路径",
           "搜索框搜「本地小说」" in welcome and "搜索「本地小说」" in store)
     check("AppIcon asset catalog（1024 + Contents.json）",
@@ -718,9 +718,9 @@ def main():
     check("文档正文含双格式包一节",
           "### 5. 同一部书按格式分成两个包（PDF 包 + 图片包）"
           in (ROOT / "Docs" / "漫画目录结构说明.md").read_text(encoding="utf-8"))
-    check("版本升到 2.17.0 / build 23",
-          "<string>2.17.0</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>23</string>" in plist)
+    check("版本升到 2.17.1 / build 24",
+          "<string>2.17.1</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>24</string>" in plist)
 
 
     print("\n== N. 本轮：底部三页 / 短剧 / NAS 连接 ==")
@@ -971,9 +971,9 @@ def main():
     check("远端文件缓存有上限并会按最久未修改淘汰",
           "static let byteLimit: Int64 = 512 * 1024 * 1024" in nas_lib
           and "Task.detached(priority: .utility) { trim(folder: folder, limit: byteLimit) }" in nas_lib)
-    check("版本升到 2.17.0 / build 23",
-          "<string>2.17.0</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>23</string>" in plist)
+    check("版本升到 2.17.1 / build 24",
+          "<string>2.17.1</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>24</string>" in plist)
 
     print("\n== S. 本轮：txt 乱码（UTF-16 误判 / GBK / Big5） ==")
     encoding_src = (APP / "Core" / "TextEncoding.swift").read_text(encoding="utf-8")
@@ -1287,8 +1287,8 @@ def main():
     check("相邻章正文预取（切章不空等；已下沉到纯 UIKit 阅读核心）",
           "func schedulePrefetch()" in (APP / "Core" / "BookReaderCore.swift").read_text(encoding="utf-8")
           and "library.paragraphs(for: next)" in (APP / "Core" / "BookReaderCore.swift").read_text(encoding="utf-8"))
-    check("版本已升到 2.17.0 / build 23",
-          "2.17.0" in (APP / "Info.plist").read_text(encoding="utf-8"))
+    check("版本已升到 2.17.1 / build 24",
+          "2.17.1" in (APP / "Info.plist").read_text(encoding="utf-8"))
 
     print("\n== Z. 本轮：上下菜单栏 + 进度滑杆 + 目录面板 ==")
     bars = (APP / "Views" / "ReaderChromeBars.swift").read_text(encoding="utf-8")
@@ -1783,9 +1783,9 @@ def main():
           and "let waiters = self.splitWaiters.removeValue(forKey: book.id) ?? []" in store
           and "waiters.forEach { $0() }" in store)
 
-    check("版本已升到 2.17.0 / build 23",
-          "<string>2.17.0</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>23</string>" in plist)
+    check("版本已升到 2.17.1 / build 24",
+          "<string>2.17.1</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>24</string>" in plist)
 
     # ------------------------------------------------------------------
     # X4. 2.15.0：删掉字体/简繁/音量键/启动直进/自定义主题 + 修跳转
@@ -1883,9 +1883,38 @@ def main():
     check("旧 SwiftUI 桥 PagedReaderView 已删除",
           "struct PagedReaderView: UIViewControllerRepresentable" not in paged_src)
 
-    check("版本已升到 2.17.0 / build 23",
-          "<string>2.17.0</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>23</string>" in plist)
+    # ------------------------------------------------------------------
+    # X10. 2.17.1：修 P1+P2（净化下标 / 定位 / 覆盖翻页续章）
+    # ------------------------------------------------------------------
+    print("\n== X10. 本轮：修 P1+P2（2.17.1） ==")
+    search_src = (APP / "Core" / "BookSearch.swift").read_text(encoding="utf-8")
+    check("全文搜索与阅读器共用净化后段号",
+          "ReaderTextPipeline.displayPairs(raw: raw, rules: searchRules)" in search_src)
+    check("净化缓存有世代号，后台旧结果不能覆盖新正文",
+          "private static var generation = 0" in purify_src
+          and "guard token == generation" in purify_src
+          and "if let position = order.firstIndex(of: key) { order.remove(at: position) }" in purify_src)
+    check("跨章进度条与核心按净化后段数换算",
+          "ReaderTextPipeline.displayCount(" in root_now
+          and "ReaderTextPipeline.displayCount(" in core_src)
+    check("分页指纹含文本编码（切编码即重建）",
+          "enc-\\(library.textEncoding(for: displayChapter).rawValue)" in reader_now)
+    check("切编码 / 重分章 / 全量重扫都会重置净化缓存",
+          "ReaderTextPipeline.reset()" in store)
+    check("跳段落到段首而不是跨页段尾",
+          "slices.firstIndex(where: { $0.paragraph == paragraph })" in paginator)
+    check("书签段号越界回落章首",
+          "guard value >= 0, value < paragraphs.count else { return 0 }" in reader_now)
+    check("新核心消费入口明确段落",
+          "initialRestore = max(0, entry.paragraph)" in core_src
+          and "let restore = initialRestore" in core_src)
+    check("覆盖翻页末页继续右滑接上续章",
+          "if dir > 0, target >= pages.count" in paged_src
+          and "_ = advanceToNextChapter(at: displayedIndex)" in paged_src)
+
+    check("版本已升到 2.17.1 / build 24",
+          "<string>2.17.1</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>24</string>" in plist)
 
     print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")
     if FAIL:

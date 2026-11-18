@@ -320,7 +320,12 @@ struct RootView: View {
         autoRestoredChapterId = chapter.id
         var paragraph = 0
         if !chapter.isPlaceholder {
-            let count = library.paragraphs(for: chapter).count
+            // 必须按「阅读器实际显示的段数」换算：净化会删空段，
+            // 用原文段数会让跨章进度条系统性落到错误段落。
+            let count = ReaderTextPipeline.displayCount(
+                chapterId: chapter.id,
+                raw: library.paragraphs(for: chapter),
+                rules: prefs.activePurifyRules)
             let clamped = min(max(fraction, 0), 1)
             paragraph = count > 0
                 ? min(max(Int((Double(count - 1) * clamped).rounded()), 0), count - 1)
