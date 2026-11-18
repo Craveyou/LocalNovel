@@ -88,9 +88,11 @@ public enum TextFontDesign: String, CaseIterable, Identifiable, Codable {
         switch self {
         case .system: return UIFont.systemFont(ofSize: size)
         case .rounded:
-            return UIFont(descriptor: base.withDesign(.rounded), size: size)
+            if let descriptor = base.withDesign(.rounded) { return UIFont(descriptor: descriptor, size: size) }
+            return UIFont.systemFont(ofSize: size)
         case .serif:
-            return UIFont(descriptor: base.withDesign(.serif), size: size)
+            if let descriptor = base.withDesign(.serif) { return UIFont(descriptor: descriptor, size: size) }
+            return UIFont.systemFont(ofSize: size)
         }
     }
 
