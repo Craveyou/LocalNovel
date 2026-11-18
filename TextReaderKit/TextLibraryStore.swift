@@ -39,8 +39,14 @@ public final class TextLibraryStore: ObservableObject {
         }
 
         let gotAccess = url.startAccessingSecurityScopedResource()
-        emit("安全作用域：\(gotAccess ? "已获取" : "不需要")")
+        emit("安全作用域：\(gotAccess ? "已获取" : "不需要（系统已拷贝）")")
         defer { if gotAccess { url.stopAccessingSecurityScopedResource() } }
+
+        // 沙盒写入自检：排除 App 容器本身不可写的极端情况
+        let probe = libraryDir.appendingPathComponent(".probe")
+        let writable = (try? "1".write(to: probe, atomically: true, encoding: .utf8)) != nil
+        try? FileManager.default.removeItem(at: probe)
+        emit("书库目录可写：\(writable ? "是" : "否！")")
 
         // 同名文件不静默覆盖：加序号成《书名 2.txt》
         let base = url.deletingPathExtension().lastPathComponent

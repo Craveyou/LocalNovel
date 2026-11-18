@@ -30,6 +30,9 @@ public struct TextReaderRootView: View {
             return
         }
         log("选择器回调：\(urls.count) 个文件")
+        for url in urls {
+            log("  来源路径：\(url.path)")
+        }
         let failures = urls.compactMap { library.importBook(from: $0) }
         if let first = failures.first {
             importError = failures.count == 1
@@ -41,13 +44,15 @@ public struct TextReaderRootView: View {
 
     /// 不经 sheet、不经 SwiftUI 包装，直接把 UIKit 选择器压到当前视图栈顶。
     /// delegate 由 pickerKeeper 强持有，回调保证可达。
+    /// asCopy: true = 系统直接把选中文件拷贝进 App 沙盒（tmp），
+    /// 不依赖文件提供方授权 —— 对「最近项目」/网盘里的文件成功率高得多。
     private func presentPicker() {
-        log("准备弹出文档选择器")
+        log("准备弹出文档选择器（拷贝模式）")
         let coordinator = PickerCoordinator(onPick: handlePicked)
+        coordinator.onEvent = { [weak self] line in self?.log(line) }
         pickerKeeper = coordinator
         let picker = UIDocumentPickerViewController(forOpeningContentTypes: Self.importableTypes,
-                                                    asCopy: false)
-        picker.allowsMultipleSelection = true
+                                                    asCopy: true)
         picker.delegate = coordinator
         guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
               var top = scene.keyWindow?.rootViewController else {
@@ -165,6 +170,7 @@ public struct TextReaderRootView: View {
 
 final class PickerCoordinator: NSObject, UIDocumentPickerDelegate {
     let onPick: ([URL]) -> Void
+    var onEvent: ((String) -> Void)?
 
     init(onPick: @escaping ([URL]) -> Void) {
         self.onPick = onPick
@@ -172,10 +178,12 @@ final class PickerCoordinator: NSObject, UIDocumentPickerDelegate {
 
     func documentPicker(_ controller: UIDocumentPickerViewController,
                         didPickDocumentsAt urls: [URL]) {
+        onEvent?("系统回调：didPick（\(urls.count) 个）")
         DispatchQueue.main.async { self.onPick(urls) }
     }
 
     func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+        onEvent?("系统回调：wasCancelled（用户取消或文件提供方拒绝授权）")
         DispatchQueue.main.async { self.onPick([]) }
     }
 }
