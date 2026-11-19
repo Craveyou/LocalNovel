@@ -1,0 +1,388 @@
+import SwiftUI
+
+/// 資源庫, a tab since Phase 5's 5h (decisions 30 and 31): where every source lives, grouped by
+/// kind. 古騰堡 and 青空文庫 open what they offer, a remote library its catalog, and the
+/// source configurations and the RSS feeds are managed here. Adding a 來源配置, a module or a
+/// remote library is 設定's (maintainer, 2026-10-27: 「把添加資源的入口都放在設置頁」): this page
+/// lists what is there. 探索 stays the cover wall across them all.
+///
+/// Laid out by the old 探索 root's 格狀 and 每列欄數, now in this page's •••, as cards the way
+/// the maintainer's reference draws its media servers and modules (2026-10-13). The search
+/// narrows the sources in place, as the old root and Legado's explore page do.
+///
+/// One stack, with 探索's destinations: every page here is one 探索 already pushes.
+struct LibraryTabRoot: View {
+    @ObservedObject var browser: BrowserState
+    @EnvironmentObject private var store: BookStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var availability = PublicLibraryAvailability.shared
+    @ObservedObject private var connections = RemoteLibraryConnectionStore.shared
+    @ObservedObject private var sourceStore = BookSourceStore.shared
+    @ObservedObject private var aozora = AozoraCatalogStore.shared
+    @ObservedObject private var rss = RSSStore.shared
+    @ObservedObject private var modules = RuleModuleLibrary.shared
+    @AppStorage(ExploreSettings.showsGridKey) private var showsGrid = true
+    @AppStorage(ExploreSettings.gridColumnCountKey) private var gridColumnCount = ExploreGridDensity.default.rawValue
+    /// The first-launch card saying what moved here (maintainer's choice, 2026-10-13).
+    @AppStorage(Self.noticeDismissedKey) private var noticeDismissed = false
+
+    @State private var path = NavigationPath()
+    @State private var browserEntry: BrowserEntryPresentation?
+    @State private var query = ""
+    /// The sources with a discover page, and their groups: worked out when the sources change,
+    /// not on every redraw, since a reader may have tens of thousands.
+    @State private var exploreSources: [BookSource] = []
+    @State private var sourceGroups: [LibrarySourceGroups.Group] = []
+    @State private var sourceActionSheet: BookSourceActionSheet?
+    @State private var sourcePendingDeletion: BookSource?
+    /// 新手導覽's 連接書庫: 遠端書庫's page over the root.
+    @Environment(OnboardingState.self) private var onboarding: OnboardingState?
+    @State private var showsRemoteLibrarySettings = false
+
+    static let noticeDismissedKey = "library.tabNoticeDismissed"
+
+    private struct BrowserEntryPresentation: Identifiable {
+        let id = UUID()
+        let entry: BrowserEntry
+    }
+
+    private var libraries: [LibraryListing] {
+        LibraryListing.available(connections: connections.connections, librariesAvailable: availability.isAvailable)
+    }
+
+    private var trimmedQuery: String {
+        query.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// The sources whose name or group holds the search, as Legado's explore search narrows them.
+    private var matchingSources: [BookSource] {
+        DiscoverViewModel.exploreSources(exploreSources, inGroup: nil, matching: trimmedQuery)
+    }
+
+    var body: some View {
+        NavigationStack(path: $path) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: DSSpacing.xl) {
+                    if trimmedQuery.isEmpty {
+                        if !noticeDismissed {
+                            notice
+                        }
+                        RuleModuleSection(library: modules) { key, layout in
+                            publicLibraryTile(key, layout: layout)
+                        }
+                        remoteLibrariesSection
+                        sourcesSection
+                        subscriptionsSection
+                    } else if !matchingSources.isEmpty {
+                        LibrarySection(localized("來源配置")) { layout in
+                            ForEach(matchingSources) { source in
+                                sourceEntry(source, layout: layout)
+                            }
+                        }
+                    }
+                }
+                // The page's full width even when a search finds nothing: while the search is
+                // active the scroll view takes its content's width (the old 探索 root, iOS 27).
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, DSSpacing.lg)
+                .padding(.vertical, DSSpacing.sm)
+                .animation(reduceMotion ? nil : DSAnimation.standard, value: showsGrid)
+                .rootTabTitleScrollAnchor()
+            }
+            .overlay {
+                if !trimmedQuery.isEmpty && matchingSources.isEmpty {
+                    UnavailableSearchView(text: trimmedQuery)
+                }
+            }
+            .rootTabSearchScrollEdges()
+            .scrollDismissesKeyboard(.immediately)
+            .background(PageBackgroundView(scope: .explore).ignoresSafeArea())
+            .pageBackgroundToolbar(for: .explore)
+            .rootTabTitle(localized("資源庫"), onScroll: .minimizesBar)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) { moreControl }
+            }
+            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always),
+                        prompt: localized("搜索來源配置"))
+            .onReceive(sourceStore.sourcesPublisher) { library in
+                // The published value: the publisher sends before the store holds it.
+                SourcePerfTrace.span("library.sourceGroups", "\(library.count) sources", thresholdMs: 5) {
+                    exploreSources = DiscoverViewModel.exploreSources(in: library)
+                    sourceGroups = LibrarySourceGroups.groups(of: exploreSources)
+                }
+            }
+            .bookSourceActionSheets(sheet: $sourceActionSheet)
+            .onAppear { LibraryTabTiming.noteAppeared() }
+            .task { await modules.loadIfNeeded() }
+            .exploreRouteDestinations(openBrowser: { browserEntry = BrowserEntryPresentation(entry: $0) })
+            .remoteLibraryDestinations()
+            .publicLibraryDestinations()
+            .navigationDestination(isPresented: $showsRemoteLibrarySettings) {
+                RemoteLibrarySettingsView()
+            }
+            .onChange(of: onboarding?.pendingStart, initial: true) { _, _ in
+                guard let onboarding else { return }
+                // Over the root, whatever a replayed tour left this stack on.
+                if onboarding.take(.connectLibrary) {
+                    path = NavigationPath()
+                    showsRemoteLibrarySettings = true
+                } else if onboarding.take(.addSources) {
+                    showsRemoteLibrarySettings = false
+                    path = NavigationPath()
+                    // As 管理來源配置 in ••• pushes it.
+                    path.append(ExploreNavigationRoute.sourceManager)
+                }
+            }
+        }
+        // On the stack, not its root, as 探索's covers (`ExploreHomeRoot`): on the root, the
+        // browser's 書籤 sheet closed as it opened, on the iOS 26.5 simulator as on 26.4.1
+        // (`BrowserCoverUITests`).
+        .fullScreenCover(item: $browserEntry) { presentation in
+            NavigationStack {
+                BrowserPage(browser: browser, entry: presentation.entry)
+            }
+            .environmentObject(store)
+        }
+        .environment(\.openPublicLibraryBooks) { selection in
+            if let book = selection.selectedBook { path.append(WorkDetailRoute(book)) }
+        }
+        .environment(\.explorePush, .onto($path, store: store))
+    }
+
+    // MARK: •••
+
+    /// 資源庫's one ••• (decision 31): 管理來源配置 and the layout. 新增來源配置 and 新增模組 left it
+    /// for 設定 (maintainer, 2026-10-27), as 模組 had (2026-10-17). A native menu on every iOS:
+    /// iOS 17 had a chooser instead while the menu opened 新增來源配置's sheets, which iOS 17 drops
+    /// while a menu dismisses (`Technotes/iOS17MenuModalPresentation.md`); a push and the layout
+    /// present nothing, so the maintainer had the chooser go (2026-10-27).
+    private var moreControl: some View {
+        Menu {
+            Button {
+                path.append(ExploreNavigationRoute.sourceManager)
+            } label: {
+                Label(localized("管理來源配置"), systemImage: "slider.horizontal.3")
+            }
+            Divider()
+            LibraryLayoutMenuItems()
+        } label: {
+            Image(systemName: "ellipsis")
+                .accessibilityHidden(true)
+        }
+        .accessibilityLabel(localized("更多"))
+        .accessibilityIdentifier("library.more")
+    }
+
+    // MARK: Sections
+
+    /// 古騰堡 and 青空文庫, in 模組 with the official modules (M2b). Their identifiers stay `library.public.<id>`; each
+    /// opens what it offers, as a module's card does, not shelves to browse (2026-10-22).
+    /// 古騰堡's or 青空文庫's card among the app's own modules (`AppOfficialModule`).
+    private func publicLibraryTile(_ key: SourceInstanceKey, layout: ExploreEntryLabel.Layout) -> some View {
+        let module = AppOfficialModule.library(key)
+        return NavigationLink(value: module.route) {
+            ExploreEntryLabel(title: module.title, artwork: .symbol(SourceKindSymbol.symbol(for: key.type) ?? "books.vertical"),
+                              layout: layout, subtitle: module.summary, detail: publicLibraryCount(key.type))
+        }
+        .buttonStyle(ExploreTileButtonStyle())
+        .accessibilityLabel(module.title)
+        .accessibilityIdentifier("library.public.\(key.id)")
+    }
+
+    /// The remote libraries connected, and nothing while there are none: connecting one is 設定's
+    /// 遠端書庫 (maintainer, 2026-10-27), so an empty section here would only be its title.
+    @ViewBuilder
+    private var remoteLibrariesSection: some View {
+        let remoteLibraries = libraries.filter { $0.key.type != .gutenberg && $0.key.type != .aozora }
+        if !remoteLibraries.isEmpty {
+            LibrarySection(localized("遠端書庫")) {
+                NavigationLink {
+                    RemoteLibrarySettingsView()
+                } label: {
+                    LibrarySectionAccessoryLabel()
+                }
+                .accessibilityLabel(localized("管理遠端書庫"))
+                .accessibilityIdentifier("library.manageRemote")
+            } content: { layout in
+                ForEach(remoteLibraries) { library in
+                    remoteLibraryLink(library, layout: layout)
+                        .accessibilityLabel(library.name)
+                        .accessibilityIdentifier("library.remote.\(library.key.id)")
+                }
+            }
+        }
+    }
+
+    /// 所有來源配置, then a card for each group (decision 31): never every source on the root. Nothing
+    /// while no source has a discover page: adding one is 設定's, and the card that led to
+    /// 來源配置管理 went with 遠端書庫's (maintainer, 2026-10-27).
+    ///
+    /// Lazy, except on iOS 27 (`groupsLaidOutAtOnce`).
+    ///
+    /// Eager on iOS 27, as 模組 and 訂閱 are: lazy, the grid's rows after the first stayed out of
+    /// the accessibility tree on the iOS 27.0 simulator (iPhone 18 Pro Max), so VoiceOver never
+    /// reached 男频 although it was drawn on screen, and a hit test there landed on a nameless
+    /// node (2026-10-26, `testSourcesByGroup`). It did so before 模組 moved to the top: the
+    /// order did not cause it, and iOS 26.5 never showed it.
+    ///
+    /// Lazy below iOS 27, because every card alive costs every frame of a scroll there: with a
+    /// reader's 150 groups (FB-165: 1500 sources, 700 with a discover page, "only 60 fps" on an
+    /// iPhone 15 Pro on iOS 17.0), the iOS 17.5 simulator's main thread spent 4111 ms of a 25 s
+    /// drag sequence eager against 2926 lazy — CA commit 2250 against 1420 — with no view body
+    /// running: it is SwiftUI keeping each card's geometry current as the page moves
+    /// (`LibraryScrollProfilingUITests`, 2026-11-09). `testSourcesByGroup` passes lazy on iOS
+    /// 17.5, 18.6 and 26.5. Lay out lazily everywhere once it passes lazy on iOS 27 too.
+    private static var groupsLaidOutAtOnce: Bool {
+        if #available(iOS 27.0, *) { return true }
+        return false
+    }
+
+    @ViewBuilder
+    private var sourcesSection: some View {
+        if !exploreSources.isEmpty {
+            LibrarySection(localized("來源配置"), isLazy: !Self.groupsLaidOutAtOnce) {
+                NavigationLink(value: ExploreNavigationRoute.sourceManager) {
+                    LibrarySectionAccessoryLabel()
+                }
+                .accessibilityLabel(localized("管理來源配置"))
+                .accessibilityIdentifier("library.sources")
+            } content: { layout in
+                NavigationLink(value: ExploreNavigationRoute.sources(group: nil)) {
+                    ExploreEntryLabel(title: localized("所有來源配置"), artwork: .source, layout: layout,
+                                      corner: .count(exploreSources.count))
+                }
+                .buttonStyle(ExploreTileButtonStyle())
+                .accessibilityLabel(localized("所有來源配置"))
+                .accessibilityValue(String(format: localized("%d 個來源配置"), exploreSources.count))
+                .accessibilityIdentifier("library.sources.all")
+                ForEach(sourceGroups) { group in
+                    NavigationLink(value: ExploreNavigationRoute.sources(group: group.name)) {
+                        ExploreEntryLabel(title: group.name, artwork: .neutral("folder.fill"), layout: layout,
+                                          corner: .count(group.count))
+                    }
+                    .buttonStyle(ExploreTileButtonStyle())
+                    .accessibilityLabel(group.name)
+                    .accessibilityValue(String(format: localized("%d 個來源配置"), group.count))
+                    .accessibilityIdentifier("library.group.\(group.name)")
+                }
+            }
+        }
+    }
+
+    private var subscriptionsSection: some View {
+        // Eager, not lazy, as 匯入的模組 (`RuleModuleSection`): with 所有來源都在這裡 closed, this
+        // section's lazy grid stayed in the accessibility tree as an empty, zero-sized node once
+        // scrolled to, so VoiceOver never reached RSS 訂閱 (iOS 27.0 iPhone 18 Pro Max,
+        // 2026-10-26; not seen on iOS 26.5 iPhone 17 Pro). One card: laziness bought nothing.
+        // Delete `isLazy: false` once `testSubscriptionsWithTheNoticeClosed` passes without it.
+        LibrarySection(localized("訂閱"), isLazy: false) { layout in
+            let unread = rss.totalUnreadCount()
+            NavigationLink(value: ExploreNavigationRoute.subscriptions) {
+                // RSS's unread count, which its tab carried (maintainer's choice, 2026-10-13).
+                ExploreEntryLabel(title: localized("RSS 訂閱"), artwork: .symbol("newspaper.fill"), layout: layout,
+                                  subtitle: rss.sources.isEmpty ? nil : String(format: localized("%d 個訂閱源"), rss.sources.count),
+                                  corner: unread > 0 ? .count(unread) : nil)
+            }
+            .buttonStyle(ExploreTileButtonStyle())
+            .accessibilityLabel(localized("RSS 訂閱"))
+            .accessibilityValue(unread > 0 ? String(format: localized("%d 未讀"), unread) : "")
+            .accessibilityIdentifier("library.rss")
+        }
+    }
+
+    private func sourceEntry(_ source: BookSource, layout: ExploreEntryLabel.Layout) -> some View {
+        LibrarySourceEntry(source: source, layout: layout, sheet: $sourceActionSheet,
+                           pendingDeletion: $sourcePendingDeletion) {
+            path.append(ExploreNavigationRoute.searchInSource(sourceURL: source.bookSourceUrl))
+        }
+    }
+
+    /// How many works 青空文庫's catalog lists, once it is read. Gutenberg's feeds give no total.
+    private func publicLibraryCount(_ type: ProviderType) -> String? {
+        guard type == .aozora, let catalog = aozora.catalog else { return nil }
+        return String(format: localized("%d 本"), catalog.worksByID.count)
+    }
+
+    /// A remote library's catalog: its root feed or folder, as 探索 opens it.
+    @ViewBuilder
+    private func remoteLibraryLink(_ library: LibraryListing, layout: ExploreEntryLabel.Layout) -> some View {
+        let connection = connections.connections.first { $0.id == library.key.id }
+        let label = ExploreEntryLabel(title: library.name, artwork: .symbol(library.systemImage), layout: layout,
+                                      subtitle: connection?.kind.libraryTitle,
+                                      detail: connection.flatMap { URL(string: $0.url)?.host() })
+        switch ExplorePlace.page(of: library.key, name: library.name) {
+        case .feed(let route): NavigationLink(value: route) { label }.buttonStyle(ExploreTileButtonStyle())
+        case .folder(let route): NavigationLink(value: route) { label }.buttonStyle(ExploreTileButtonStyle())
+        default: label
+        }
+    }
+
+    /// Where sources are, until the reader closes it: listed here, added in 設定 (maintainer,
+    /// 2026-10-27). It first said what had moved here from 設定 and the RSS tab.
+    private var notice: some View {
+        HStack(alignment: .top, spacing: DSSpacing.md) {
+            VStack(alignment: .leading, spacing: DSSpacing.xs) {
+                Text(localized("所有來源都在這裡"))
+                    .font(DSFont.headline)
+                    .foregroundStyle(DSColor.textPrimary)
+                Text(localized("這裡列出你已有的來源；要新增來源配置、模組或遠端書庫，請到設定。"))
+                    .font(DSFont.subheadline)
+                    .foregroundStyle(DSColor.textSecondary)
+            }
+            .accessibilityElement(children: .combine)
+            Spacer(minLength: 0)
+            Button {
+                noticeDismissed = true
+            } label: {
+                Image(systemName: "xmark")
+                    .font(DSFont.footnote.weight(.semibold))
+                    .foregroundStyle(DSColor.textSecondary)
+                    .frame(width: DSLayout.minimumTapTarget, height: DSLayout.minimumTapTarget)
+                    .contentShape(Rectangle())
+                    .accessibilityHidden(true)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(localized("關閉"))
+            .accessibilityIdentifier("library.noticeClose")
+        }
+        .padding(.leading, DSSpacing.md)
+        .padding(.vertical, DSSpacing.sm)
+        .interfaceCardSurface(in: RoundedRectangle(cornerRadius: DSRadius.xl, style: .continuous))
+        .shadow(color: DSColor.shadow, radius: DSLayout.exploreCardShadowRadius, y: DSLayout.exploreCardShadowY)
+    }
+}
+
+/// How long 資源庫 takes to show after its tab is tapped (FB-167: the first switch held the
+/// bookshelf on screen ~6 s with 2,611 sources): `library.tab.appear` when the root appears, and
+/// `library.tab.firstFrame` when the main run loop next goes to sleep — every observer, Core
+/// Animation's commit among them, has run, so the frame is on its way and the main thread is free.
+/// Not a transaction completion block: that waits for the tab transition's animations too.
+/// Only the switch that follows a tap is timed, not a later appearance after a pop.
+@MainActor
+enum LibraryTabTiming {
+    private static var selectedAt: TimeInterval?
+
+    static func noteSelected() {
+        selectedAt = SourcePerfTrace.now
+    }
+
+    static func noteAppeared() {
+        guard let start = selectedAt else { return }
+        selectedAt = nil
+        SourcePerfTrace.record("library.tab.appear", since: start, thresholdMs: 0)
+        let observer = CFRunLoopObserverCreateWithHandler(
+            nil, CFRunLoopActivity.beforeWaiting.rawValue, false, CFIndex.max
+        ) { observer, _ in
+            SourcePerfTrace.record("library.tab.firstFrame", since: start, thresholdMs: 0)
+            CFRunLoopRemoveObserver(CFRunLoopGetMain(), observer, .commonModes)
+        }
+        CFRunLoopAddObserver(CFRunLoopGetMain(), observer, .commonModes)
+    }
+}
+
+#if DEBUG
+#Preview("資源庫") {
+    LibraryTabRoot(browser: BrowserState())
+        .environmentObject(BookStore())
+}
+#endif

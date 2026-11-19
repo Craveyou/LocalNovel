@@ -1,0 +1,3472 @@
+import Foundation
+import CryptoKit
+import os
+
+// MARK: - Error
+
+enum ModernParserBridgeError: LocalizedError {
+    case invalidURL(String)
+    case parseError(String)
+    case timeout
+    /// A stage read nothing and its source JS threw on the way: the exception is the cause,
+    /// not an empty page (YCK1330 report §7 — 番茄聽書's unsupported-API error read as 搜索失效).
+    case scriptError(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidURL(let url): return "Invalid URL: \(url)"
+        case .parseError(let msg): return "Parse error: \(msg)"
+        case .timeout: return "Request timed out"
+        case .scriptError(let msg): return "Source JS error: \(msg)"
+        }
+    }
+}
+
+// MARK: - Bridge
+
+/// Adapts ModernRuleEngine's API to the interface expected by
+/// BookSourceParsingPipeline (parse-only) and BookSourceFetcher (fetch+parse).
+///
+/// Each instance is bound to a single BookSource.  Create a new bridge
+/// when switching sources.
+class ModernParserBridge {
+
+    /// Diagnostic representation of a source variable that never includes its
+    /// values. Plain tokens/JWTs and JSON secrets must not reach exported logs.
+    nonisolated static func sourceVariableLogSummary(_ raw: String?) -> String {
+        guard let raw else { return "not configured" }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "not configured" }
+
+        var shape = "plain"
+        if let data = trimmed.data(using: .utf8),
+           let object = try? JSONSerialization.jsonObject(with: data) {
+            if let dictionary = object as? [String: Any] {
+                let keys = dictionary.keys.sorted().joined(separator: ",")
+                shape = keys.isEmpty ? "json object" : "json object keys=[\(keys)]"
+            } else if object is [Any] {
+                shape = "json array"
+            } else {
+                shape = "json scalar"
+            }
+        }
+        return "configured; \(shape); length=\(trimmed.count)"
+    }
+
+
+    /// The source's JS runtime, stood up on first actual use.
+    ///
+    /// Creating one costs a `JSContext` plus the polyfill scripts `configureContext`
+    /// evaluates into it. Most book sources are pure CSS/XPath and never run a line
+    /// of JS — `parseSearchResults` in particular touches nothing here — but the
+    /// bridge used to build the runtime eagerly in `init`, so every source in a
+    /// search fan-out paid for a JSContext it never used.
+    ///
+    /// No lock: the bridge lives on its session's `SourceScriptHost`, so the first access is
+    /// always there, and the handlers `wireJSEngine` installs run on other threads (the
+    /// engine's JS queue, `ajaxAll` workers) only once the engine exists.
+    ///
+    /// Not `lazy` either: the engine is stored before it is wired, because wiring ends by
+    /// evaluating jsLib, and a top-level jsLib call that comes back here (a `java.ajax` reads the
+    /// source's headers through the bridge) must get this engine — `lazy` would start a
+    /// second initialization, and the lock this replaced deadlocked.
+    private var jsEngine: JSCoreEngine {
+        if let existing = _jsEngine { return existing }
+        let t0 = ProcessInfo.processInfo.systemUptime
+        let engine = JSCoreEngine()
+        _jsEngine = engine
+        engine.headerSnapshot = headerSnapshot
+        engine.userWaits = userWaits
+        wireJSEngine(engine)
+        SourcePerfTrace.record(
+            "js.runtimeCreate", sourceRuleData.source.bookSourceName, since: t0
+        )
+        return engine
+    }
+    private var _jsEngine: JSCoreEngine?
+
+    private let loginManager: LoginManager
+    private let runtimeStateStore: BookSourceRuntimeStateStore
+    /// Where the source's own JS requests go (`java.ajax`, `java.connect`, …). Production
+    /// shares `LegadoJSBridge.requestSession`; a test hands in a session whose configuration
+    /// carries its URLProtocol, because only `URLSession.shared` consults
+    /// `URLProtocol.registerClass`.
+    private let requestSession: URLSession
+    /// The session's published header resolutions (`BookSourceSession.headerSnapshot`).
+    private let headerSnapshot: SourceHeaderSnapshot?
+    /// The session's user waits (`BookSourceSession.userWaits`).
+    private let userWaits: LegadoUserWaitRegistry?
+    let sourceRuleData: BookSourceRuleData
+    private var runtimeBookScope: RuleData?
+    private var runtimeChapterScope: RuleData?
+    /// `chapter.putVariable` / `getVariable` read and write the scope `java.put` uses.
+    private var currentChapterScope: () -> RuleData? {
+        { [weak self] in self?.runtimeChapterScope }
+    }
+
+    /// When set, every `ModernRuleEngine` created by `makeEngine()` will have this
+    /// observer attached, emitting pipeline events for diff-driven debugging against
+    /// Legado's Android logs.  Set by `BookSourceDebugEngine`.
+    var debugObserver: ((RuleDebugEvent) -> Void)?
+
+    // MARK: - Init
+
+    init(
+        source: BookSource,
+        requestSession: URLSession = LegadoJSBridge.requestSession,
+        headerSnapshot: SourceHeaderSnapshot? = nil,
+        userWaits: LegadoUserWaitRegistry? = nil
+    ) {
+        self.userWaits = userWaits
+        self.sourceRuleData = BookSourceRuleData(source: source)
+        self.loginManager = LoginManager.shared
+        self.runtimeStateStore = BookSourceRuntimeStateStore.shared
+        self.requestSession = requestSession
+        self.headerSnapshot = headerSnapshot
+        // No JSContext here on purpose — see `jsEngine`.
+    }
+
+    /// Deterministic fixture injection for source-JS HTTP calls. Production keeps
+    /// the handler installed by `wireJSEngine`; tests may replace it without adding
+    /// another loader or parser path.
+    var sourceScriptNetworkHandler: SourceScriptTransport? {
+        get { jsEngine.networkHandler }
+        set { jsEngine.networkHandler = newValue }
+    }
+
+    var lastSourceScriptError: String? { jsEngine.lastError }
+
+    /// Book-scoped variables produced while evaluating the most recent TOC list rule.
+    /// Legado evaluates `chapterList` before assigning a chapter context, so `java.put`
+    /// there belongs to the book, not to every chapter row.
+    private(set) var lastTOCRuntimeVariables: [String: String]?
+
+    // MARK: - Last JS network exchange (diagnostics)
+
+    /// What the rule's own JS last fetched. Recorded on every `java.ajax`, dumped
+    /// only when a chapter comes back empty — that is the one moment where knowing
+    /// the server's actual answer decides between "we sent a bad request",
+    /// "the source needs login/quota" and "our parsing dropped it".
+    struct JSNetworkExchange: Sendable {
+        let url: String
+        let status: String
+        let length: Int
+        let bodyHead: String
+    }
+    // ajaxAll callbacks may finish concurrently with chapter parsing. Keep the
+    // complete diagnostic value atomic, including reset and snapshot reads.
+    final class NetworkExchangeStore: Sendable {
+        private let storage = OSAllocatedUnfairLock<JSNetworkExchange?>(initialState: nil)
+        var latest: JSNetworkExchange? {
+            get { storage.withLock { $0 } }
+            set { storage.withLock { $0 = newValue } }
+        }
+    }
+    private let networkExchange = NetworkExchangeStore()
+    private var lastJSNetworkExchange: JSNetworkExchange? {
+        get { networkExchange.latest }
+        set { networkExchange.latest = newValue }
+    }
+
+    /// The JSON bodies a chapter's content rule fetched, kept only while that rule runs: where
+    /// `ReviewCardFullText` finds the comments the source cut for its review cards. Locked for
+    /// the same reason as `NetworkExchangeStore` — ajaxAll records concurrently.
+    final class ReviewResponseCapture: Sendable {
+        private let storage = OSAllocatedUnfairLock<[String]?>(initialState: nil)
+        /// A chapter's comment responses are tens of KB; a body this large is chapter text.
+        private static let bodyLimit = 1_000_000
+        private static let countLimit = 64
+
+        func begin() { storage.withLock { $0 = [] } }
+
+        func end() -> [String] {
+            storage.withLock { bodies in
+                defer { bodies = nil }
+                return bodies ?? []
+            }
+        }
+
+        func record(_ body: String) {
+            guard body.utf8.count <= Self.bodyLimit,
+                  let first = body.first(where: { !$0.isWhitespace }), first == "{" || first == "[" else { return }
+            storage.withLock { bodies in
+                guard let count = bodies?.count, count < Self.countLimit else { return }
+                bodies?.append(body)
+            }
+        }
+    }
+    private let reviewResponses = ReviewResponseCapture()
+
+    private func recordJSNetwork(
+        url: String?, statusCode: Int?, timedOut: Bool, body: String?
+    ) {
+        if let body, !timedOut {
+            reviewResponses.record(body)
+        }
+        lastJSNetworkExchange = JSNetworkExchange(
+            url: String((url ?? "-").prefix(200)),
+            status: timedOut ? "timeout" : (statusCode.map(String.init) ?? "error"),
+            length: body?.count ?? -1,
+            bodyHead: String((body ?? "nil").prefix(200)).replacingOccurrences(of: "\n", with: " ")
+        )
+        // Same exchange, second reader: the log line above is for us, this one is for
+        // the user. A rule that swallows its API's error (`requestApiUrl` returning
+        // null on `{"error":…}`) otherwise leaves an empty screen with no explanation.
+        SourceAPIErrorLog.shared.record(
+            sourceUrl: sourceRuleData.source.bookSourceUrl,
+            requestUrl: url,
+            statusCode: statusCode,
+            body: body,
+            timedOut: timedOut
+        )
+        // Third reader of the same exchange: 書源除錯大師, when the user has capture
+        // on. `WebFetcher`'s capture points miss everything here — rule fetches and
+        // `java.ajax` go through `URLSession` directly, not through `WebFetcher`.
+        if timedOut {
+            // No answer within the request timeout is a failed request, shown as any other
+            // failure is: a source whose script host is down (qyyuapi.com, YCK 1329) otherwise
+            // left only an info line, with nothing in the capture saying a request failed.
+            WebCrawlerDebugger.logError(
+                URLError(.timedOut, userInfo: [NSLocalizedDescriptionKey: localized("連線逾時")]), url: url
+            )
+        } else {
+            WebCrawlerDebugger.logResponse(
+                url: url ?? "-", statusCode: statusCode ?? -1, htmlBody: body ?? ""
+            )
+        }
+    }
+
+    // MARK: - Source Headers
+
+    /// The source's `header` rule resolved to request headers — plain JSON, or a
+    /// `@js:` / `<js>` rule evaluated on this bridge's engine (Legado
+    /// `getHeaderMap()`). Every request built here must carry these: sources like
+    /// 书山聚合 put a required constant API token in a JS header rule.
+    func resolvedSourceHeaders() -> [String: String] {
+        jsEngine.resolvedSourceHeaders()
+    }
+
+    /// Resolve authentication after the source's click action has finished, using
+    /// the same runtime and header precedence as chapter/JS network requests. One
+    /// builder for every page a source opens: `java.startBrowserAwait` uses it too.
+    func sourceBrowserRequest(urlString: String) -> URLRequest? {
+        evaluateJsLibIfNeeded()
+        return jsEngine.sourceBrowserRequest(urlString: urlString)
+    }
+
+    /// `sourceHeaders`: what this request's own evaluation of the header rule returned. A
+    /// request evaluates the rule once and sends that map, as Legado's `AnalyzeUrl` sends the
+    /// `headerMap` its `init` resolved: evaluated again here, a rule's `cache.put` and the
+    /// headers sent would come from two runs (顶点小说 puts a fresh `randomUUID()` in each).
+    private func applySourceAuthentication(to request: inout URLRequest, sourceHeaders: [String: String]) {
+        for (key, value) in sourceHeaders {
+            if request.value(forHTTPHeaderField: key) == nil {
+                request.setValue(value, forHTTPHeaderField: key)
+            }
+        }
+        loginManager.applyLoginHeaders(to: &request, sourceUrl: sourceRuleData.source.bookSourceUrl)
+        if request.value(forHTTPHeaderField: "Cookie") == nil,
+           let url = request.url?.absoluteString {
+            let jar = CookieStore.shared.get(url: url)
+            if !jar.isEmpty { request.setValue(jar, forHTTPHeaderField: "Cookie") }
+        }
+    }
+
+    /// Executes Legado `ruleToc.preUpdateJs` in the source's JavaScript runtime
+    /// before the TOC request. It is a Rhino/JSCore rule hook, not page JavaScript:
+    /// opening a WebView here both changed its bindings and added a navigation plus
+    /// a fixed render delay to every TOC refresh.
+    func runTOCPreUpdateJS(
+        _ script: String,
+        tocURL: String,
+        runtimeVariables: [String: String]? = nil
+    ) throws -> (tocURL: String, runtimeVariables: [String: String]?) {
+        let trimmed = script.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return (tocURL, runtimeVariables) }
+
+        loadRuntimeVariables(runtimeVariables)
+        setBookContext(runtimeVariables: runtimeVariables)
+        jsEngine.bookBridge.tocUrl = tocURL
+        jsEngine.setChapterBridge(LegadoChapterBridge())
+        evaluateJsLibIfNeeded()
+        // Legado runs it as `AnalyzeRule(book, source).evalJS`, so its `java.put` is the book's:
+        // it comes back in `runtimeVariables` for the TOC, not in the source's stored state.
+        // `source.put` stays the source's.
+        let bookScope = RuleData()
+        runtimeBookScope = bookScope
+        runtimeChapterScope = nil
+        defer { runtimeBookScope = nil }
+        _ = jsEngine.evaluateIsolated(
+            trimmed,
+            bindings: [
+                "baseUrl": tocURL,
+                "baseURL": tocURL
+            ]
+        )
+        if let error = jsEngine.lastError {
+            throw ModernParserBridgeError.parseError("preUpdateJs failed: \(error)")
+        }
+        let resolvedURL = jsEngine.bookBridge.tocUrl
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (resolvedURL.isEmpty ? tocURL : resolvedURL, dumpRuntimeVariables())
+    }
+
+    // MARK: - Engine Factory
+
+    /// Creates a fresh, fully-wired ModernRuleEngine for a single parse operation.
+    /// A new instance per call prevents state bleed when async operations overlap.
+    /// Legado's `analyzeRule.setContent(body).setBaseUrl(baseUrl)` and `setRedirectUrl(res.url)`
+    /// for a book's own pages (`BookInfo`, `BookChapterList`, `BookContent`; legado-E, MD3 and
+    /// upstream agree): `baseUrl` — the scripts' `baseUrl`, and what an empty `isUrl` read
+    /// answers — is the URL the rule gave, options and all, and links resolve against the page
+    /// the response came from. 老福特's detail is a POST (`…detail.api,{"method":"POST",…}`);
+    /// with the response's URL as the base, its empty `tocUrl` became that URL without the
+    /// options, and the TOC went out as a GET the API refused.
+    private func setPage(_ content: Any?, on engine: ModernRuleEngine, ruleURL: String?, pageURL: String) {
+        let ruleURL = ruleURL?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        engine.setContent(content, baseUrl: ruleURL.isEmpty ? pageURL : ruleURL)
+        engine.setRedirectUrl(pageURL)
+    }
+
+    private func makeEngine(nextChapterURL: String? = nil) -> ModernRuleEngine {
+        let e = ModernRuleEngine()
+        e.source = sourceRuleData
+        e.debugObserver = debugObserver
+
+        // Capture `e` weakly so the closure doesn't extend its lifetime past the parse call.
+        e.jsEvaluator = { [weak self, weak e] jsCode, prevResult in
+            guard let self, let engine = e else { return nil }
+            // Point JS back-references at THIS engine instance before evaluating.
+            // Safe because jsEngine serialises all evaluations on its dedicated queue.
+            self.jsEngine.ruleReaders = Self.ruleReaders(of: engine)
+            var bindings: [String: Any] = [
+                "baseUrl": engine.baseUrl,
+                "baseURL": engine.baseUrl
+            ]
+            if let nextChapterURL {
+                bindings["nextChapterUrl"] = nextChapterURL
+            }
+            if let content = engine.content {
+                // Legado exposes the response currently being parsed as the global `src`.
+                // Some sources intentionally read `src` after an earlier rule segment has
+                // transformed `result`, so the two values must remain independent.
+                bindings["src"] = content
+            }
+            return self.jsEngine.evaluateRuleStep(
+                jsCode,
+                result: prevResult,
+                bindings: bindings
+            )
+        }
+        return e
+    }
+
+    /// The `java.*` readers a script in `engine`'s rule steps calls back into.
+    private static func ruleReaders(of engine: ModernRuleEngine) -> JSCoreEngine.RuleReaders {
+        JSCoreEngine.RuleReaders(
+            getString: { ruleStr in engine.getString(ruleStr: ruleStr) },
+            getStringList: { ruleStr in engine.getStringList(ruleStr: ruleStr) },
+            getElements: { ruleStr in engine.scriptElements(ruleStr: ruleStr) },
+            getElement: { ruleStr in engine.scriptElement(ruleStr: ruleStr) },
+            // `java.getString(rule, obj)` — evaluate against the caller-supplied document.
+            // `mContent` is a per-call input in ModernRuleEngine, so this does not disturb
+            // the content the surrounding rule chain is parsing.
+            getStringWithContent: { ruleStr, content in engine.getString(ruleStr: ruleStr, mContent: content) },
+            // Legado's `java` is this step's `AnalyzeRule`, and `setContent` its content: the
+            // step's later reads and the item's later fields see it, and the next item's
+            // `setContent` replaces it. A null `baseUrl` keeps the base (`setBaseUrl(null)`).
+            setContent: { content, baseUrl in engine.setContent(content, baseUrl: baseUrl ?? engine.baseUrl) }
+        )
+    }
+
+    /// The reader a script's `AnalyzeRule()` holds (`LegadoAnalyzeRule`): Kotlin's no-argument
+    /// constructor gives it no source and no book, so it has no rule data to `@put`/`@get`. Its
+    /// own `@js:` steps run with `java` reading it, and hand `java` back to the step that called
+    /// it afterwards — that step's script is still running.
+    private func makeScriptAnalyzer() -> ModernRuleEngine {
+        let e = ModernRuleEngine()
+        e.debugObserver = debugObserver
+        e.jsEvaluator = { [weak self, weak e] jsCode, prevResult in
+            guard let self, let engine = e else { return nil }
+            let callers = self.jsEngine.ruleReaders
+            self.jsEngine.ruleReaders = Self.ruleReaders(of: engine)
+            defer { self.jsEngine.ruleReaders = callers }
+            return self.jsEngine.evaluateRuleStep(
+                jsCode, result: prevResult,
+                bindings: ["baseUrl": engine.baseUrl, "baseURL": engine.baseUrl]
+            )
+        }
+        return e
+    }
+
+    /// Ends one of this bridge's parses (`JsoupDocumentCache.beginParse()`). The outermost end
+    /// also lets go of the page copies its scripts read (`LegadoScriptTrees`), which hold whole
+    /// pages; a bridge that never ran a script has no JS engine to ask.
+    private func endParse(_ documents: JsoupDocumentCache.ParseScope) {
+        if documents.end() { _jsEngine?.releaseScriptTrees() }
+    }
+
+    /// How many page copies this bridge's scripts still hold (`LegadoScriptTrees`): none
+    /// between parses.
+    var heldScriptPageCount: Int {
+        _jsEngine?.bridge.scriptTrees.count ?? 0
+    }
+
+    // MARK: - Wire JS-only state (source headers, variable storage, network)
+
+    /// Installs every `java.*` / `source.*` handler on a freshly created runtime.
+    /// Takes the engine as a parameter rather than reading `self.jsEngine`, so what it
+    /// installs does not depend on being called from inside that accessor.
+    private func wireJSEngine(_ engine: JSCoreEngine) {
+        engine.bookSource = sourceRuleData.source
+        engine.analyzeRuleFactory = { [weak self] in self?.makeScriptAnalyzer() }
+        let sourceName = sourceRuleData.source.bookSourceName
+        let requestSession = self.requestSession
+
+        engine.errorHandler = { [weak self] msg, script in
+            self?.debugObserver?(.jsExecuted(
+                segmentIndex: -1, script: String(script.prefix(200)),
+                inputPreview: "", result: "ERROR: \(msg)"
+            ))
+            // NOT #if DEBUG: a rule's JS blowing up is the most common cause of an
+            // empty chapter/TOC, and on a device os_log is the only way to see it.
+            AppLogger.parse("⟐ rule JS error", context: [
+                "source": sourceName,
+                "error": msg,
+                "script": String(script.prefix(160)).replacingOccurrences(of: "\n", with: " ")
+            ])
+        }
+
+        // `java.toast(...)` is how a source reports its own failures — 书山聚合's
+        // chapter rule toasts 「❌ 未登录，请先登录」/「⚠️请求失败3次: …」/「请尝试切换
+        // 服务器」 from inside its retry loop. Nothing displays toasts during a
+        // background parse, so log them; otherwise the source's own diagnosis is lost.
+        engine.toastHandler = { msg in
+            AppLogger.parse("⟐ source toast", context: [
+                "source": sourceName,
+                "msg": msg.replacingOccurrences(of: "\n", with: " ")
+            ])
+        }
+
+        engine.getData = { [weak self] key in
+            guard let self else { return nil }
+            let localValue = [
+                self.runtimeChapterScope?.getVariable(key: key),
+                self.runtimeBookScope?.getVariable(key: key),
+                self.sourceRuleData.getVariable(key: key)
+            ].compactMap { $0 }.first { !$0.isEmpty } ?? ""
+            let value = localValue.isEmpty
+                ? (self.runtimeStateStore.sourceValue(
+                    for: self.sourceRuleData.source.bookSourceUrl,
+                    key: key
+                ) ?? "")
+                : localValue
+            return value
+        }
+        engine.putData = { [weak self] key, value in
+            guard let self else { return }
+            if let chapterScope = self.runtimeChapterScope {
+                chapterScope.putVariable(key: key, value: value)
+                return
+            }
+            if let bookScope = self.runtimeBookScope {
+                bookScope.putVariable(key: key, value: value)
+                return
+            }
+            // No row, book or chapter in scope — jsLib, `loginCheckJs`, a source's own
+            // scripts: Legado's `source.put`, which the source keeps.
+            self.sourceRuleData.putVariable(key: key, value: value)
+            self.runtimeStateStore.setSourceValue(
+                value,
+                for: self.sourceRuleData.source.bookSourceUrl,
+                key: key
+            )
+        }
+
+        // ── Source Bridge Wiring ──
+
+        let sourceUrl = sourceRuleData.source.bookSourceUrl
+
+        engine.sourceBridge.getVariableHandler = { [weak self] in
+            guard let self else { return "" }
+            return self.runtimeStateStore.sourceVariableJSON(for: sourceUrl) ?? ""
+        }
+        engine.sourceBridge.setVariableHandler = { [weak self] jsonString in
+            self?.runtimeStateStore.setSourceVariableJSON(jsonString, for: sourceUrl)
+        }
+        engine.sourceBridge.getKeyValueHandler = { [weak self] key in
+            self?.runtimeStateStore.sourceValue(for: sourceUrl, key: key)
+        }
+        engine.sourceBridge.putKeyValueHandler = { [weak self] key, value in
+            self?.runtimeStateStore.setSourceValue(value, for: sourceUrl, key: key)
+        }
+
+        engine.sourceBridge.getLoginInfoHandler = {
+            LoginManager.shared.getLoginInfo(sourceUrl: sourceUrl).flatMap { info in
+                if let data = try? JSONSerialization.data(withJSONObject: info),
+                   let json = String(data: data, encoding: .utf8) {
+                    return json
+                }
+                return nil
+            }
+        }
+        engine.sourceBridge.putLoginInfoHandler = { info in
+            guard let data = info.data(using: .utf8),
+                  let dict = try? JSONSerialization.jsonObject(with: data) as? [String: String] else { return }
+            LoginManager.shared.storeLoginInfo(sourceUrl: sourceUrl, info: dict)
+        }
+        engine.sourceBridge.getLoginInfoMapHandler = {
+            LoginManager.shared.getLoginInfo(sourceUrl: sourceUrl) ?? [:]
+        }
+        engine.sourceBridge.removeLoginInfoHandler = {
+            LoginManager.shared.clearLogin(sourceUrl: sourceUrl)
+        }
+        // Legado stores whatever `putLoginHeader` was given verbatim and only sends
+        // it as headers when it parses as a JSON object; a bare token (书山聚合's
+        // api_key) is read back by the source's own JS. Do NOT invent a header name
+        // for it — guessing `X-Novel-Token` overwrote the constant token the source's
+        // `header` rule sends and the server answered `{"error":"访问被拒绝"}`.
+        engine.sourceBridge.putLoginHeaderHandler = { header in
+            LoginManager.shared.storeLoginHeader(sourceUrl: sourceUrl, raw: header)
+        }
+        engine.sourceBridge.getLoginHeaderHandler = {
+            LoginManager.shared.getLoginHeader(sourceUrl: sourceUrl)
+        }
+        engine.sourceBridge.removeLoginHeaderHandler = {
+            LoginManager.shared.clearLogin(sourceUrl: sourceUrl)
+        }
+        // The handlers below reach the runtime through the engine they are installed on.
+        engine.sourceBridge.getHeaderMapHandler = { [weak engine] in
+            var merged = engine?.resolvedSourceHeaders() ?? [:]
+            if let loginHeaders = LoginManager.shared.getLoginHeaderMap(sourceUrl: sourceUrl) {
+                merged.merge(loginHeaders) { _, new in new }
+            }
+            return merged
+        }
+        // Legado's `BaseSource.evalJS`: a scope of its own, Rhino's completion value.
+        engine.sourceBridge.evalJSHandler = { [weak engine] js in
+            engine?.evaluateIsolated(js, bindings: [:]) ?? ""
+        }
+        // Legado's `refreshJSLib` drops the source's shared jsLib scope; the next script
+        // builds it again.
+        engine.sourceBridge.refreshJSLibHandler = { [weak self] in
+            self?.invalidateJsLibCache()
+        }
+
+        // ── AnalyzeUrl handler for java.ajax() ──
+        // Runs on the JS thread and builds the request there: AnalyzeUrl evaluates the URL's
+        // templates, `@js` and `js` option, and the source authentication may run the header
+        // rule. `fetch` captures only the finished request and plain values — never the engine
+        // or the AnalyzeUrl — because `java.ajaxAll` runs it on its workers while it holds the
+        // JS queue (`PreparedSourceRequest`).
+        engine.analyzeUrlHandler = { [weak self, weak engine] urlStr in
+            guard let self, let engine else { return nil }
+            // Headers before the URL's JS, as Legado's `AnalyzeUrl.init` (see `prepareFetch`),
+            // and the ones this request sends.
+            let sourceHeaders = engine.resolvedSourceHeaders()
+            let analyzeUrl = AnalyzeUrl(
+                ruleUrl: urlStr,
+                sourceHeader: self.sourceRuleData.source.header,
+                baseUrl: self.sourceRuleData.source.bookSourceUrl,
+                source: self.sourceRuleData,
+                jsEvaluator: { [weak engine] jsCode, bindings in
+                    engine?.evaluateIsolated(jsCode, bindings: bindings)
+                },
+                jsErrorProvider: { [weak engine] in engine?.lastError }
+            )
+
+            // Back on the JS thread once the response is in. `bodyJs` runs as this AnalyzeUrl's
+            // script, so the closure keeps it.
+            let bodyJs = analyzeUrl.bodyJs
+            let finish: (PreparedSourceRequest.Response) -> String? = { [weak self, analyzeUrl] response in
+                guard let self else { return nil }
+                do {
+                    return try self.applyResponseBodyScript(
+                        bodyJs,
+                        to: response.body,
+                        java: analyzeUrl.scriptView
+                    ) ?? response.body
+                } catch {
+                    AppLogger.parse("bodyJs response transform failed", context: [
+                        "source": sourceName,
+                        "url": String(response.url.prefix(160)),
+                        "error": error.localizedDescription
+                    ])
+                    return nil
+                }
+            }
+
+            if analyzeUrl.isDataUri {
+                let response = PreparedSourceRequest.Response(
+                    body: Self.bodyForDataURI(analyzeUrl),
+                    url: analyzeUrl.evaluatedRuleUrl,
+                    data: analyzeUrl.decodeDataUri()?.data
+                )
+                return PreparedSourceRequest(fetch: { response }, finish: finish, type: analyzeUrl.type)
+            }
+            self.installScriptRequest(on: analyzeUrl, sourceHeaders: sourceHeaders)
+            guard var request = analyzeUrl.toURLRequest() else { return nil }
+            self.applySourceAuthentication(to: &request, sourceHeaders: sourceHeaders)
+            // Legado `AnalyzeUrl.getStrResponseAwait`: a request with a `type` option answers
+            // the hex of its bytes, whatever the value — the rule `bodyForDataURI` applies to a
+            // `data:` URI. 番茄听书 fetches its audio as `url,{"type":"hex"}` and hands the hex
+            // to `java.downloadFile`; the decoded text it got before was not those bytes.
+            let type = analyzeUrl.type
+            if type != nil {
+                request = LegadoBinaryDownload.marking(request)
+            }
+            // AnalyzeUrl options (for example `url,{"headers":...}`) are still source-JS network
+            // requests, so they go through the same transport as plain `java.ajax`/`java.get`:
+            // `networkHandler` (review-summary cache, request session, failure log), or the one a
+            // test injects. `wireJSEngine` installs it before any source JS can run.
+            guard let transport = engine.networkHandler else {
+                AppLogger.parse("⟐ ajax without a transport", context: [
+                    "source": sourceName,
+                    "url": String((request.url?.absoluteString ?? analyzeUrl.url).prefix(160))
+                ])
+                return nil
+            }
+            // The `charset` option decides how the body is decoded, as in Legado.
+            let charset = analyzeUrl.charset
+            // `webView` after `type`, as Legado reads them.
+            let webView = analyzeUrl.useWebView && type == nil
+                ? (js: analyzeUrl.webJs, delayMs: analyzeUrl.webViewDelayTime) : nil
+            // The URL's `retry` option, read here: `fetch` must not touch the AnalyzeUrl.
+            let send = Self.retryingTransport(
+                transport, retry: analyzeUrl.retry,
+                cookieJar: self.sourceRuleData.source.enabledCookieJar, sourceName: sourceName
+            )
+            let fetch = { [request] () -> PreparedSourceRequest.Response? in
+                if let webView {
+                    return Self.webViewResponse(
+                        for: request, js: webView.js, delayMs: webView.delayMs,
+                        charset: charset, transport: send, sourceName: sourceName
+                    )
+                }
+                let result = send(request, charset) ?? .bodyOnly(request: request, body: "")
+                self.recordJSNetwork(
+                    url: result.finalURL.absoluteString,
+                    statusCode: result.statusCode,
+                    timedOut: false,
+                    body: result.body
+                )
+                let body = type == nil
+                    ? result.body
+                    : LegadoJSBridge.hexString(result.data ?? Data())
+                return PreparedSourceRequest.Response(
+                    body: body, url: result.urlString,
+                    data: result.data, transportError: result.transportError, http: result
+                )
+            }
+            return PreparedSourceRequest(fetch: fetch, finish: finish, type: type)
+        }
+
+        // networkHandler runs on the jsEngine serial queue thread — blocking via
+        // semaphore here is intentional and safe (dedicated thread, not the global pool).
+        engine.networkHandler = { [weak self] request, declaredCharset in
+            let reviewSummaryCacheKey = self.map { "\(sourceUrl)#\($0.sourceRuleData.source.lastUpdateTime)" }
+            let isReviewSummaryRequest = Self.isChapterReviewSummaryRequest(request)
+            var ownsReviewRequest = false
+            if isReviewSummaryRequest,
+               let self,
+               let reviewSummaryCacheKey,
+               let requestURL = request.url?.absoluteString {
+                switch ReviewSummaryResponseCache.shared.beginRequest(
+                    sourceKey: reviewSummaryCacheKey,
+                    requestURL: requestURL
+                ) {
+                case .cached(let cached):
+                    self.recordJSNetwork(url: requestURL, statusCode: 200, timedOut: false, body: cached)
+                    SourcePerfTrace.record(
+                        "chapter.reviewSummary.cacheHit",
+                        sourceName,
+                        since: ProcessInfo.processInfo.systemUptime,
+                        thresholdMs: 0
+                    )
+                    return LegadoHTTPResult.bodyOnly(request: request, body: cached)
+                case .inFlight:
+                    if let cached = ReviewSummaryResponseCache.shared.waitForRequest(
+                        sourceKey: reviewSummaryCacheKey,
+                        requestURL: requestURL
+                    ) {
+                        self.recordJSNetwork(url: requestURL, statusCode: 200, timedOut: false, body: cached)
+                        SourcePerfTrace.record(
+                            "chapter.reviewSummary.inFlightHit",
+                            sourceName,
+                            since: ProcessInfo.processInfo.systemUptime,
+                            thresholdMs: 0
+                        )
+                        return LegadoHTTPResult.bodyOnly(request: request, body: cached)
+                    }
+                    // Shared request failed or timed out — fall through to this call's own
+                    // request rather than returning null to the source JS.
+                case .owner:
+                    ownsReviewRequest = true
+                }
+            }
+            struct NetworkResponse: Sendable {
+                var statusCode: Int?
+                var transportError: Error?
+                var responseResult: LegadoHTTPResult
+                var body: String?
+            }
+            let pending = BlockingResult<NetworkResponse>()
+            // Pool at 16/host: this handler is ALWAYS set for the online reader, so plain 段評
+            // ajaxAll requests land here — URLSession.shared would re-cap them at 6/host (why the
+            // ajaxAll throttle raise alone left `⏱ chapter.jsNet` unchanged).
+            let task = requestSession.legadoDataTask(with: request) { data, response, error in
+                // Decoded once: the failure log and the review-summary cache read the same text
+                // the source JS gets.
+                let responseResult = LegadoHTTPResult.make(
+                    request: request, data: data, response: response, declaredCharset: declaredCharset,
+                    error: error
+                )
+                pending.deliver(NetworkResponse(
+                    statusCode: (response as? HTTPURLResponse)?.statusCode,
+                    transportError: error,
+                    responseResult: responseResult,
+                    body: data == nil ? nil : responseResult.body
+                ))
+            }
+            let requestStarted = ProcessInfo.processInfo.systemUptime
+            task.resume()
+            // A response that arrives after the timeout is never read. Legado's call timeout
+            // (`WebFetcher.sourceRequestTimeout`, 60 s); this wait stayed at 30 when the rest
+            // moved on 11-07.
+            let response = pending.wait(timeout: .now() + WebFetcher.sourceRequestTimeout)
+            // A slow one only: a script's request time is what its runaway timeout leaves out
+            // (`LegadoScriptWaits`), and a stage's total alone cannot tell it from the script's own.
+            SourcePerfTrace.record(
+                "js.request",
+                "bytes=\(response?.responseResult.data?.count ?? response?.body?.utf8.count ?? 0) \(sourceName)",
+                since: requestStarted,
+                thresholdMs: 1000
+            )
+            let timedOut = response == nil
+            let result = response?.body
+            let statusCode = response?.statusCode
+            let transportError = response?.transportError
+            let responseResult = response?.responseResult
+            self?.recordJSNetwork(
+                url: request.url?.absoluteString,
+                statusCode: statusCode,
+                timedOut: timedOut,
+                body: result
+            )
+            // Every `java.*` request takes this path — a plain `java.ajax(url)` (书山聚合 fetches
+            // chapter *content* here) and the AnalyzeUrl handler's `url,{…}` requests — and the
+            // transport error used to be discarded outright, so a failed chapter left no trace
+            // at all. Failure: non-2xx, or a 2xx whose body is too short to be real content.
+            // A binary download has no text (`LegadoHTTPResult.make`); its bytes are its body.
+            let bodySize = LegadoBinaryDownload.isMarked(request)
+                ? (responseResult?.data?.count ?? 0) : (result?.count ?? 0)
+            if timedOut || transportError != nil
+                || statusCode.map({ !(200..<300).contains($0) }) ?? true
+                || bodySize < 300 {
+                AppLogger.parse("⟐ js net failed", context: [
+                    "source": sourceName,
+                    "url": request.url?.absoluteString.prefix(160).description ?? "-",
+                    "status": timedOut ? "timeout" : (statusCode.map(String.init) ?? "error"),
+                    "error": transportError?.localizedDescription ?? "-",
+                    "bodyHead": (result ?? "nil").prefix(200).description
+                ])
+            }
+            if timedOut { task.cancel() }
+            if ownsReviewRequest,
+               let reviewSummaryCacheKey,
+               let requestURL = request.url?.absoluteString {
+                let usable = !timedOut
+                    && transportError == nil
+                    && statusCode.map({ (200..<300).contains($0) }) == true
+                    && result.map(Self.isUsableChapterReviewSummary) == true
+                ReviewSummaryResponseCache.shared.finishRequest(
+                    usable ? result : nil,
+                    sourceKey: reviewSummaryCacheKey,
+                    requestURL: requestURL
+                )
+            }
+            return responseResult
+        }
+
+        // Last, once every handler is in place: jsLib top-level code can already call
+        // `java.ajax` / `java.setContent`, and a request made before `networkHandler` was set
+        // skipped this bridge for `LegadoJSBridge.requestSession` — no injected session, no
+        // `recordJSNetwork`, no review-summary cache. The hash is cached to avoid re-evaluation.
+        evaluateJsLibIfNeeded(on: engine)
+    }
+
+    private static func isChapterReviewSummaryRequest(_ request: URLRequest) -> Bool {
+        guard let path = request.url?.path.lowercased() else { return false }
+        return path.contains("/chapterreview/reviewsummary")
+    }
+
+    private static func isUsableChapterReviewSummary(_ body: String) -> Bool {
+        guard let data = body.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data),
+              let root = object as? [String: Any],
+              let payload = root["data"] as? [String: Any] else {
+            return false
+        }
+        // The source treats a missing list as an auth/error response. Cache only the
+        // response shape that can actually render paragraph badges, so a temporary
+        // login/quota error is never kept for the cache lifetime.
+        return payload["list"] is [Any]
+    }
+
+    /// Starts Qidian's paragraph-review request while the source JS is still fetching chapter
+    /// content. The source's later synchronous `java.ajax` call joins this in-flight request,
+    /// so the complete original marker list is still rendered. Other sources do not enter this
+    /// path because it requires the exact review endpoint in their own jsLib.
+    private func prefetchReviewSummaryIfPossible(
+        source: BookSource,
+        chapterRef: OnlineChapterRef?
+    ) {
+        guard source.jsLib.contains("chapterReview/reviewSummary"),
+              let chapterRef,
+              let (bookID, chapterID) = Self.reviewSummaryIdentifiers(from: chapterRef.url),
+              let host = Self.reviewSummaryHost(in: source.jsLib),
+              var components = URLComponents(string: "\(host)/majax/chapterReview/reviewSummary")
+        else { return }
+
+        let csrfToken = CookieStore.shared.getKey(url: host, key: "_csrfToken")
+        components.queryItems = [
+            URLQueryItem(name: "bookId", value: bookID),
+            URLQueryItem(name: "chapterId", value: chapterID),
+            URLQueryItem(name: "_csrfToken", value: csrfToken)
+        ]
+        guard let url = components.url else { return }
+        let sourceKey = "\(source.bookSourceUrl)#\(source.lastUpdateTime)"
+        let requestURL = url.absoluteString
+        guard case .owner = ReviewSummaryResponseCache.shared.beginRequest(
+            sourceKey: sourceKey,
+            requestURL: requestURL
+        ) else { return }
+
+        var request = URLRequest(
+            url: url,
+            cachePolicy: .reloadIgnoringLocalCacheData,
+            timeoutInterval: WebFetcher.sourceRequestTimeout
+        )
+        for (key, value) in resolvedSourceHeaders() {
+            request.setValue(value, forHTTPHeaderField: key)
+        }
+        LoginManager.shared.applyLoginHeaders(to: &request, sourceUrl: source.bookSourceUrl)
+        let cookie = CookieStore.shared.get(url: requestURL)
+        if !cookie.isEmpty {
+            request.setValue(cookie, forHTTPHeaderField: "Cookie")
+        }
+        request = LegadoOutgoingHeaders.prepared(request, as: .okHttp)
+
+        let started = ProcessInfo.processInfo.systemUptime
+        let task = BoundedResponseLoader.dataTask(
+            with: request, session: requestSession, transport: "reviewSummary"
+        ) { data, response, _ in
+            let statusCode = (response as? HTTPURLResponse)?.statusCode
+            let body = data.flatMap { String(data: $0, encoding: .utf8) }
+            let usable = statusCode.map({ (200..<300).contains($0) }) == true
+                && body.map(Self.isUsableChapterReviewSummary) == true
+            ReviewSummaryResponseCache.shared.finishRequest(
+                usable ? body : nil,
+                sourceKey: sourceKey,
+                requestURL: requestURL
+            )
+            SourcePerfTrace.record(
+                "chapter.reviewSummary.prefetch",
+                source.bookSourceName,
+                since: started,
+                thresholdMs: 0
+            )
+        }
+        task.resume()
+    }
+
+    private static func reviewSummaryHost(in jsLib: String) -> String? {
+        let pattern = #"(?:const|let|var)\s+ho\s*=\s*['\"]([^'\"]+)['\"]"#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(
+                  in: jsLib,
+                  range: NSRange(location: 0, length: (jsLib as NSString).length)
+              ) else { return nil }
+        let host = (jsLib as NSString).substring(with: match.range(at: 1))
+        guard URL(string: host)?.host != nil else { return nil }
+        return host.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    }
+
+    private static func reviewSummaryIdentifiers(from rawURL: String) -> (String, String)? {
+        if let components = URLComponents(string: rawURL),
+           let bookID = components.queryItems?.first(where: { $0.name == "bookId" })?.value,
+           let chapterID = components.queryItems?.first(where: {
+               $0.name == "chapterId" || $0.name == "id"
+           })?.value,
+           !bookID.isEmpty, !chapterID.isEmpty {
+            return (bookID, chapterID)
+        }
+
+        guard rawURL.lowercased().hasPrefix("data:"),
+              let comma = rawURL.firstIndex(of: ",") else { return nil }
+        let metadata = rawURL[rawURL.index(rawURL.startIndex, offsetBy: 5)..<comma]
+        let tail = rawURL[rawURL.index(after: comma)...]
+        let payload = tail.split(separator: ",", maxSplits: 1, omittingEmptySubsequences: false)
+            .first.map(String.init) ?? String(tail)
+        let data: Data?
+        if metadata.lowercased().contains(";base64") {
+            data = Data(base64Encoded: payload, options: .ignoreUnknownCharacters)
+        } else {
+            data = (payload.removingPercentEncoding ?? payload).data(using: .utf8)
+        }
+        guard let data,
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        func stringValue(_ key: String) -> String? {
+            if let value = object[key] as? String { return value }
+            if let value = object[key] as? NSNumber { return value.stringValue }
+            return nil
+        }
+        guard let bookID = stringValue("bookId"),
+              let chapterID = stringValue("chapterId") ?? stringValue("id"),
+              !bookID.isEmpty, !chapterID.isEmpty else { return nil }
+        return (bookID, chapterID)
+    }
+
+    // MARK: - Parsing API (matches BookSourceParsingPipeline signatures)
+
+    /// Legado `ImageUtils.decode`: runs `coverDecodeJs` / `ruleContent.imageDecode`
+    /// over downloaded image bytes. The script sees `result` (byte array) and
+    /// `src`, and returns the decoded bytes. nil = decode failed (keep original).
+    func decodeImageBytes(_ data: Data, src: String, ruleJs: String) -> Data? {
+        var script = ruleJs.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !script.isEmpty, !data.isEmpty else { return nil }
+        if script.hasPrefix("@js:") {
+            script = String(script.dropFirst(4))
+        } else if script.lowercased().hasPrefix("<js>"),
+                  let closeRange = script.range(of: "</js>", options: [.caseInsensitive, .backwards]) {
+            script = String(script[script.index(script.startIndex, offsetBy: 4)..<closeRange.lowerBound])
+        }
+        evaluateJsLibIfNeeded()
+        let decoded = jsEngine.evaluateBytes(script, data: data, bindings: ["src": src])
+        if decoded == nil {
+            // A thrown rule is already logged by the engine; a rule that returns something other
+            // than bytes is not, and the caller then draws the still-encrypted original.
+            AppLogger.parse("⟐ image decode failed", context: [
+                "source": sourceRuleData.source.bookSourceName,
+                "src": String(src.prefix(300)),
+                "error": jsEngine.lastError ?? "rule returned no bytes"
+            ])
+        }
+        return decoded
+    }
+
+    /// Runs `ruleContent.imageDecode` purely for its side effects, with no image bytes to hand.
+    ///
+    /// Legado calls the rule after an image is decoded, and sources hang per-image bookkeeping off
+    /// it — 同人小说网 clears the memory flag that makes `createSvg()` draw the 段評 bubble, so the
+    /// next call (the user's tap) opens the review page instead. Images whose bytes we never
+    /// downloaded because the source's own JS produced them (`LegadoImageSourceResolver`) still owe
+    /// the source that call. `result` is bound to an empty byte array, through the same binding as
+    /// `decodeImageBytes` so a rule that reads it as a stream does not throw: the rules that use
+    /// this hook return `result` untouched, and the return value is irrelevant here.
+    func runImageDecodeHook(src: String, ruleJs: String) {
+        var script = ruleJs.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !script.isEmpty else { return }
+        if script.hasPrefix("@js:") {
+            script = String(script.dropFirst(4))
+        } else if script.lowercased().hasPrefix("<js>"),
+                  let closeRange = script.range(of: "</js>", options: [.caseInsensitive, .backwards]) {
+            script = String(script[script.index(script.startIndex, offsetBy: 4)..<closeRange.lowerBound])
+        }
+        evaluateJsLibIfNeeded()
+        _ = jsEngine.evaluateBytes(script, data: Data(), bindings: ["src": src])
+    }
+
+    /// Evaluates a bare source-JS expression with `jsLib` in scope and returns its string result.
+    ///
+    /// This is Legado's `AnalyzeUrl` `UrlOption.js` / image click-config contract: the source ships
+    /// a function call, we run it in the source's own runtime, and what it returns is the answer.
+    /// jsLib is hash-guarded, so the ensure call is a no-op once loaded.
+    func evaluateSourceScript(_ script: String, bindings: [String: Any] = [:]) -> String? {
+        let trimmed = script.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        evaluateJsLibIfNeeded()
+        return jsEngine.withExecutionStage("sourceScript") {
+            jsEngine.evaluateIsolated(trimmed, bindings: bindings)
+        }
+    }
+
+    /// Evaluates a persisted image click action against the chapter snapshot that
+    /// produced it. Source sessions are intentionally shared, so restoring these
+    /// bindings is required before every tap to prevent a later chapter parse from
+    /// changing `book`, `chapter`, `result`, or `src` underneath an older page.
+    /// `extraBindings` adds names the script reads besides `src`/`baseUrl` — `event` for a
+    /// source's `callBackJs` (`SourceCallBackService`).
+    func evaluateSourceAction(
+        _ action: ReaderHTMLUtilities.LegadoSourceActionContext,
+        extraBindings: [String: String] = [:]
+    ) -> String? {
+        guard action.version == ReaderHTMLUtilities.LegadoSourceActionContext.currentVersion,
+              action.sourceURL == sourceRuleData.source.bookSourceUrl else { return nil }
+        evaluateJsLibIfNeeded()
+        loadRuntimeVariables(action.runtimeVariables)
+        var bookVariables = action.runtimeVariables
+        bookVariables["book.durChapterIndex"] = "\(action.book.durChapterIndex)"
+        bookVariables["book.durChapterTitle"] = action.book.durChapterTitle
+        bookVariables["book.order"] = "\(action.book.order)"
+        bookVariables["book.type"] = "\(action.book.type)"
+        bookVariables["book.imageStyle"] = action.book.imageStyle
+        bookVariables["book.name"] = action.book.name
+        bookVariables["book.author"] = action.book.author
+        bookVariables["book.coverUrl"] = action.book.coverURL
+        bookVariables["book.bookUrl"] = action.book.bookURL
+        bookVariables["book.tocUrl"] = action.book.tocURL
+        bookVariables["book.abstract"] = action.book.abstract
+        setBookContext(runtimeVariables: bookVariables)
+        jsEngine.setChapterBridge(LegadoChapterBridge(
+            index: action.chapter.index,
+            title: action.chapter.title,
+            order: action.chapter.order,
+            url: action.chapter.url,
+            isVip: action.chapter.isVip
+        ))
+        return jsEngine.withExecutionStage("sourceAction") {
+            jsEngine.evaluateIsolated(
+                action.script,
+                result: action.result,
+                bindings: [
+                    "src": action.result,
+                    "baseUrl": action.baseURL,
+                    "baseURL": action.baseURL,
+                ].merging(extraBindings) { _, extra in extra }
+            )
+        }
+    }
+
+    /// Runs one of the explore page's own scripts — a button's action, an input's or a
+    /// toggle's action, a kind's display name — as Legado's `BaseSource.evalJS` does:
+    /// `baseUrl` is the source's key, and `java`, `source`, `cache` and the explore
+    /// `infoMap` are the context's own.
+    func evaluateExploreKindScript(_ script: String) -> String? {
+        evaluateJsLibIfNeeded()
+        return jsEngine.withExecutionStage("exploreKind") {
+            jsEngine.evaluateIsolated(script, bindings: [
+                "baseUrl": sourceRuleData.source.bookSourceUrl,
+                "baseURL": sourceRuleData.source.bookSourceUrl,
+            ])
+        }
+    }
+
+    /// The source's explore `infoMap` (see `JSCoreEngine.exploreInfoMapValues`).
+    func exploreInfoMapValues() -> [String: String] {
+        jsEngine.exploreInfoMapValues()
+    }
+
+    func setExploreInfoMapValue(_ value: String, forKey key: String) {
+        jsEngine.setExploreInfoMapValue(value, forKey: key)
+    }
+
+    /// Presents URLs that source JS opens via `java.showBrowser` / `java.startBrowser`.
+    /// Reading a 段評 bubble's click action means running the source's JS and seeing where it
+    /// wants to send the user, so this has to be reachable from outside the parsing pipeline.
+    var browserPresentHandler: ((SourceBrowserRequest, @escaping @Sendable (String?) -> Void) -> Void)? {
+        get { jsEngine.browserPresentHandler }
+        set { jsEngine.browserPresentHandler = newValue }
+    }
+
+    /// Presents source-authored HTML passed through Legado's four-argument browser API.
+    var browserPagePresentHandler: ((LegadoBrowserPageRequest) -> Void)? {
+        get { jsEngine.browserPagePresentHandler }
+        set { jsEngine.browserPagePresentHandler = newValue }
+    }
+
+    /// `java.toast` / `java.longToast`. A background parse only logs them; a host running a
+    /// script the reader started (a 簡介 button) shows them for that evaluation.
+    var toastHandler: (@Sendable (String) -> Void)? {
+        get { jsEngine.toastHandler }
+        set { jsEngine.toastHandler = newValue }
+    }
+
+    /// `java.refreshBookInfo()` / `java.refreshBookToc()`, which only a book detail page answers.
+    var refreshBookInfoHandler: (() -> Void)? {
+        get { jsEngine.refreshBookInfoHandler }
+        set { jsEngine.refreshBookInfoHandler = newValue }
+    }
+
+    /// `java.refreshExplore()` — set while a source's page runs an explore action.
+    var refreshExploreHandler: (() -> Void)? {
+        get { jsEngine.refreshExploreHandler }
+        set { jsEngine.refreshExploreHandler = newValue }
+    }
+
+    var refreshBookTocHandler: (() -> Void)? {
+        get { jsEngine.refreshBookTocHandler }
+        set { jsEngine.refreshBookTocHandler = newValue }
+    }
+
+    /// Legado-fork `hasMoreRule`: a JS expression run against the fetched page
+    /// body (`result`) that answers whether a next result page exists.
+    /// Returns nil when evaluation fails so callers fall back to heuristics.
+    func evaluateHasMoreRule(_ rule: String, html: String) -> Bool? {
+        var script = rule.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !script.isEmpty else { return nil }
+        if script.hasPrefix("@js:") {
+            script = String(script.dropFirst(4))
+        } else if script.lowercased().hasPrefix("<js>"),
+                  let closeRange = script.range(of: "</js>", options: [.caseInsensitive, .backwards]) {
+            script = String(script[script.index(script.startIndex, offsetBy: 4)..<closeRange.lowerBound])
+        }
+        guard let raw = jsEngine.evaluateIsolated(script, result: html, bindings: [:]) else {
+            return nil
+        }
+        let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalized.isEmpty || normalized == "false" || normalized == "0"
+            || normalized == "null" || normalized == "undefined" {
+            return false
+        }
+        return true
+    }
+
+    /// - Parameter pageVariables: what the page's request URL put (`fetch`'s `pageScope`).
+    func parseSearchResults(
+        html: String,
+        baseURL: String,
+        source: BookSource,
+        pageVariables: [String: String]? = nil,
+        earlyFilter: ((_ name: String, _ author: String) -> Bool)? = nil
+    ) throws -> [OnlineBook] {
+        let documents = JsoupDocumentCache.beginParse()
+        defer { endParse(documents) }
+        let cpuSpan = SourcePerfTrace.cpuStart()
+        defer { SourcePerfTrace.record("search.rules", "bytes=\(html.utf8.count) \(source.bookSourceName)", since: cpuSpan) }
+        // Legado `BookList.analyzeBookList` (legado-E, MD3 and upstream agree): a search can land
+        // on one book's page — a site that redirects an exact title to its book (半夏小說,
+        // YCK1330 report). A final URL matching `bookUrlPattern` is that page, read with the
+        // detail rules; so is a page whose list rule selects nothing when the source sets no
+        // pattern.
+        let bookUrlPattern = source.bookUrlPattern.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !bookUrlPattern.isEmpty, Self.urlMatchesBookPattern(baseURL, pattern: bookUrlPattern) {
+            return try searchResponseAsBookPage(
+                html: html, baseURL: baseURL, source: source, pageVariables: pageVariables,
+                earlyFilter: earlyFilter
+            ).map { [$0.withInfoHTML(html)] } ?? []
+        }
+
+        let engine = makeEngine()
+        let rule = source.ruleSearch
+        var withoutLink: [String] = []
+        var selectedCount = 0
+        let exceptionMark = jsEngine.uncaughtExceptionMark()
+        let books = listItems(
+            engine: engine, content: html, baseURL: baseURL, listRule: rule.bookList,
+            fields: RuleListFields(name: rule.name, author: rule.author, bookUrl: rule.bookUrl, coverUrl: rule.coverUrl,
+                                   intro: rule.intro, wordCount: rule.wordCount, lastChapter: rule.lastChapter, kind: rule.kind),
+            pageVariables: pageVariables,
+            earlyFilter: earlyFilter,
+            onMissingLink: { withoutLink.append($0) },
+            onSelected: { selectedCount = $0 }
+        ).map { OnlineBook($0, source: source) }
+        if books.isEmpty, let thrown = jsEngine.uncaughtExceptions(since: exceptionMark).first {
+            throw ModernParserBridgeError.scriptError(thrown)
+        }
+        if selectedCount == 0, bookUrlPattern.isEmpty {
+            // Legado's "列表为空,按详情页解析". A page that is neither — a "no results" page —
+            // reads no name and stays empty. Legado's search drops a source whose detail rules
+            // throw here, so a throw is that empty result too, logged.
+            do {
+                return try searchResponseAsBookPage(
+                    html: html, baseURL: baseURL, source: source, pageVariables: pageVariables,
+                    earlyFilter: earlyFilter
+                ).map { [$0.withInfoHTML(html)] } ?? []
+            } catch {
+                AppLogger.parse("Empty search list did not read as a book page", context: [
+                    "source": source.bookSourceName, "error": "\(error)",
+                ], level: .notice)
+                return []
+            }
+        }
+        if !withoutLink.isEmpty {
+            // Why a row a source listed is not in 搜尋, on a device.
+            AppLogger.parse("Search rows without a book link were left out", context: [
+                "source": source.bookSourceName, "count": "\(withoutLink.count)",
+                "first": String(withoutLink[0].prefix(40)),
+            ], level: .notice)
+        }
+
+        engine.setContent(html, baseUrl: baseURL)
+        return books
+    }
+
+    /// Legado `BookList.getInfoItem`: the response read with the detail rules, as the one search
+    /// result, its link the page's own URL. `nil` when it reads no name or the filter refuses it.
+    private func searchResponseAsBookPage(
+        html: String,
+        baseURL: String,
+        source: BookSource,
+        pageVariables: [String: String]?,
+        earlyFilter: ((_ name: String, _ author: String) -> Bool)?
+    ) throws -> OnlineBook? {
+        AppLogger.parse("List response read as a book page", context: [
+            "source": source.bookSourceName, "url": String(baseURL.prefix(160)),
+        ], level: .notice)
+        let book = try parseBookInfo(
+            html: html, bookUrl: baseURL, baseURL: baseURL, source: source,
+            runtimeVariables: pageVariables
+        )
+        guard !book.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        if let earlyFilter, !earlyFilter(book.name, book.author) { return nil }
+        return book
+    }
+
+    /// Kotlin `String.matches(Regex)`: the whole URL. An invalid pattern matches nothing, logged.
+    static func urlMatchesBookPattern(_ url: String, pattern: String) -> Bool {
+        do {
+            let regex = try NSRegularExpression(pattern: "^(?:\(pattern))$")
+            return regex.firstMatch(in: url, range: NSRange(url.startIndex..., in: url)) != nil
+        } catch {
+            AppLogger.parse("bookUrlPattern is not a valid regex", context: [
+                "pattern": String(pattern.prefix(120)), "error": "\(error)",
+            ])
+            return false
+        }
+    }
+
+    func parseBookInfo(
+        html: String,
+        bookUrl: String,
+        baseURL: String,
+        source: BookSource,
+        runtimeVariables: [String: String]? = nil
+    ) throws -> OnlineBook {
+        let documents = JsoupDocumentCache.beginParse()
+        defer { endParse(documents) }
+        let cpuSpan = SourcePerfTrace.cpuStart()
+        defer { SourcePerfTrace.record("detail.rules", "bytes=\(html.utf8.count) \(source.bookSourceName)", since: cpuSpan) }
+        loadRuntimeVariables(runtimeVariables)
+        setBookContext(runtimeVariables: runtimeVariables)
+        if !bookUrl.isEmpty {
+            jsEngine.bookBridge.bookUrl = bookUrl
+        }
+        jsEngine.setChapterBridge(LegadoChapterBridge())
+        // Legado's `BookInfo.analyzeBookInfo` runs these rules against the book, so a `@put` or
+        // `java.put` here is the book's: it comes back in the result's `runtimeVariables`, not
+        // in the source's stored state.
+        let bookScope = RuleData()
+        runtimeBookScope = bookScope
+        runtimeChapterScope = nil
+        defer { runtimeBookScope = nil }
+        let engine = makeEngine()
+        engine.book = bookScope
+        setPage(html, on: engine, ruleURL: bookUrl, pageURL: baseURL)
+
+        // Legado `BookInfo.analyzeBookInfo`: `analyzeRule.setContent(analyzeRule.getElement(init))`
+        // (legado-E, MD3 and upstream agree). The detail fields read what `init` selects — a jsoup
+        // rule's elements, a JSONPath object, an `:` AllInOne regex's groups, a script's value —
+        // and an `init` that only `@put`s variables leaves them nothing, as Legado's empty
+        // `Elements` does (`getElement` answers "", its string).
+        //
+        // This used to read `init` with `getString` — text, so `class.info` gave the fields a
+        // string instead of the element — and when that was empty it evaluated the raw rule as
+        // JavaScript, twice. `@put:{…}`-only inits (群小說 and many others in YCK 1330) threw
+        // `SyntaxError: Invalid character '@'` on every detail page.
+        let initRule = source.ruleBookInfo.initScript
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !initRule.isEmpty {
+            guard let initContent = engine.getElement(ruleStr: initRule) else {
+                // Legado's `setContent(null)` throws "内容不可空" and the detail fails.
+                throw ModernParserBridgeError.parseError(
+                    "ruleBookInfo.init produced no content (jsError: \(jsEngine.lastError ?? "none"))"
+                )
+            }
+            // A script's value stays what it returned. JSON text is read by key as it is (a
+            // `{`-led string is JSON content), and its `String(result)` is that text, as the
+            // String Legado's content is. Parsing it into a dictionary made it read as a
+            // `LinkedHashMap` (`{id=12, …}`) instead.
+            engine.setContent(initContent, baseUrl: engine.baseUrl)
+        }
+
+        // Legado's `analyzeBookInfo` writes each field into the book as soon as it is read, so a
+        // later rule — and the TOC and content stages after it — read `book.name` and the rest
+        // (legado-E, MD3 and upstream agree). The book starts as the search result
+        // (`fetchBookInfoPackage` seeds it); name and author replace a known one only when the
+        // source allows renaming. The returned fields stay the parsed ones: the search result's
+        // values are merged in by `BookInfoPackage.merging(searchResult:canReName:)`.
+        let book = jsEngine.bookBridge
+        let canReName = !source.ruleBookInfo.canReName
+            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let name = engine.getString(ruleStr: source.ruleBookInfo.name)
+        if !name.isEmpty, canReName || book.name.isEmpty { book.name = name }
+        let author = engine.getString(ruleStr: source.ruleBookInfo.author)
+        if !author.isEmpty, canReName || book.author.isEmpty { book.author = author }
+        let kind = engine.getStringList(ruleStr: source.ruleBookInfo.kind)
+            .joined(separator: ",")
+        if !kind.isEmpty { book.kind = kind }
+        let wordCount = engine.getString(ruleStr: source.ruleBookInfo.wordCount)
+        if !wordCount.isEmpty { book.wordCount = wordCount }
+        let lastChapter = engine.getString(ruleStr: source.ruleBookInfo.lastChapter)
+        if !lastChapter.isEmpty { book.latestChapterTitle = lastChapter }
+        let intro = engine.getString(ruleStr: source.ruleBookInfo.intro)
+        if !intro.isEmpty { book.intro = intro }
+        // No cover leaves this empty and the UI keeps the search result's cover. Sources with
+        // an empty ruleBookInfo (七猫/书旗 ship `{}`) used to get the page URL here instead.
+        let coverUrl = engine.getOptionalURL(ruleStr: source.ruleBookInfo.coverUrl)
+        if !coverUrl.isEmpty { book.coverUrl = coverUrl }
+        // Same guard for tocUrl: an empty rule would otherwise resolve to baseUrl (site root) and
+        // we'd scrape the homepage as a TOC. Empty rule → fall back to the book's own URL.
+        let tocRule = source.ruleBookInfo.tocUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        let tocUrlRaw = tocRule.isEmpty ? "" : engine.getString(ruleStr: tocRule, isUrl: true)
+        let tocUrl = tocUrlRaw.isEmpty ? bookUrl : tocUrlRaw
+        book.tocUrl = tocUrl
+
+        return OnlineBook(
+            // Leave empty when the source has no/empty ruleBookInfo (e.g. 七猫/书旗 ship `{}`)
+            // or the name rule yields nothing — the detail UI then falls back to the search
+            // result's title instead of clobbering it with a placeholder.
+            name: name,
+            author: author,
+            intro: intro,
+            coverUrl: coverUrl,
+            bookUrl: bookUrl,
+            tocUrl: tocUrl,
+            wordCount: wordCount,
+            lastChapter: lastChapter,
+            kind: kind,
+            sourceId: source.id,
+            sourceName: source.bookSourceName,
+            runtimeVariables: dumpRuntimeVariables(),
+            // Legado `BookInfo.analyzeBookInfo`: `if (book.tocUrl == baseUrl) book.tocHtml = body`.
+            tocHtml: tocUrl == bookUrl ? html : nil
+        )
+    }
+
+    func parseTOC(
+        html: String,
+        baseURL: String,
+        ruleURL: String? = nil,
+        source: BookSource,
+        runtimeVariables: [String: String]? = nil
+    ) throws -> [OnlineChapterRef] {
+        let documents = JsoupDocumentCache.beginParse()
+        defer { endParse(documents) }
+        let cpuSpan = SourcePerfTrace.cpuStart()
+        defer { SourcePerfTrace.record("toc.rules", "bytes=\(html.utf8.count) \(source.bookSourceName)", since: cpuSpan) }
+        lastTOCRuntimeVariables = nil
+        loadRuntimeVariables(runtimeVariables)
+        setBookContext(runtimeVariables: runtimeVariables)
+        jsEngine.setChapterBridge(LegadoChapterBridge())
+        let engine = makeEngine()
+        let bookScope = RuleData()
+        runtimeBookScope = bookScope
+        runtimeChapterScope = nil
+        engine.book = bookScope
+        defer {
+            runtimeChapterScope = nil
+            runtimeBookScope = nil
+        }
+        setPage(html, on: engine, ruleURL: ruleURL, pageURL: baseURL)
+
+        let listRule = source.ruleToc.chapterList
+        guard !listRule.isEmpty else { return [] }
+
+        // Each page in its own order: the `-` reverses the whole TOC once every page is read
+        // (`BookSourceFetcher.assembledTOC`).
+        let elements = engine.getElements(ruleStr: Self.tocListRule(listRule).rule)
+        guard !elements.isEmpty else {
+            // Device-visible diagnostic: an empty chapter list almost always means the
+            // chapterList rule's JS threw (e.g. a TDZ on `let result`, a failed java.ajax,
+            // or a missing jsLib symbol). Surface the source + last JS error to Console so
+            // "目录为空" is diagnosable without the in-app debug engine.
+            AppLogger.parse("TOC chapterList produced 0 chapters", context: [
+                "source": source.bookSourceName,
+                "jsError": jsEngine.lastError ?? "none",
+                "tocUrl": String(baseURL.prefix(120)),
+                "bodyLen": "\(html.count)",
+                "bodyHead": String(html.prefix(120)),
+                "rule": String(listRule.prefix(60))
+            ])
+            return []
+        }
+
+        // `chapterList` runs in book scope in Legado. Capture its mutations once,
+        // before per-row rules establish a chapter scope. Reusing this snapshot as
+        // every row's runtimeVariables multiplies whole-book maps by chapter count.
+        let bookRuntimeVariables = dumpRuntimeVariables()
+        lastTOCRuntimeVariables = bookRuntimeVariables
+
+        let formatJs = source.ruleToc.formatJs.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Most sources have no 更新時間 rule; skipping it spares every row an evaluation.
+        let updateTimeRule = source.ruleToc.updateTime.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        var chapters: [OnlineChapterRef] = []
+        chapters.reserveCapacity(elements.count)
+        // Drain autorelease pool every 200 elements to prevent OOM from SwiftSoup DOM accumulation
+        let batchSize = 200
+        for batchStart in stride(from: 0, to: elements.count, by: batchSize) {
+            let batchEnd = min(batchStart + batchSize, elements.count)
+            autoreleasepool {
+                for index in batchStart..<batchEnd {
+                    // Each chapter starts from the list rule's book scope. A put made
+                    // while parsing one row must not leak into the next row.
+                    let chapterScope = RuleData()
+                    runtimeChapterScope = chapterScope
+                    engine.chapter = chapterScope
+                    setBookContext(runtimeVariables: bookRuntimeVariables)
+                    jsEngine.setChapterBridge(LegadoChapterBridge(chapterScope: currentChapterScope))
+                    let chapterBaseline = dumpRuntimeVariables() ?? [:]
+                    let element = elements[index]
+                    setPage(element, on: engine, ruleURL: ruleURL, pageURL: baseURL)
+
+                    var title = ReaderHTMLUtilities.displayText(
+                        fromHTMLFragment: engine.getString(ruleStr: source.ruleToc.chapterName)
+                    )
+                    let url = engine.getChapterURL(ruleStr: source.ruleToc.chapterUrl)
+                    // Legado's `BookChapterList` adds a chapter only when its title is not empty.
+                    // A URL alone is no chapter: a blank link reads as the TOC page itself
+                    // (`bookChapter.url = baseUrl`), so 同人小说's title row (`<td><h1>…</h1></td>`,
+                    // no link) became chapter one and its "content" was the TOC page.
+                    guard !title.isEmpty else { continue }
+
+                    let isVolumeStr = engine.getString(ruleStr: source.ruleToc.isVolume)
+                    let isVipStr = engine.getString(ruleStr: source.ruleToc.isVip)
+                    let isPayStr = engine.getString(ruleStr: source.ruleToc.isPay)
+                    let isVolume = LegadoTruth.isTrue(isVolumeStr)
+                    let isVip = LegadoTruth.isTrue(isVipStr)
+                    let isPay = LegadoTruth.isTrue(isPayStr)
+                    // legado: `bookChapter.tag = analyzeRule.getString(upTimeRule)`.
+                    let updateTime = updateTimeRule.isEmpty ? "" : ReaderHTMLUtilities.displayText(
+                        fromHTMLFragment: engine.getString(ruleStr: updateTimeRule)
+                    )
+
+                    if !formatJs.isEmpty {
+                        let chapterDict: [String: Any] = [
+                            "index": index,
+                            "title": title,
+                            "url": url,
+                            "isVolume": isVolume,
+                            "isVip": isVip,
+                            "isPay": isPay
+                        ]
+                        if let formatted = jsEngine.evaluateIsolated(
+                            formatJs,
+                            bindings: ["index": index, "title": title, "chapter": chapterDict]
+                        ), !formatted.isEmpty {
+                            title = ReaderHTMLUtilities.displayText(fromHTMLFragment: formatted)
+                        }
+                    }
+
+                    let chapterSnapshot = dumpRuntimeVariables() ?? [:]
+                    let chapterDelta = chapterSnapshot.filter {
+                        chapterBaseline[$0.key] != $0.value
+                    }
+                    let ref = OnlineChapterRef(
+                        index: index,
+                        title: title,
+                        url: url,
+                        isVolume: isVolume,
+                        isVip: isVip,
+                        isPay: isPay,
+                        updateTime: updateTime.isEmpty ? nil : updateTime,
+                        runtimeVariables: chapterDelta.isEmpty ? nil : chapterDelta
+                    )
+                    if ref.isVolume || ref.hasVolumeSeparatorTitle || index < 12 {
+                        AppLogger.parse("⟐ tocItem", context: [
+                            "index": index,
+                            "title": title,
+                            "isVolumeRaw": isVolumeStr,
+                            "isVolume": ref.isVolume,
+                            "volumeTitle": ref.hasVolumeSeparatorTitle,
+                            "shouldSkip": ref.shouldRenderAsVolumeSeparator,
+                            "isVip": ref.isVip,
+                            "isPay": ref.isPay,
+                            "urlLen": ref.sanitizedContentURL.count,
+                            "urlHead": String(ref.sanitizedContentURL.prefix(120))
+                        ])
+                    }
+                    chapters.append(ref)
+                }
+            }
+        }
+
+        runtimeChapterScope = nil
+        engine.chapter = nil
+        setBookContext(runtimeVariables: bookRuntimeVariables)
+
+        return chapters
+    }
+
+    /// `ruleToc.chapterList` without its leading `-`, and whether it had one. Legado's
+    /// `BookChapterList.getChapterList` strips the `-` before reading any page and reverses the
+    /// chapters of all pages together (legado-E, MD3 and upstream agree). Reversing each page
+    /// as it was read put a newest-first TOC split over pages out of order: [51…100, 1…50]
+    /// instead of [1…100] (书文小说, 九五看书, 搜读中文 in YCK 1329–1331).
+    static func tocListRule(_ rule: String) -> (rule: String, reverses: Bool) {
+        let trimmed = rule.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Same test as `ModernRuleEngine.getElements`, which reverses a `-` list on its own.
+        guard trimmed.hasPrefix("-"), !trimmed.hasPrefix("--") else { return (rule, false) }
+        return (String(trimmed.dropFirst()), true)
+    }
+
+    /// `ruleToc.nextTocUrl` as Legado's `BookChapterList.analyzeChapterList` reads it (legado,
+    /// MD3 and Sigma agree): `getStringList(isUrl = true)` — one URL per line, each resolved
+    /// on its own — without the page's own URL. Read with `getString` it joined a page-select
+    /// TOC's options into one URL that matched no page, and handed a rule result tens of MB
+    /// long to `URL(string:relativeTo:)` whole (Crashlytics 4eaef04b, an OOM in its
+    /// percent-encoding).
+    func extractNextTocURLs(
+        html: String,
+        baseURL: String,
+        ruleURL: String? = nil,
+        source: BookSource,
+        runtimeVariables: [String: String]? = nil
+    ) -> [String] {
+        let documents = JsoupDocumentCache.beginParse()
+        defer { endParse(documents) }
+        let rule = source.ruleToc.nextTocUrl
+        guard !rule.isEmpty else { return [] }
+        let cpuSpan = SourcePerfTrace.cpuStart()
+        defer { SourcePerfTrace.record("toc.nextRules", "bytes=\(html.utf8.count) \(source.bookSourceName)", since: cpuSpan) }
+        loadRuntimeVariables(runtimeVariables)
+        let engine = makeEngine()
+        setPage(html, on: engine, ruleURL: ruleURL, pageURL: baseURL)
+        // Legado `BookChapterList`: `if (item != baseUrl)` — the rule's URL for this page.
+        let pageRuleURL = engine.baseUrl
+        return engine.getStringList(ruleStr: rule, isUrl: true).filter { $0 != pageRuleURL }
+    }
+
+    /// One TOC page in a single call: chapters plus the next-page URLs. The
+    /// second rule reuses the page DOM through `JsoupDocumentCache`, so a page
+    /// is parsed once instead of once per rule set.
+    func parseTOCPage(
+        html: String,
+        baseURL: String,
+        ruleURL: String? = nil,
+        source: BookSource,
+        runtimeVariables: [String: String]? = nil
+    ) throws -> (chapters: [OnlineChapterRef], nextTocURLs: [String]) {
+        let documents = JsoupDocumentCache.beginParse()
+        defer { endParse(documents) }
+        let chapters = try parseTOC(
+            html: html, baseURL: baseURL, ruleURL: ruleURL,
+            source: source, runtimeVariables: runtimeVariables
+        )
+        let nextTocURLs = extractNextTocURLs(
+            html: html, baseURL: baseURL, ruleURL: ruleURL,
+            source: source, runtimeVariables: runtimeVariables
+        )
+        return (chapters, nextTocURLs)
+    }
+
+    func parseChapterResult(
+        html: String,
+        baseURL: String,
+        ruleURL: String? = nil,
+        source: BookSource,
+        runtimeVariables: [String: String]? = nil,
+        chapterRef: OnlineChapterRef? = nil,
+        nextChapterURL: String? = nil,
+        isVideoEpisode: Bool = false
+    ) throws -> ChapterParsePayload {
+        let documents = JsoupDocumentCache.beginParse()
+        defer { endParse(documents) }
+        let cpuSpan = SourcePerfTrace.cpuStart()
+        defer { SourcePerfTrace.record("chapter.rules", "bytes=\(html.utf8.count) \(source.bookSourceName)", since: cpuSpan) }
+        loadRuntimeVariables(runtimeVariables)
+        setBookContext(runtimeVariables: runtimeVariables)
+        // Legado's `BookContent` reads a page with `AnalyzeRule(book, source).setChapter(chapter)`,
+        // so a `@put` or `java.put` here is the chapter's: it comes back in the payload's
+        // `runtimeVariables` for the chapter's next page, not in the source's stored state.
+        let chapterScope = RuleData()
+        jsEngine.setChapterBridge(contentChapterBridge(chapterRef, runtimeVariables: runtimeVariables))
+        let engine = makeEngine(nextChapterURL: nextChapterURL)
+        runtimeBookScope = nil
+        runtimeChapterScope = chapterScope
+        engine.chapter = chapterScope
+        defer { runtimeChapterScope = nil }
+        setPage(html, on: engine, ruleURL: ruleURL, pageURL: baseURL)
+
+        // ⟐ contentJS — diagnose 段评-on infinite-loading: if "done" never logs the
+        // ruleContent JS (getComments→ajaxAll) hung; if it logs empty the JS returned
+        // nothing; if it logs content+0 bubbles the comment injection silently failed.
+        let paraState = BookSourceRuntimeStateStore.shared.sourceVariableJSON(
+            for: source.bookSourceUrl
+        )
+        AppLogger.parse("⟐ contentJS start", context: [
+            "title": chapterRef?.title ?? "",
+            "vars": Self.sourceVariableLogSummary(paraState)
+        ])
+        // 段评样式: content JS 的段评注入函数在 iOS 上（deviceType=='苹果'）会走「iOS 变体」，
+        // 产出 <comment count onPress> → app 原生 .commentBadge，完全忽略书源「段评样式」SVG
+        // 设置（起点对话框等）。为忠实还原书源样式，在 content 规则执行前把「iOS 变体」别名成
+        // 「Android 变体」，让 iOS 也按书源段评样式产出 SVG <img>，再由 CommentBubbleSVGRecognizer
+        // 原生重绘、跟随阅读字体。仅同时定义两者的源会被改写；只定义 iOS 变体的源维持原状。
+        // 覆盖两套常见命名: paraForiOS/paraForAndroid 与 getCommentsios/getComments。
+        // 书山这类单一 createSvg 函数则在内部用 deviceType() 二选一：iOS <comment>
+        // 或带点击配置的来源 SVG。仅当函数源码明确同时引用 deviceType 和
+        // createCommentHtmlTag 时，才在本次 content 求值期间切到 SVG 分支。
+        // 注意: createSvg 用 java.get('dev') 选气泡变体，dev='ios'(见 qread 移除)→ios 变体(方形/紧凑)，
+        // dev='android-轻阅读'→轻阅读变体(偏宽)。
+        let aliasedParaForiOS = jsEngine.evaluate(
+            """
+            (function () {
+                var done = [];
+                if (typeof paraForAndroid === 'function' && typeof paraForiOS === 'function') {
+                    paraForiOS = paraForAndroid; done.push('para');
+                }
+                if (typeof getComments === 'function' && typeof getCommentsios === 'function') {
+                    getCommentsios = getComments; done.push('getComments');
+                }
+                if (typeof deviceType === 'function'
+                    && typeof createSvg === 'function'
+                    && typeof createCommentHtmlTag === 'function') {
+                    var createSvgSource = String(createSvg);
+                    if (createSvgSource.indexOf('deviceType') >= 0
+                        && createSvgSource.indexOf('createCommentHtmlTag') >= 0) {
+                        globalThis.__ydOriginalCommentDeviceType = deviceType;
+                        deviceType = function () { return true; };
+                        done.push('sourceSVG');
+                    }
+                }
+                return done.length ? done.join('+') : 'false';
+            })()
+            """
+        ) ?? "false"
+
+        prefetchReviewSummaryIfPossible(source: source, chapterRef: chapterRef)
+        jsEngine.resetJSNetworkMs()
+        lastJSNetworkExchange = nil
+        let _contentStart = Date()
+        reviewResponses.begin()
+        var content: String
+        var handover = LegadoJSBridge.VideoEpisodeHandover()
+        if isVideoEpisode {
+            (content, handover) = jsEngine.handingOverVideoEpisode {
+                engine.getString(ruleStr: source.ruleContent.content)
+            }
+        } else {
+            content = engine.getString(ruleStr: source.ruleContent.content)
+        }
+        let contentResponses = reviewResponses.end()
+        // Snapshot before restoring the temporary deviceType override: every
+        // `jsEngine.evaluate` clears the previous rule error.
+        let contentRuleError = jsEngine.lastError
+        _ = jsEngine.evaluate(
+            """
+            (function () {
+                if (typeof globalThis.__ydOriginalCommentDeviceType === 'function') {
+                    deviceType = globalThis.__ydOriginalCommentDeviceType;
+                    delete globalThis.__ydOriginalCommentDeviceType;
+                }
+            })()
+            """
+        )
+        // 全文替换 — Legado `BookContent.analyzeContent`: line-trim, then run the source's own
+        // `replaceRegex` **through the rule engine**, which is what expands `{{chapter.title}}`
+        // templates and splits `##pattern##replacement`. Handing the raw string to a regex API
+        // instead just fails to compile (`{{…}}` is not valid regex syntax) and silently replaced
+        // nothing — that is why 番茄酱 showed its chapter title twice (the reader's own header plus
+        // the `<h1>` the source embeds in the content, which this rule exists to delete).
+        //
+        // Legado re-adds a literal `　　` indent per line right after this; we deliberately do not.
+        // The legado-lyc branch already gates that on `book.isOnLineTxt` (it is wrong for HTML /
+        // comic / audio content), and this reader indents through `firstLineHeadIndent` on purpose:
+        // a leading U+3000 makes CoreText resolve the whole paragraph run from a glyph that user
+        // fonts like WeReadType may lack, dropping the entire line to PingFang. See
+        // `NodeAttributedStringBuilder.convert`, which also trims U+3000 back off.
+        if !source.ruleContent.replaceRegex.isEmpty {
+            content = content
+                .components(separatedBy: .newlines)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .joined(separator: "\n")
+            content = engine.getString(ruleStr: source.ruleContent.replaceRegex, mContent: content)
+        }
+        if !contentResponses.isEmpty {
+            content = SourcePerfTrace.span("chapter.reviewFullText", source.bookSourceName) {
+                ReviewCardFullText.restoringCutComments(
+                    in: content,
+                    responses: contentResponses,
+                    sourceTransform: sourceFaceTransform
+                )
+            }
+        }
+        let _contentMs = Int(Date().timeIntervalSince(_contentStart) * 1000)
+        // Split a slow chapter.parse: 段評 sources fetch per-paragraph review counts from
+        // inside this content rule (java.ajaxAll), so that network hides here, not in
+        // chapter.network. `chapter.parse − chapter.jsNet ≈ JS CPU (SVG generation etc.)`.
+        let _jsNetMs = jsEngine.takeJSNetworkMs()
+        if _jsNetMs >= 1 {
+            AppLogger.parse("⏱ chapter.jsNet \(Int(_jsNetMs))ms \(source.bookSourceName)")
+        }
+
+        let bubbleCount = content.countMarkers("data:image/svg")
+        AppLogger.parse("⟐ contentJS done", context: [
+            "ms": _contentMs,
+            "len": content.count,
+            "bubbles": bubbleCount,
+            "commentTags": content.countMarkers("<comment", ignoringCase: true),
+            "ydreview": content.countMarkers("ydreview://", ignoringCase: true),
+            "showCmt": content.countMarkers("showcmt", ignoringCase: true),
+            "androidShowCmt": content.countMarkers("androidshowcmt", ignoringCase: true),
+            "aliasParaForiOS": aliasedParaForiOS,
+            "inputLen": html.count,
+            "baseURL": String(baseURL.prefix(120)),
+            "inputHex": Self.hexPreview(html, byteLimit: 32),
+            "inputHasContent": html.containsMarker(#""content""#, ignoringCase: true),
+            "inputHasReview": html.containsMarker("review", ignoringCase: true)
+                || html.containsMarker("comment", ignoringCase: true),
+            "empty": content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            "jsError": contentRuleError ?? "none",
+            "head": String(content.trimmingCharacters(in: .whitespacesAndNewlines).prefix(180))
+        ])
+        // An empty chapter is almost always the source's own HTTP call coming back
+        // with something its JS couldn't use. The exchange is recorded (not logged)
+        // per request, and only dumped here — otherwise every 段評 `ajaxAll` call
+        // would print a body head.
+        if content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let net = lastJSNetworkExchange
+            AppLogger.parse("⟐ contentJS empty · lastJSNet", context: [
+                "source": source.bookSourceName,
+                "url": net?.url ?? "(the rule made no HTTP call)",
+                "status": net?.status ?? "-",
+                "len": net?.length ?? -1,
+                "bodyHead": net?.bodyHead ?? "-"
+            ])
+        }
+        let title = engine.getString(ruleStr: source.ruleContent.title)
+
+        // `sourceRegex` (资源正则) is not matched against the page. Legado uses it only to pick
+        // a resource URL out of a web view's requests (`LegadoHeadlessWebView`); matching the
+        // whole page with it here fed nothing but a log field, and on a long page the
+        // backtracking match was the stack behind a 90-second CPU exception during 書源檢查
+        // (Crashlytics a4c29d35, build 131).
+        if let handedOver = handover.episodeContent {
+            AppLogger.parse("⟐ video episode handed over", context: [
+                "source": source.bookSourceName,
+                "chapterIndex": chapterRef?.index ?? -1,
+                "as": handover.stream != nil ? "stream" : "page",
+            ])
+            content = handedOver
+        }
+        return ChapterParsePayload(
+            content: content,
+            title: title,
+            sourceMatched: true,
+            isPay: false,
+            runtimeVariables: dumpRuntimeVariables()
+        )
+    }
+
+    /// `texts` through the source's own face-code replacer — the `[fn=19]` → 😂 step every 起点
+    /// source runs on a comment before cutting it for its card (`replaceEmoji`,
+    /// `replaceEmojiCodes`, `_dpFaceTxt`), so a response string reads as the card drew it.
+    /// Sources name it differently, so it is found by what it does: a one-argument function
+    /// whose code handles `fn` codes and that turns `[fn=19]` into something else. Without one,
+    /// the texts come back as they went in.
+    private func sourceFaceTransform(_ texts: [String]) -> [String] {
+        guard let input = try? JSONSerialization.data(withJSONObject: texts),
+              let json = String(data: input, encoding: .utf8) else { return texts }
+        let output = jsEngine.evaluate(
+            """
+            (function () {
+                var texts = JSON.parse(globalThis.__ydReviewTexts);
+                delete globalThis.__ydReviewTexts;
+                var face = null;
+                var names = Object.getOwnPropertyNames(globalThis);
+                for (var i = 0; i < names.length && !face; i++) {
+                    var candidate;
+                    try { candidate = globalThis[names[i]]; } catch (e) { continue; }
+                    if (typeof candidate !== 'function' || candidate.length !== 1) continue;
+                    var code;
+                    try { code = Function.prototype.toString.call(candidate); } catch (e) { continue; }
+                    if (code.length > 4000 || !/\\bfn[=|]/.test(code)) continue;
+                    try {
+                        var probe = candidate.call(globalThis, '[fn=19]');
+                        if (typeof probe === 'string' && probe.indexOf('fn=19') < 0) face = candidate;
+                    } catch (e) {}
+                }
+                if (!face) return JSON.stringify(texts);
+                return JSON.stringify(texts.map(function (text) {
+                    try {
+                        var out = face.call(globalThis, text);
+                        return typeof out === 'string' ? out : text;
+                    } catch (e) { return text; }
+                }));
+            })()
+            """,
+            bindings: ["__ydReviewTexts": json]
+        )
+        guard let output else {
+            AppLogger.parse("⟐ reviewCard faceTransform failed", context: ["error": jsEngine.lastError ?? "nil"])
+            return texts
+        }
+        do {
+            return try JSONSerialization.jsonObject(with: Data(output.utf8)) as? [String] ?? texts
+        } catch {
+            AppLogger.parse("⟐ reviewCard faceTransform unreadable", error: error)
+            return texts
+        }
+    }
+
+    /// The chapter's next pages, and its variables once the rule's puts are on them (nil when
+    /// it put nothing). Legado reads `nextContentUrl` with the chapter set, like the content.
+    func extractNextContentURLs(
+        html: String,
+        baseURL: String,
+        ruleURL: String? = nil,
+        source: BookSource,
+        runtimeVariables: [String: String]? = nil,
+        chapterRef: OnlineChapterRef? = nil
+    ) -> (urls: [String], runtimeVariables: [String: String]?) {
+        let documents = JsoupDocumentCache.beginParse()
+        defer { endParse(documents) }
+        let rule = source.ruleContent.nextContentUrl
+        guard !rule.isEmpty else { return ([], nil) }
+        loadRuntimeVariables(runtimeVariables)
+        jsEngine.setChapterBridge(contentChapterBridge(chapterRef, runtimeVariables: runtimeVariables))
+        let engine = makeEngine()
+        let chapterScope = RuleData()
+        runtimeBookScope = nil
+        runtimeChapterScope = chapterScope
+        engine.chapter = chapterScope
+        defer { runtimeChapterScope = nil }
+        setPage(html, on: engine, ruleURL: ruleURL, pageURL: baseURL)
+        let urls = engine.getStringList(ruleStr: rule, isUrl: true).filter { !$0.isEmpty }
+        guard !chapterScope.variableMap.isEmpty else { return (urls, nil) }
+        return (urls, (runtimeVariables ?? [:]).merging(chapterScope.variableMap) { _, put in put })
+    }
+
+    /// Legado's `chapter` while a chapter's pages are read (`BookContent`: the content rule and
+    /// `nextContentUrl` both run with `setChapter(chapter)`). `chapter.putVariable` writes the
+    /// scope `java.put` writes; `getVariable` also reads what the chapter carries from earlier
+    /// stages (`runtimeVariables`: the TOC row's puts, then each page's). That carried map is the
+    /// whole runtime dump, so a key the chapter never set but the source did reads the source's
+    /// value — Legado's `BookChapter.getVariable` would read "" there.
+    private func contentChapterBridge(
+        _ chapterRef: OnlineChapterRef?, runtimeVariables: [String: String]?
+    ) -> LegadoChapterBridge {
+        guard let chapterRef else {
+            return LegadoChapterBridge(chapterScope: currentChapterScope, storedVariables: runtimeVariables ?? [:])
+        }
+        return LegadoChapterBridge(
+            index: chapterRef.index,
+            title: chapterRef.title,
+            order: chapterRef.index,
+            url: chapterRef.url,
+            // Carry the chapter's VIP flag (from ruleToc.isVip) into `chapter.isVip()`.
+            // 起点's content JS does `try { isVip = chapter.isVip() } catch { isVip = result.v }`
+            // to choose `/chapter/vip` vs `/chapter/free`. Building the bridge WITHOUT this
+            // (the build23 regression) left `chapter.isVip()` always false → VIP chapters
+            // were fetched from `/chapter/free` → proxy returned「网络开小差了」. result.v is
+            // never reached because isVip() returns a value (doesn't throw).
+            isVip: chapterRef.isVip,
+            chapterScope: currentChapterScope,
+            storedVariables: runtimeVariables ?? chapterRef.runtimeVariables ?? [:]
+        )
+    }
+
+    // MARK: - Full pipeline methods (fetch + parse)
+
+    // These stages run on the host that owns this bridge (`SourceScriptHost`): their script
+    // work happens there in place, and they suspend only for the network.
+
+    func searchBooks(
+        keyword: String, page: Int = 1, on host: isolated SourceScriptHost<ModernParserBridge>
+    ) async throws -> [OnlineBook] {
+        let source = sourceRuleData.source
+        guard !source.searchUrl.isEmpty else { return [] }
+
+        let pageScope = RuleData()
+        let (body, finalUrl) = try await fetch(
+            ruleUrl: source.searchUrl, key: keyword, page: page, pageScope: pageScope, on: host
+        )
+        return try parseSearchResults(
+            html: body, baseURL: finalUrl, source: source, pageVariables: pageScope.variableMap
+        )
+    }
+
+    func searchBooksStreaming(
+        keyword: String,
+        page: Int = 1,
+        onBatch: @escaping @Sendable ([OnlineBook]) async -> Void,
+        on host: isolated SourceScriptHost<ModernParserBridge>
+    ) async throws -> (books: [OnlineBook], streamed: Bool) {
+        let source = sourceRuleData.source
+        guard !source.searchUrl.isEmpty else { return ([], false) }
+
+        let pageScope = RuleData()
+        let (body, finalUrl) = try await fetch(
+            ruleUrl: source.searchUrl, key: keyword, page: page, pageScope: pageScope, on: host
+        )
+
+        let pageVariables = pageScope.variableMap
+        if let plan = aggregateSearchPlan(fromHexBody: body) {
+            let books = await searchAggregateSubsources(
+                plan: plan,
+                baseURL: finalUrl,
+                source: source,
+                pageVariables: pageVariables,
+                onBatch: onBatch,
+                on: host
+            )
+            return (books, true)
+        }
+
+        let books = try parseSearchResults(
+            html: body, baseURL: finalUrl, source: source, pageVariables: pageVariables
+        )
+        return (books, false)
+    }
+
+    private struct AggregateSearchPlan {
+        var params: [String: Any]
+        var sourceKeys: [String]
+    }
+
+    private func aggregateSearchPlan(fromHexBody body: String) -> AggregateSearchPlan? {
+        guard var params = Self.jsonDictionaryFromHexBody(body),
+              var key = params["key"] as? String,
+              var tab = params["tab"] as? String,
+              var selectedSource = params["sourcesKey"] as? String
+        else {
+            return nil
+        }
+
+        let prefix = key.prefix(2).lowercased()
+        let mediaByPrefix = ["x:": "小说", "t:": "听书", "m:": "漫画", "d:": "短剧",
+                             "x：": "小说", "t：": "听书", "m：": "漫画", "d：": "短剧"]
+        var isQualified = false
+        if let media = mediaByPrefix[prefix] {
+            isQualified = true
+            tab = media
+            key.removeFirst(min(2, key.count))
+        }
+        if let at = key.firstIndex(of: "@") {
+            isQualified = true
+            let source = String(key[key.index(after: at)...])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            key = String(key[..<at]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !source.isEmpty { selectedSource = source }
+        }
+        params["key"] = key
+        params["tab"] = tab
+        params["sourcesKey"] = selectedSource
+
+        if selectedSource != "全部" {
+            return isQualified ? AggregateSearchPlan(params: params, sourceKeys: [selectedSource]) : nil
+        }
+        guard !tab.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+
+        let sourceKeys = configuredAggregateSourceKeys(for: tab)
+        guard sourceKeys.count > 1 else { return nil }
+        params["sourcesKey"] = selectedSource
+        return AggregateSearchPlan(params: params, sourceKeys: sourceKeys)
+    }
+
+    private func configuredAggregateSourceKeys(for tab: String) -> [String] {
+        guard let variableJSON = runtimeStateStore.sourceVariableJSON(
+            for: sourceRuleData.source.bookSourceUrl),
+              let data = variableJSON.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            return []
+        }
+
+        let config = (root["云端配置"] as? [String: Any]) ?? root
+        guard let rawList = config[tab] as? [Any] else { return [] }
+
+        var seen = Set<String>()
+        var keys: [String] = []
+        for item in rawList {
+            guard let key = Self.aggregateSourceKey(from: item) else { continue }
+            guard key != "全部", seen.insert(key).inserted else { continue }
+            keys.append(key)
+        }
+        return keys
+    }
+
+    private func searchAggregateSubsources(
+        plan: AggregateSearchPlan,
+        baseURL: String,
+        source: BookSource,
+        pageVariables: [String: String],
+        onBatch: @escaping @Sendable ([OnlineBook]) async -> Void,
+        on host: isolated SourceScriptHost<ModernParserBridge>
+    ) async -> [OnlineBook] {
+        let maxConcurrentSubsources = min(4, plan.sourceKeys.count)
+        let pool = AggregateBridgePool(
+            source: source, observer: debugObserver, requestSession: requestSession
+        )
+        var allBooks: [OnlineBook] = []
+
+        await withTaskGroup(of: [OnlineBook].self) { group in
+            var nextIndex = 0
+
+            func enqueueNext() {
+                guard nextIndex < plan.sourceKeys.count else { return }
+                let sourceKey = plan.sourceKeys[nextIndex]
+                nextIndex += 1
+
+                var params = plan.params
+                params["sourcesKey"] = sourceKey
+                guard let body = Self.hexBody(forJSONObject: params) else { return }
+
+                group.addTask {
+                    guard !Task.isCancelled else { return [] }
+                    return await SourceScriptThread.run {
+                        pool.withBridge { bridge in
+                            (try? bridge.parseSearchResults(
+                                html: body,
+                                baseURL: baseURL,
+                                source: source,
+                                pageVariables: pageVariables
+                            )) ?? []
+                        }
+                    }
+                }
+            }
+
+            for _ in 0..<maxConcurrentSubsources {
+                enqueueNext()
+            }
+
+            while let books = await group.next() {
+                if Task.isCancelled {
+                    group.cancelAll()
+                    break
+                }
+                if !books.isEmpty {
+                    allBooks.append(contentsOf: books)
+                    await onBatch(books)
+                }
+                enqueueNext()
+            }
+        }
+
+        return allBooks
+    }
+
+    /// Lane-scoped parser bridges for an aggregate source's sub-source fan-out.
+    ///
+    /// Each sub-source parse needs a bridge no other *concurrent* parse is using —
+    /// a bridge carries per-call book/chapter context — but it does not need a
+    /// **fresh** one: the sub-source identity travels in the parsed body
+    /// (`params["sourcesKey"]`), not in bridge state. Building one per sub-source
+    /// meant a JSContext plus its shims and a `jsLib` re-evaluation for every entry,
+    /// which on-device measured 4–32 ms each; 光遇聚合 alone stood up 50+ of them in
+    /// a single search. The task group runs at most `maxConcurrentSubsources` tasks,
+    /// so the pool converges on that many bridges and reuses them for the rest.
+    private final class AggregateBridgePool: @unchecked Sendable {
+        private let source: BookSource
+        private let observer: ((RuleDebugEvent) -> Void)?
+        private let requestSession: URLSession
+        private let lock = NSLock()
+        private var idle: [ModernParserBridge] = []
+
+        init(source: BookSource, observer: ((RuleDebugEvent) -> Void)?, requestSession: URLSession) {
+            self.source = source
+            self.observer = observer
+            self.requestSession = requestSession
+        }
+
+        func withBridge<T>(_ body: (ModernParserBridge) -> T) -> T {
+            let bridge: ModernParserBridge
+            lock.lock()
+            if let reused = idle.popLast() {
+                lock.unlock()
+                bridge = reused
+            } else {
+                lock.unlock()
+                // Built outside the lock: construction can stand up a JSContext, and
+                // holding the lock through it would serialize the very lanes this
+                // pool exists to keep parallel.
+                let fresh = ModernParserBridge(source: source, requestSession: requestSession)
+                fresh.debugObserver = observer
+                bridge = fresh
+            }
+            defer {
+                lock.lock()
+                idle.append(bridge)
+                lock.unlock()
+            }
+            return body(bridge)
+        }
+    }
+
+    private static func aggregateSourceKey(from item: Any) -> String? {
+        if let string = item as? String {
+            let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        if let dict = item as? [String: Any] {
+            for field in ["name", "title", "source", "sourceName", "key"] {
+                if let string = dict[field] as? String {
+                    let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !trimmed.isEmpty { return trimmed }
+                }
+            }
+        }
+        return nil
+    }
+
+    private static func jsonDictionaryFromHexBody(_ body: String) -> [String: Any]? {
+        var bytes: [UInt8] = []
+        var index = body.startIndex
+        while index < body.endIndex {
+            let next = body.index(index, offsetBy: 2, limitedBy: body.endIndex) ?? body.endIndex
+            guard next <= body.endIndex else { return nil }
+            let hex = body[index..<next]
+            guard hex.count == 2, let byte = UInt8(hex, radix: 16) else { return nil }
+            bytes.append(byte)
+            index = next
+        }
+        guard !bytes.isEmpty else { return nil }
+        return try? JSONSerialization.jsonObject(with: Data(bytes)) as? [String: Any]
+    }
+
+    private static func hexBody(forJSONObject object: [String: Any]) -> String? {
+        guard JSONSerialization.isValidJSONObject(object),
+              let data = try? JSONSerialization.data(withJSONObject: object, options: [])
+        else {
+            return nil
+        }
+        return LegadoJSBridge.hexString(data)
+    }
+
+    func getBookInfo(url: String, on host: isolated SourceScriptHost<ModernParserBridge>) async throws -> OnlineBook {
+        let source = sourceRuleData.source
+        let (body, finalUrl) = try await fetch(ruleUrl: url, on: host)
+        return try parseBookInfo(html: body, bookUrl: url, baseURL: finalUrl, source: source)
+    }
+
+    func getChapterList(
+        url: String, on host: isolated SourceScriptHost<ModernParserBridge>
+    ) async throws -> [OnlineChapterRef] {
+        let source = sourceRuleData.source
+        let (body, finalUrl) = try await fetch(ruleUrl: url, on: host)
+        return try parseTOC(html: body, baseURL: finalUrl, ruleURL: url, source: source)
+    }
+
+    func getContent(url: String, on host: isolated SourceScriptHost<ModernParserBridge>) async throws -> String {
+        let source = sourceRuleData.source
+        let (body, finalUrl) = try await fetch(ruleUrl: url, contentStage: true, on: host)
+        return try parseChapterResult(html: body, baseURL: finalUrl, ruleURL: url, source: source).content
+    }
+
+    // MARK: - Explore / Discover
+
+    /// Discover item returned from exploreUrl JS evaluation.
+    ///
+    /// Decoding is intentionally lenient: aggregator sources (e.g. 光遇聚合) emit
+    /// `style` values as numbers/bools (`layout_flexBasisPercent: 0.45`), which a
+    /// strict `[String: String]` decode would reject — failing the *entire* array.
+    ///
+    /// Also `Encodable` (auto-synthesized; `style` is already normalized to strings
+    /// after decode) so `DiscoverKindsCache` can persist parsed discover categories.
+    struct DiscoverItem: Codable {
+        var title: String?
+        var url: String?
+        var style: [String: String]?
+        var type: String?
+        var action: String?
+        var chars: [String]?
+        var `default`: String?
+        var viewName: String?
+
+        enum CodingKeys: String, CodingKey {
+            case title, url, style, type, action, chars, `default`, viewName
+        }
+
+        init(
+            title: String? = nil,
+            url: String? = nil,
+            style: [String: String]? = nil,
+            type: String? = nil,
+            action: String? = nil,
+            chars: [String]? = nil,
+            default defaultValue: String? = nil,
+            viewName: String? = nil
+        ) {
+            self.title = title
+            self.url = url
+            self.style = style
+            self.type = type
+            self.action = action
+            self.chars = chars
+            self.default = defaultValue
+            self.viewName = viewName
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            title = try? c.decodeIfPresent(String.self, forKey: .title)
+            url = try? c.decodeIfPresent(String.self, forKey: .url)
+            type = try? c.decodeIfPresent(String.self, forKey: .type)
+            action = try? c.decodeIfPresent(String.self, forKey: .action)
+            `default` = try? c.decodeIfPresent(String.self, forKey: .default)
+            viewName = try? c.decodeIfPresent(String.self, forKey: .viewName)
+            chars = try? c.decodeIfPresent([String].self, forKey: .chars)
+            if let raw = try? c.decodeIfPresent([String: LenientScalar].self, forKey: .style) {
+                style = raw.mapValues(\.stringValue)
+            } else {
+                style = nil
+            }
+        }
+
+        /// Decodes a JSON scalar (string / number / bool) into a string.
+        private struct LenientScalar: Decodable {
+            let stringValue: String
+            init(from decoder: Decoder) throws {
+                let c = try decoder.singleValueContainer()
+                if let s = try? c.decode(String.self) { stringValue = s }
+                else if let i = try? c.decode(Int.self) { stringValue = String(i) }
+                else if let d = try? c.decode(Double.self) { stringValue = String(d) }
+                else if let b = try? c.decode(Bool.self) { stringValue = String(b) }
+                else { stringValue = "" }
+            }
+        }
+    }
+
+    /// The explore rule's JS threw before it produced anything. Not an empty category list:
+    /// the source has categories and we failed to read them (回饋中心 #124 showed this as
+    /// 「暫無發現內容」 after a TypeError in our jsoup bridge).
+    struct ExploreScriptError: LocalizedError {
+        let message: String
+        var errorDescription: String? { message }
+    }
+
+    /// Evaluate exploreUrl for a book source and return discover items
+    /// (`SourceScriptHost.getExploreItems`). Mirrors Legado's exploreKinds(): JS may produce
+    /// a rule string, JSON is decoded directly, and plain text is split into title::url kinds.
+    /// - Parameter variableOverlay: values the explore rule reads in place of the source's
+    ///   stored variable, without storing them: an Explore home section's own discover
+    ///   filters (unified library 5d-5).
+    func exploreItems(page: Int, variableOverlay: [String: String]) throws -> [DiscoverItem] {
+        ensureCloudSettingsIfNeeded()
+        let source = sourceRuleData.source
+        let rawExploreUrl = source.exploreUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rawExploreUrl.isEmpty else { return [] }
+
+        var ruleStr = rawExploreUrl
+        let isJS = Self.isJSExploreRule(rawExploreUrl)
+        var exploreJSError: String?
+        if isJS {
+            evaluateJsLibIfNeeded()
+            let jsCode = Self.jsCode(fromExploreRule: rawExploreUrl)
+            let bindings: [String: Any] = [
+                "page": page,
+                "baseUrl": source.bookSourceUrl,
+            ]
+            ruleStr = jsEngine.evaluateIsolated(jsCode, bindings: bindings, variableOverlay: variableOverlay)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            // Snapshot now: any later `jsEngine.evaluate` clears `lastError`, so
+            // reading it at log time would report "none" for a rule that threw.
+            exploreJSError = jsEngine.lastError
+        }
+
+        let result: [DiscoverItem]
+        if ruleStr.isEmpty {
+            result = []
+        } else if Self.isJsonArrayOrObject(ruleStr) {
+            let items = parseDiscoverJSON(ruleStr)
+            // When the exploreUrl JS returns book data JSON directly (not a list
+            // of discover categories), every decoded DiscoverItem has an empty
+            // title.  If that happens AND the source has ruleExplore.bookList
+            // (meaning it can parse book data), wrap the JSON as a data URI so
+            // the normal discover pipeline feeds it through ruleExplore.
+            // Only for items that decoded: a payload that failed to decode is not book data,
+            // and wrapping it sent the kinds text itself through ruleExplore (博览群书).
+            if !items.isEmpty,
+               items.allSatisfy({ ($0.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }),
+               !source.ruleExplore.bookList.isEmpty {
+                let b64 = Data(ruleStr.utf8).base64EncodedString()
+                let dataUrl = "data:application/json;base64,\(b64)"
+                result = [DiscoverItem(title: source.bookSourceName, url: dataUrl)]
+            } else {
+                result = items
+            }
+        } else if Self.looksLikeMarkupOrError(ruleStr) {
+            // A dynamic (<js>/@js:) exploreUrl whose backing endpoint has died returns an error
+            // *document* — e.g. an nginx "404 Not Found" HTML page — not JSON and not a `分类::URL`
+            // list. Shredding that markup line-by-line produced garbage category chips ("<html>",
+            // "<head>…404…", …). Treat an unusable payload as "no explore content" instead.
+            result = []
+        } else {
+            result = parseExploreKindText(ruleStr)
+        }
+
+        // An empty 發現頁 has four different causes that look identical on screen: the
+        // rule JS threw, its API answered but with nothing usable, the payload decoded
+        // to items with no `url` (dropped later as non-navigable), or it was never JSON
+        // in the shape we decode. Only the payload itself tells them apart, and this is
+        // the one place it exists. Logged for every explore load — it is one line per
+        // page open, not per row.
+        AppLogger.parse("⟐ explore", context: [
+            "source": source.bookSourceName,
+            "isJS": isJS,
+            "jsError": exploreJSError ?? "none",
+            "payloadLen": ruleStr.count,
+            "items": result.count,
+            "titled": result.filter { !($0.title ?? "").isEmpty }.count,
+            "navigable": result.filter { !($0.url ?? "").isEmpty }.count,
+            "selects": result.filter { ($0.type ?? "") == "select" }.count,
+            "head": String(ruleStr.prefix(240)).replacingOccurrences(of: "\n", with: " ")
+        ])
+
+        // Only a rule that threw *and* produced nothing: a script that recovered from its own
+        // error and still answered has a usable payload, already decoded above.
+        if isJS, ruleStr.isEmpty, let exploreJSError {
+            throw ExploreScriptError(message: exploreJSError)
+        }
+        return result
+    }
+
+    /// True when an explore payload is an HTML/error document rather than a JSON or
+    /// `分类::URL` list — so a dead endpoint's 404 page isn't rendered as fake categories.
+    static func looksLikeMarkupOrError(_ value: String) -> Bool {
+        let s = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !s.isEmpty else { return true }
+        if s.hasPrefix("<") { return true }
+        let lower = s.lowercased()
+        return lower.contains("<html")
+            || lower.contains("<!doctype")
+            || lower.contains("<body")
+            || lower.contains("404 not found")
+    }
+
+    /// Parse a JSON array string into DiscoverItem list.
+    ///
+    /// Legado reads the kinds with `GSON.fromJsonArray` (`BaseSource.exploreKinds`), and Gson's
+    /// `fromJson` is lenient: single-quoted strings and bare keys parse. 博览群书's kinds are
+    /// written that way (`{'title':'完结小说','url':'…','style':{layout_flexGrow:1}}`), and a
+    /// strict decode read none of them — the source had no 發現 at all. The strict text is
+    /// tried first, then the same GSON-lenient normalization the URL option block and the
+    /// header use (`AnalyzeUrl.normalizeLegadoOptionJSON`). Both read a raw line break inside a
+    /// string as Gson does (`AnalyzeUrl.escapingControlCharactersInJSONStrings`): `JSONDecoder`
+    /// rejects one only when the field is read, so the array still decoded, minus those URLs.
+    private func parseDiscoverJSON(_ text: String) -> [DiscoverItem] {
+        let json = AnalyzeUrl.escapingControlCharactersInJSONStrings(text)
+        let lenient = AnalyzeUrl.normalizeLegadoOptionJSON(json)
+        for text in lenient == json ? [json] : [json, lenient] {
+            guard let data = text.data(using: .utf8) else { continue }
+            if let items = try? JSONDecoder().decode([DiscoverItem].self, from: data) {
+                return items
+            }
+            if let single = try? JSONDecoder().decode(DiscoverItem.self, from: data) {
+                return [single]
+            }
+        }
+        guard let data = json.data(using: .utf8) else { return [] }
+        // Both shapes failed. A silent `return []` here is why a `style` type mismatch could empty
+        // 457 sources' 發現頁 with nothing to show for it: an empty discover list looks the same
+        // whether the source has no categories or we failed to read the ones it has. Report the
+        // decoder's own reason so the next such mismatch is one log line, not an audit.
+        var reason = "unknown"
+        do {
+            _ = try JSONDecoder().decode([DiscoverItem].self, from: data)
+        } catch {
+            reason = "\(error)"
+        }
+        AppLogger.parse("⟐ exploreJSONDecodeFailed", context: [
+            "source": sourceRuleData.source.bookSourceName,
+            "len": json.count,
+            "head": String(json.prefix(180)),
+            "error": String(reason.prefix(300)),
+        ])
+        return []
+    }
+
+    private func parseExploreKindText(_ text: String) -> [DiscoverItem] {
+        let normalized = text.replacingOccurrences(
+            of: #"(&&|\r?\n)+"#,
+            with: "\n",
+            options: .regularExpression
+        )
+        return normalized
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .compactMap { rawEntry in
+                let entry = rawEntry.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !entry.isEmpty else { return nil }
+
+                guard let separator = entry.range(of: "::") else {
+                    // No `名稱::URL` split: either a bare category name or markup debris from a
+                    // dead endpoint. Only the latter carries an actual HTML tag.
+                    if Self.containsHTMLTag(entry) { return nil }
+                    return DiscoverItem(title: entry, url: nil)
+                }
+
+                let title = entry[..<separator.lowerBound]
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let url = entry[separator.upperBound...]
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !title.isEmpty else { return nil }
+                // Only the title is screened for debris. The URL must NOT be: `<,{{page}}>` /
+                // `<,_{{page}}>` is legado's page-range syntax (`AnalyzeUrl.pagePattern` is
+                // literally `<(.*?)>`) and is ordinary in a static explore rule.
+                if Self.containsHTMLTag(title) { return nil }
+                return DiscoverItem(title: title, url: url.isEmpty ? nil : url)
+            }
+    }
+
+    /// True when the text contains a real HTML tag (`<p>`, `</div>`, `<br/>`).
+    ///
+    /// Deliberately narrower than `<[^>]+>`: that shape also matches legado's page-range syntax
+    /// (`<,{{page}}>`), and screening whole rule lines with it silently deleted every category of
+    /// 38 sources in a 1912-source pack — their 發現頁 came up empty with no error anywhere.
+    /// A tag name must start with a letter, which no page-range block does.
+    static func containsHTMLTag(_ value: String) -> Bool {
+        value.range(of: #"</?[a-zA-Z][^>]*>"#, options: .regularExpression) != nil
+    }
+
+    static func isJSExploreRule(_ value: String) -> Bool {
+        value.hasPrefix("<js>") || value.hasPrefix("@js:")
+    }
+
+    static func jsCode(fromExploreRule value: String) -> String {
+        if value.hasPrefix("@js:") {
+            return String(value.dropFirst(4))
+        }
+        if value.hasPrefix("<js>"), value.hasSuffix("</js>") {
+            return String(value.dropFirst(4).dropLast(5))
+        }
+        return value
+    }
+
+    private static func isJsonArrayOrObject(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.hasPrefix("[") || trimmed.hasPrefix("{")
+    }
+
+    /// One explore page: its request (whose URL puts into the page's scope), then its list.
+    func exploreBooks(
+        ruleUrl: String, page: Int, on host: isolated SourceScriptHost<ModernParserBridge>
+    ) async throws -> [OnlineBook] {
+        let pageScope = RuleData()
+        let (html, finalURL) = try await fetch(ruleUrl: ruleUrl, page: page, pageScope: pageScope, on: host)
+        return parseExploreResults(
+            html: html, baseURL: finalURL, source: sourceRuleData.source, pageVariables: pageScope.variableMap
+        )
+    }
+
+    /// Parse explore results using ruleExplore rules (for non-JS exploreUrl).
+    ///
+    /// - Parameter pageVariables: what the page's request URL put (`fetch`'s `pageScope`).
+    func parseExploreResults(
+        html: String, baseURL: String, source: BookSource, pageVariables: [String: String]? = nil
+    ) -> [OnlineBook] {
+        let documents = JsoupDocumentCache.beginParse()
+        defer { endParse(documents) }
+        let engine = makeEngine()
+        engine.setContent(html, baseUrl: baseURL)
+
+        // Legado convention: a source that ships no explore-specific rules (empty
+        // ruleExplore.bookList) reuses its SEARCH rules for discover — the explore
+        // endpoints return the same shape as search results. Most comic sources
+        // rely on this (their `ruleExplore` is `{}`, only `ruleSearch` is defined),
+        // so fall back to ruleSearch instead of giving up on the discover list.
+        let explore = source.ruleExplore
+        let search = source.ruleSearch
+        let useSearch = explore.bookList.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let listRule = useSearch ? search.bookList : explore.bookList
+
+        guard !listRule.isEmpty else {
+            // Neither explore nor search defines a book list — last-ditch: treat the
+            // payload as a JSON list of {title,url} discover items.
+            return discoverItemsAsBooks(html: html, source: source)
+        }
+
+        let fields = useSearch
+            ? RuleListFields(name: search.name, author: search.author, bookUrl: search.bookUrl, coverUrl: search.coverUrl,
+                             intro: search.intro, wordCount: search.wordCount, lastChapter: search.lastChapter, kind: search.kind)
+            : RuleListFields(name: explore.name, author: explore.author, bookUrl: explore.bookUrl, coverUrl: explore.coverUrl,
+                             intro: explore.intro, wordCount: explore.wordCount, lastChapter: explore.lastChapter, kind: explore.kind)
+
+        // One bookList variant. A cover rule that matches nothing (a bookList narrowed past the
+        // <img>, like zymk's `class.item@h3`) leaves the cover empty, which is what the
+        // cover-broaden retry below looks for.
+        func parseBooks(listVariant: String, onSelected: ((Int) -> Void)? = nil) -> [OnlineBook] {
+            listItems(engine: engine, content: html, baseURL: baseURL, listRule: listVariant, fields: fields,
+                      pageVariables: pageVariables, onSelected: onSelected)
+                .map { OnlineBook($0, source: source) }
+        }
+
+        var selectedCount = 0
+        var books = parseBooks(listVariant: listRule, onSelected: { selectedCount = $0 })
+
+        // Legado `BookList.analyzeBookList`'s 「列表为空,按详情页解析」 holds for discover too
+        // (only the `bookUrlPattern` check is search's): a page the list rule selects nothing
+        // on, from a source without a pattern, is read as one book's page. A `||` list selected
+        // nothing in any branch either. A page that reads no name stays empty and goes on to
+        // the fallbacks below.
+        if selectedCount == 0,
+           source.bookUrlPattern.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            do {
+                if let book = try searchResponseAsBookPage(
+                    html: html, baseURL: baseURL, source: source, pageVariables: pageVariables,
+                    earlyFilter: nil
+                ) {
+                    return [book.withInfoHTML(html)]
+                }
+            } catch {
+                AppLogger.parse("Empty discover list did not read as a book page", context: [
+                    "source": source.bookSourceName, "error": "\(error)",
+                ], level: .notice)
+            }
+        }
+
+        // Compatibility beyond Legado: a `||` bookList returns the FIRST non-empty
+        // element set, but that set can be the wrong one — e.g. a discover page that
+        // reuses the search grid's class (`.manga-list`) for its category nav, so the
+        // first branch matches nav links and every "book" has an empty name. When the
+        // chosen branch yields zero valid books, retry the remaining `||` branches.
+        if books.isEmpty {
+            let (op, parts) = RuleSyntaxParser.splitRuleByOperators(listRule)
+            if op == "||", parts.count > 1 {
+                for branch in parts.dropFirst() {
+                    let trimmed = branch.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !trimmed.isEmpty else { continue }
+                    let alternateBooks = parseBooks(listVariant: trimmed)
+                    if !alternateBooks.isEmpty { books = alternateBooks; break }
+                }
+            }
+        }
+
+        // Cover compatibility: some sources narrow the bookList past the cover —
+        // e.g. `class.item@h3` selects the title node while the <img> lives in a
+        // sibling `.thumbnail`, so `img@data-src` resolves empty for every book.
+        // When all books came back cover-less, retry with the bookList's parent
+        // scope (drop the trailing `@leaf`), but only ADOPT it when it returns the
+        // same number of books AND actually recovers covers — so a correctly-scoped
+        // bookList, or a source that genuinely has no covers, is left untouched.
+        if !books.isEmpty,
+           books.allSatisfy({ $0.coverUrl.isEmpty }),
+           let lastAt = listRule.range(of: "@", options: .backwards) {
+            let broaderList = String(listRule[..<lastAt.lowerBound])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !broaderList.isEmpty {
+                let broaderBooks = parseBooks(listVariant: broaderList)
+                if broaderBooks.count == books.count,
+                   broaderBooks.contains(where: { !$0.coverUrl.isEmpty }) {
+                    books = broaderBooks
+                }
+            }
+        }
+
+        // The ruleSearch fallback can legitimately match nothing when the discover
+        // payload is instead a plain {title,url} JSON list. Preserve that legacy
+        // path so no source that worked before this fallback regresses.
+        if books.isEmpty, useSearch {
+            return discoverItemsAsBooks(html: html, source: source)
+        }
+        return books
+    }
+
+    /// A search or explore list read the way Legado's `BookList.analyzeBookList` scopes it: the
+    /// list rule against the page's own `RuleData` (`WebBook`'s), each item against its own
+    /// `SearchBook`, which starts from the page's variables. A `@put` or `java.put` lands there
+    /// and travels with that book as its `runtimeVariables`. Stored as source state, a per-row
+    /// put rewrote the source's preferences once per result (Crashlytics afe8e4bd, 3.0.0) and
+    /// left the next stage reading whichever row ran last.
+    ///
+    /// - Parameter pageVariables: what the page's request URL put; the page's scope starts
+    ///   from them, as Legado's shared `RuleData` does.
+    private func listItems(
+        engine: ModernRuleEngine,
+        content: Any,
+        baseURL: String,
+        listRule: String,
+        fields: RuleListFields,
+        pageVariables: [String: String]?,
+        earlyFilter: ((_ name: String, _ author: String) -> Bool)? = nil,
+        onMissingLink: ((_ name: String) -> Void)? = nil,
+        onSelected: ((_ count: Int) -> Void)? = nil
+    ) -> [RuleListItem] {
+        let listScope = RuleData()
+        listScope.variableMap = pageVariables ?? [:]
+        runtimeChapterScope = nil
+        runtimeBookScope = listScope
+        engine.chapter = nil
+        engine.book = nil
+        engine.ruleData = listScope
+        // Each item's scripts read that item's `SearchBook` as `book`, filled field by field
+        // (`RuleListMapping.items`). The stage after the list sets its own book; until then the
+        // engine keeps the one it had, not the last row.
+        let bookBefore = jsEngine.bookBridge
+        let source = sourceRuleData.source
+        defer {
+            runtimeBookScope = nil
+            engine.book = nil
+            engine.ruleData = nil
+            jsEngine.setBookBridge(bookBefore)
+        }
+        return RuleListMapping.items(
+            engine: engine, content: content, baseURL: baseURL, listRule: listRule, fields: fields,
+            earlyFilter: earlyFilter, onMissingLink: onMissingLink,
+            itemScope: { [self] in
+                let itemScope = RuleData()
+                itemScope.variableMap = listScope.variableMap
+                runtimeBookScope = itemScope
+                engine.book = itemScope
+                return itemScope
+            },
+            itemBook: { [self] in
+                let book = LegadoBookBridge(
+                    origin: source.bookSourceUrl, originName: source.bookSourceName
+                )
+                jsEngine.setBookBridge(book)
+                return book
+            },
+            onSelected: onSelected
+        )
+    }
+
+    /// Last-resort discover parse: decode the payload as a JSON list of `{title,url}`
+    /// items (Legado's "exploreUrl returns book data directly" shape). Returns an
+    /// empty list for any other payload, so it is safe as a fallback.
+    private func discoverItemsAsBooks(html: String, source: BookSource) -> [OnlineBook] {
+        parseDiscoverJSON(html).compactMap { item in
+            guard let title = item.title, !title.isEmpty else { return nil }
+            return OnlineBook(
+                name: title, author: "", intro: "",
+                coverUrl: "", bookUrl: item.url ?? "",
+                tocUrl: item.url ?? "", wordCount: "",
+                lastChapter: "", kind: "",
+                sourceId: source.id, sourceName: source.bookSourceName
+            )
+        }
+    }
+
+    // MARK: - Network fetch using AnalyzeUrl
+
+    /// Legado `loginCheckJs` over one response, status and headers included. Every stage's
+    /// first request goes through it whatever its status — a source spots its login wall or
+    /// its Cloudflare page here and may hand back another response (for instance the one
+    /// `java.startBrowserAwait` fetched once the check was passed), which the stage then uses.
+    ///
+    /// - Parameter java: the AnalyzeUrl the request came from. `java` in the check is that
+    ///   AnalyzeUrl, as in Legado (`analyzeUrl.evalJS(checkJs, it)`): `java.ruleUrl`,
+    ///   `java.headerMap`, `java.getStrResponse()` (`LegadoAnalyzeUrlScriptView`). Its
+    ///   `baseUrl` is the check's: the request URL's scheme and host (`AnalyzeUrl.analyzeUrl`),
+    ///   not the response's URL, which the check reads with `result.url()`.
+    func applyLoginCheck(
+        to response: LegadoStrResponse, java view: LegadoAnalyzeUrlScriptView
+    ) -> LegadoStrResponse {
+        let js = sourceRuleData.source.loginCheckJs
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !js.isEmpty else { return response }
+        evaluateJsLibIfNeeded()
+        return jsEngine.evaluateResponseScript(
+            js,
+            response: response,
+            bindings: ["baseUrl": view.baseUrl, "baseURL": view.baseUrl, "java": view]
+        )
+    }
+
+    /// `applyLoginCheck(to:java:)` for a stage's first request on the native path
+    /// (`BookSourceFetcher.fetchStagePage`), which no AnalyzeUrl built. `java` is a view of
+    /// `request` with `ruleUrl` as the rule the stage rendered; its headers start as `headers`,
+    /// the stage's own, so a resend carries the cookies the jar holds by then rather than the
+    /// ones the first request was sent with.
+    func applyLoginCheck(
+        to response: LegadoStrResponse, request: URLRequest, headers: [String: String],
+        ruleUrl: String, charset: String?
+    ) -> LegadoStrResponse {
+        var base = request
+        base.allHTTPHeaderFields = headers
+        if base.httpBody != nil,
+           let contentType = request.value(forHTTPHeaderField: "Content-Type"),
+           base.value(forHTTPHeaderField: "Content-Type") == nil {
+            base.setValue(contentType, forHTTPHeaderField: "Content-Type")
+        }
+        let (view, makeRequest) = LegadoAnalyzeUrlScriptView.snapshot(
+            of: base, ruleUrl: ruleUrl, baseUrl: sourceRuleData.source.bookSourceUrl
+        )
+        // A resend carries the stage's headers, the source's among them, rather than a new
+        // evaluation of the rule.
+        installScriptRequest(on: view, sourceHeaders: headers) { (makeRequest(), charset) }
+        return applyLoginCheck(to: response, java: view)
+    }
+
+    /// `applyLoginCheck(to:java:)` for a body with no status to report — a page rendered in a
+    /// WebView — which the check sees as a 200.
+    func applyLoginCheck(html: String, baseURL: String) -> String {
+        let url = URL(string: baseURL) ?? URL(string: "about:blank")!
+        return applyLoginCheck(
+            to: LegadoStrResponse(url: baseURL, body: html), request: URLRequest(url: url),
+            headers: resolvedSourceHeaders(), ruleUrl: baseURL, charset: nil
+        ).body()
+    }
+
+    /// `java.getStrResponse()` in an AnalyzeUrl's scripts: its request as it now stands — what
+    /// `java.headerMap` put and `java.initUrl()` rebuilt included — sent with the source's
+    /// authentication through the scripts' transport, as Legado's `AnalyzeUrl.getStrResponse`
+    /// sends itself. Runs on the JS thread, from the script. `sourceHeaders` are the ones the
+    /// AnalyzeUrl's request resolved: Legado's resend sends the `headerMap` its `init` made.
+    private func installScriptRequest(on analyzeUrl: AnalyzeUrl, sourceHeaders: [String: String]) {
+        installScriptRequest(on: analyzeUrl.scriptView, sourceHeaders: sourceHeaders) { [weak analyzeUrl] in
+            guard let analyzeUrl, let request = analyzeUrl.toURLRequest() else { return nil }
+            return (request, analyzeUrl.charset)
+        }
+    }
+
+    private func installScriptRequest(
+        on view: LegadoAnalyzeUrlScriptView,
+        sourceHeaders: [String: String],
+        makeRequest: @escaping () -> (URLRequest, String?)?
+    ) {
+        let sourceName = sourceRuleData.source.bookSourceName
+        view.execute = { [weak self] in
+            guard let self, let made = makeRequest() else { return nil }
+            var request = made.0
+            let charset = made.1
+            self.applySourceAuthentication(to: &request, sourceHeaders: sourceHeaders)
+            request.timeoutInterval = WebFetcher.sourceRequestTimeout
+            guard let transport = self.jsEngine.networkHandler else {
+                AppLogger.parse("⟐ getStrResponse without a transport", context: [
+                    "source": sourceName,
+                    "url": String((request.url?.absoluteString ?? "").prefix(160)),
+                ])
+                return nil
+            }
+            // A script's `java.getStrResponse()` waits on the network like a `java.*` request.
+            let result = self.jsEngine.bridge.networkWaits.during { transport(request, charset) }
+                ?? .bodyOnly(request: request, body: "")
+            self.recordJSNetwork(
+                url: result.finalURL.absoluteString,
+                statusCode: result.statusCode,
+                timedOut: false,
+                body: result.body
+            )
+            return LegadoStrResponse(result: result)
+        }
+    }
+
+    /// Prime a site cookie that a source's discover endpoints read inline but never set themselves.
+    /// 起点's 榜單/分類 build URLs with `…&_csrfToken={{cookie.getKey("https://qidian.com","_csrfToken")}}`
+    /// AND 起点 requires the SAME token be SENT as a cookie (double-submit) — verified: param-only →
+    /// `{"code":1,"msg":"失败"}` 0 books; param+cookie → 20 books. That token is only issued by browsing
+    /// a 起点 book/search page (NOT the homepage, NOT the qt 密鑰). So on iOS the discover is empty
+    /// unless we obtain it. We **always re-fetch a fresh token** (not just when absent): a STALE
+    /// `_csrfToken` left over from old browsing is session-rejected by 起点, and a skip-if-present
+    /// guard would keep using it → still 0 books. Fetching the source's own search page reissues a
+    /// current token (stored in HTTPCookieStorage, auto-sent by URLSession on the ranking request).
+    func primeDiscoverCookiesIfNeeded(on host: isolated SourceScriptHost<ModernParserBridge>) async {
+        let source = sourceRuleData.source
+        guard source.exploreUrl.contains("_csrfToken") else { return }
+        let searchUrl = source.searchUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !searchUrl.isEmpty else { return }
+        let cookieHost = "https://qidian.com"
+        // 同人小說網 can mint a random `_csrfToken` for its review API. 起點's
+        // ranking API instead requires a token issued by the current web session.
+        // Merely loading the search page while the random token is present does not
+        // replace it, leaving query and cookie populated but session-invalid. Remove
+        // only this named cookie across qidian's related hosts, preserving login and
+        // every other site cookie, then let the search page issue a fresh token.
+        CookieStore.shared.remove(
+            url: cookieHost,
+            key: "_csrfToken",
+            includingRelatedDomains: true
+        )
+        do {
+            // A search request like any other: its URL's puts go to a page nothing reads.
+            _ = try await fetch(
+                ruleUrl: searchUrl, key: "1", page: 1, pageScope: RuleData(), on: host
+            )
+        } catch {
+            AppLogger.network("⟐ csrf prime failed", error: error, context: [
+                "source": source.bookSourceName
+            ])
+        }
+    }
+
+    /// - Parameters:
+    ///   - pageScope: a search or explore page's `RuleData`, where its URL's puts land
+    ///     (`prepareFetch`). Nil for a book's stages.
+    ///   - contentStage: a chapter's content request. A URL that asks for the WebView then runs
+    ///     the content rule's `webJs` and looks for its `sourceRegex`, as Legado's
+    ///     `getContentAwait` passes them.
+    func fetch(
+        ruleUrl: String, key: String? = nil, page: Int? = nil,
+        runtimeVariables: [String: String]? = nil,
+        pageScope: RuleData? = nil,
+        contentStage: Bool = false,
+        on host: isolated SourceScriptHost<ModernParserBridge>
+    ) async throws -> (String, String) {
+        // Building the request runs source JS (jsLib, cloud settings, `@js:` URLs and
+        // templates) and so does reading the response (`loginCheckJs`, `bodyJs`). Both run
+        // here on the host — a script may stop for the reader — and only the network
+        // round-trip leaves it.
+        let prepared = try prepareFetch(
+            ruleUrl: ruleUrl, key: key, page: page, runtimeVariables: runtimeVariables,
+            pageScope: pageScope
+        )
+        let analyzeUrl: AnalyzeUrl
+        let request: URLRequest
+        switch prepared {
+        case .dataURI(let body, let finalURL):
+            return (body, finalURL)
+        case .network(let preparedURL, let preparedRequest):
+            analyzeUrl = preparedURL
+            request = preparedRequest
+        }
+
+        // The URL's `webView` option: until 11-07 it was parsed and never used, so a page that
+        // renders itself with script came back as its empty shell (YCK1330 11-06 report §3).
+        if analyzeUrl.useWebView {
+            return try await fetchThroughWebView(
+                analyzeUrl: analyzeUrl, request: request, contentStage: contentStage,
+                pageScope: pageScope, on: host
+            )
+        }
+
+        let (data, response) = try await performRequest(request, retry: analyzeUrl.retry, on: host)
+        // The response's scripts are the AnalyzeUrl's, as its URL's were (`analyzeUrl.evalJS`):
+        // a `java.put` or `java.get` there is the page's, where the URL put. 破天小说 (YCK1330
+        // #704) reads back in its `loginCheckJs` the key its search URL put, and posted an
+        // empty search while the check read the source's variables instead.
+        return try withPutScope(pageScope) {
+            try finishFetch(data: data, response: response, request: request, analyzeUrl: analyzeUrl)
+        }
+    }
+
+    /// `performRequest` under the URL's `retry` option (`LegadoRequestRetry`): sent again while
+    /// the answer is not a 2xx, the last answer kept. A request with no answer throws at once.
+    private func performRequest(
+        _ request: URLRequest, retry: Int, on host: isolated SourceScriptHost<ModernParserBridge>
+    ) async throws -> (Data, URLResponse) {
+        let source = sourceRuleData.source
+        var attempt = 0
+        while true {
+            let sent = LegadoRequestRetry.request(request, attempt: attempt, cookieJar: source.enabledCookieJar)
+            let answer = try await performRequest(sent, on: host)
+            let status = (answer.1 as? HTTPURLResponse)?.statusCode
+            guard let status, LegadoRequestRetry.retries(after: status, attempt: attempt, retry: retry) else {
+                return answer
+            }
+            LegadoRequestRetry.logRetry(
+                after: status, attempt: attempt, retry: retry, url: request.url, source: source.bookSourceName
+            )
+            attempt += 1
+        }
+    }
+
+    /// The network round trip of a runtime request, within the source's `concurrentRate`
+    /// budget and okhttp's `callTimeout` (Legado's 60 s, `WebFetcher.sourceRequestTimeout`):
+    /// the whole call, where `URLRequest.timeoutInterval` only bounds the wait between bytes.
+    /// It was 30 s until 11-07: 文学壬二酸's search (YCK1330) went unanswered that long one
+    /// evening, which Legado would have waited out.
+    private func performRequest(
+        _ request: URLRequest, on host: isolated SourceScriptHost<ModernParserBridge>
+    ) async throws -> (Data, URLResponse) {
+        let (data, response): (Data, URLResponse)
+        // The source's own request session, like its JS requests: `URLSession.shared` wrote
+        // every cacheable page to `URLCache.shared`'s Cache.db, and capped a host at 6
+        // connections.
+        let requestSession = self.requestSession
+        do {
+            // Honor the source's `concurrentRate` budget (per-source anti-ban
+            // throttle) around the actual network round-trip only.
+            (data, response) = try await SourceRateLimit.run(source: sourceRuleData.source) {
+                try await withThrowingTaskGroup(
+                    of: (Data, URLResponse).self
+                ) { group in
+                    group.addTask {
+                        try await BoundedResponseLoader.load(
+                            request, session: requestSession, transport: "jsRuntime"
+                        )
+                    }
+                    group.addTask {
+                        try await Task.sleep(
+                            nanoseconds: UInt64(WebFetcher.sourceRequestTimeout * 1_000_000_000)
+                        )
+                        throw ModernParserBridgeError.timeout
+                    }
+                    guard let result = try await group.next() else {
+                        throw CancellationError()
+                    }
+                    group.cancelAll()
+                    return result
+                }
+            }
+        } catch is ModernParserBridgeError {
+            SourceAPIErrorLog.shared.record(
+                sourceUrl: sourceRuleData.source.bookSourceUrl,
+                requestUrl: request.url?.absoluteString,
+                statusCode: nil, body: nil, timedOut: true
+            )
+            // An error entry, as `WebFetcher.fetchPage` logs its failures: as an info line the
+            // debug log and a diagnostic dump showed the request with no answer at all.
+            WebCrawlerDebugger.logError(ModernParserBridgeError.timeout, url: request.url?.absoluteString)
+            throw ModernParserBridgeError.timeout
+        } catch {
+            WebCrawlerDebugger.logError(error, url: request.url?.absoluteString)
+            throw error
+        }
+        return (data, response)
+    }
+
+    /// Legado `executeStrRequest`'s WebView branch. A GET loads the URL in the WebView with the
+    /// request's headers; a POST goes out over HTTP and its response is rendered at its URL.
+    /// The page is read by the URL's `webJs`, else the content rule's (`contentStage`), else
+    /// its HTML. `loginCheckJs` reads the result as it reads any response; `bodyJs` does not —
+    /// Legado applies it only to an HTTP response.
+    private func fetchThroughWebView(
+        analyzeUrl: AnalyzeUrl, request: URLRequest, contentStage: Bool, pageScope: RuleData?,
+        on host: isolated SourceScriptHost<ModernParserBridge>
+    ) async throws -> (String, String) {
+        let source = sourceRuleData.source
+        func nonBlank(_ text: String) -> String? {
+            text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : text
+        }
+        // Legado's `webJs ?: jsStr`: a URL's own `webJs`, even an empty one, wins.
+        let script = analyzeUrl.webJs ?? (contentStage ? nonBlank(source.ruleContent.webJs) : nil)
+        let sourceRegex = contentStage ? nonBlank(source.ruleContent.sourceRegex) : nil
+        var pageURL = request.url?.absoluteString ?? analyzeUrl.url
+        var html: String?
+        if request.httpMethod?.uppercased() == "POST" {
+            let (data, response) = try await performRequest(request, retry: analyzeUrl.retry, on: host)
+            let posted = LegadoStrResponse(result: LegadoHTTPResult.make(
+                request: request, data: data, response: response, declaredCharset: analyzeUrl.charset
+            ))
+            html = posted.body()
+            pageURL = posted.url()
+            WebCrawlerDebugger.logResponse(
+                url: pageURL, statusCode: posted.code(), htmlBody: posted.body()
+            )
+        }
+        WebCrawlerDebugger.logInfo("WebView request", url: pageURL)
+        let page = await Self.loadInWebView(
+            request: request, html: html, pageURL: pageURL, js: script,
+            delayMs: analyzeUrl.webViewDelayTime, sourceRegex: sourceRegex
+        )
+        if let failure = page.failure {
+            // Legado raises its two timeouts. A page that did not load it reads as Chromium's
+            // error page, where the rules find nothing; that page does not exist here, so the
+            // request fails with the load's own error and the check names it.
+            AppLogger.parse("WebView request failed", context: [
+                "source": source.bookSourceName,
+                "url": String(pageURL.prefix(160)),
+                "script": script.map { String($0.prefix(80)) } ?? "outerHTML",
+                "error": failure.message,
+            ], level: .warning)
+            let timedOut: Bool
+            if case .pageFailed = failure { timedOut = false } else { timedOut = true }
+            SourceAPIErrorLog.shared.record(
+                sourceUrl: source.bookSourceUrl, requestUrl: pageURL,
+                statusCode: nil, body: nil, timedOut: timedOut
+            )
+            throw failure
+        }
+        // An empty answer from the page's script is the page's answer, as in Legado. The check
+        // puts where the URL put (`fetch`).
+        let checked = withPutScope(pageScope) {
+            applyLoginCheck(
+                to: LegadoStrResponse(url: page.url ?? pageURL, body: page.body), java: analyzeUrl.scriptView
+            )
+        }
+        return (checked.body(), checked.url())
+    }
+
+    /// The one WebView load behind both `fetchThroughWebView` and a script's `webView` request:
+    /// Legado's `BackstageWebView` with the request's headers, given up after its 60 s.
+    private static func loadInWebView(
+        request: URLRequest, html: String?, pageURL: String, js: String?, delayMs: Int,
+        sourceRegex: String? = nil
+    ) async -> (body: String, url: String?, failure: LegadoHeadlessWebView.Failure?) {
+        let headers = request.allHTTPHeaderFields ?? [:]
+        // Legado `BackstageWebView`: the request's User-Agent, else `AppConfig.userAgent`.
+        let userAgent = headers.first { $0.key.lowercased() == "user-agent" }?.value
+            ?? BookSource.legadoDefaultUserAgent
+        return await LegadoHeadlessWebView.load(
+            html: html, url: pageURL, js: js, userAgent: userAgent, headers: headers,
+            delayMs: delayMs, timeout: 60, sourceRegex: sourceRegex
+        )
+    }
+
+    /// A script's transport under its URL's `retry` option (`LegadoRequestRetry`): a non-2xx
+    /// answer is sent again while `retry` allows, the last answer kept. No answer at all — a
+    /// transport error, nothing within the wait — ends the attempts, as an okhttp call that
+    /// throws ends Legado's. `retry` 0 is the transport itself.
+    private static func retryingTransport(
+        _ transport: @escaping SourceScriptTransport, retry: Int, cookieJar: Bool, sourceName: String
+    ) -> SourceScriptTransport {
+        guard retry > 0 else { return transport }
+        return { request, charset in
+            var attempt = 0
+            while true {
+                let sent = LegadoRequestRetry.request(request, attempt: attempt, cookieJar: cookieJar)
+                guard let answer = transport(sent, charset) else { return nil }
+                guard answer.transportError == nil,
+                      LegadoRequestRetry.retries(after: answer.statusCode, attempt: attempt, retry: retry) else {
+                    return answer
+                }
+                LegadoRequestRetry.logRetry(
+                    after: answer.statusCode, attempt: attempt, retry: retry, url: request.url, source: sourceName
+                )
+                attempt += 1
+            }
+        }
+    }
+
+    /// A script's request whose URL says `webView` (`java.ajax("url,{'webView':true}")`). It
+    /// runs on the JS thread or an `ajaxAll` worker, which waits for the main actor's WebView
+    /// as `java.webView` does. A POST goes out over `transport` first and its response is
+    /// rendered at its URL. Nothing by the deadline answers an empty body, as a failed
+    /// `java.ajax` does.
+    private static func webViewResponse(
+        for request: URLRequest, js: String?, delayMs: Int, charset: String?,
+        transport: SourceScriptTransport, sourceName: String
+    ) -> PreparedSourceRequest.Response {
+        var pageURL = request.url?.absoluteString ?? ""
+        var html: String?
+        if request.httpMethod?.uppercased() == "POST" {
+            let posted = transport(request, charset) ?? .bodyOnly(request: request, body: "")
+            html = posted.body
+            pageURL = posted.finalURL.absoluteString
+        }
+        let box = OSAllocatedUnfairLock<(body: String, url: String?, failure: LegadoHeadlessWebView.Failure?)?>(
+            initialState: nil
+        )
+        let done = DispatchSemaphore(value: 0)
+        let loadHTML = html
+        let loadURL = pageURL
+        Task { @MainActor in
+            let page = await loadInWebView(
+                request: request, html: loadHTML, pageURL: loadURL, js: js, delayMs: delayMs
+            )
+            box.withLock { $0 = page }
+            done.signal()
+        }
+        _ = done.wait(timeout: .now() + 65)
+        let page = box.withLock { $0 }
+        // Legado's `ajax` answers a failed request's stack trace (`it.stackTraceStr`); a failed
+        // script request answers "" here, as every failed `java.ajax` does.
+        if page == nil || page?.failure != nil {
+            AppLogger.parse("Script WebView request failed", context: [
+                "source": sourceName, "url": String(pageURL.prefix(160)),
+                "error": page?.failure?.message ?? "no answer within 65 s",
+            ], level: .warning)
+        }
+        return PreparedSourceRequest.Response(
+            body: page?.body ?? "", url: page?.url ?? pageURL
+        )
+    }
+
+    private enum PreparedFetch {
+        /// A `data:` rule URL answers itself.
+        case dataURI(body: String, finalURL: String)
+        case network(AnalyzeUrl, URLRequest)
+    }
+
+    /// `fetch`'s script half before the network: the rule URL resolved into a request.
+    private func prepareFetch(
+        ruleUrl: String, key: String?, page: Int?, runtimeVariables: [String: String]?,
+        pageScope: RuleData?
+    ) throws -> PreparedFetch {
+        // A book's request is built against its variables, as Legado's `AnalyzeUrl(ruleData =
+        // book)` builds it: a detail, TOC or content URL can read back what the book's search
+        // row put (`{{java.get('bid')}}`, `@get:{bid}`) before that stage's own rules run.
+        loadRuntimeVariables(runtimeVariables)
+        // The rule URL itself can be `@js:` calling into jsLib — a 發現頁 item's url is
+        // literally `@js:getApiUrl('/novel/novels', {…})`. jsLib is evaluated when the
+        // bridge is built, but a JS timeout resets the engine and only the paths that ask
+        // get it back; this one never did, so the call evaluated to nothing and surfaced
+        // as "Invalid URL: @js:getApiUrl(…)". Hash-guarded, so it is a no-op once loaded.
+        evaluateJsLibIfNeeded()
+        ensureCloudSettingsIfNeeded()
+        // Legado's `AnalyzeUrl.init` reads the source's header map before `initUrl` runs the
+        // URL's JS. G站漫画 and the other qyyuapi sources (YCK 1329) depend on it: the header
+        // `<js>` puts the headers into `cache`, and the search URL's script parses them back.
+        // They are also the headers this request sends.
+        let sourceHeaders = jsEngine.resolvedSourceHeaders()
+        // A search or explore page's URL puts into that page's own `RuleData`, which its list
+        // then starts from (`pageScope`): Legado's `WebBook.searchBookAwait`/`exploreBookAwait`
+        // build the `AnalyzeUrl` with `ruleData = RuleData()` and hand it to `BookList`. Stored
+        // as source state, it rewrote the source's preferences on every search request.
+        let analyzeUrl = withPutScope(pageScope) {
+            AnalyzeUrl(
+                ruleUrl: ruleUrl,
+                key: key,
+                page: page,
+                sourceHeader: sourceRuleData.source.header,
+                baseUrl: sourceRuleData.source.bookSourceUrl,
+                source: sourceRuleData,
+                book: pageScope,
+                jsEvaluator: { [weak self] jsCode, bindings in
+                    self?.jsEngine.evaluateIsolated(jsCode, bindings: bindings)
+                },
+                jsErrorProvider: { [weak self] in self?.jsEngine.lastError }
+            )
+        }
+
+        installScriptRequest(on: analyzeUrl, sourceHeaders: sourceHeaders)
+
+        // A rule URL whose script threw has no URL, and the exception is why: Legado's
+        // `AnalyzeUrl.initUrl` lets it propagate. Reporting the script's text as an invalid
+        // URL hid 哔哩哔哩's (YCK1331) search failure behind "Invalid URL: @js: let start…".
+        if let failure = analyzeUrl.scriptFailure {
+            throw ModernParserBridgeError.scriptError(failure)
+        }
+
+        if analyzeUrl.isDataUri {
+            // Hand back the FULL rule URL, options included. A `data:` URI has no
+            // redirect chain, so there is no "final URL" to report — and its `,{json}`
+            // options are the only place the source can stash state to read back from
+            // `baseUrl`. Returning `analyzeUrl.url` (options stripped) meant
+            // 同人小说网's TOC rule ran `JSON.parse(baseUrl.slice(baseUrl.indexOf('{')))`
+            // on a string with no `{`: `indexOf` → -1, `slice(-1)` → the last base64
+            // character, which parses as a bare JSON number, so `type` came out
+            // `undefined`, the rule fetched `/undefined/catalog`, and every branch of
+            // its `if (type === 'novel')` chain missed → 目录为空, with nothing thrown.
+            // Same rule shape drives its ruleContent, so chapters were next.
+            let finalURL = analyzeUrl.evaluatedRuleUrl
+            let decoded = Self.bodyForDataURI(analyzeUrl)
+            let body = try withPutScope(pageScope) {
+                try applyResponseBodyScript(analyzeUrl.bodyJs, to: decoded, java: analyzeUrl.scriptView)
+            } ?? decoded
+            return .dataURI(body: body, finalURL: finalURL)
+        }
+
+        guard var request = analyzeUrl.toURLRequest() else {
+            // A `{{…}}` template that threw left no valid URL either.
+            if let scriptError = jsEngine.lastError {
+                throw ModernParserBridgeError.scriptError(scriptError)
+            }
+            throw ModernParserBridgeError.invalidURL(ruleUrl)
+        }
+
+        applySourceAuthentication(to: &request, sourceHeaders: sourceHeaders)
+        // What okhttp adds on the way out (`LegadoOutgoingHeaders`), before the log line so it
+        // shows what is sent. A `webView` page is loaded with the request's own headers, as
+        // Legado's BackstageWebView loads its AnalyzeUrl's.
+        if !analyzeUrl.useWebView {
+            request = LegadoOutgoingHeaders.prepared(request, as: .okHttp)
+        }
+
+        // Legado's request timeout (`WebFetcher.sourceRequestTimeout`): a hanging server never
+        // blocks the search or the reader indefinitely, and a slow one is still read.
+        request.timeoutInterval = WebFetcher.sourceRequestTimeout
+        WebCrawlerDebugger.logRequest(
+            url: request.url?.absoluteString ?? analyzeUrl.url,
+            method: request.httpMethod ?? "GET",
+            headers: request.allHTTPHeaderFields ?? [:]
+        )
+        // What a POST sends: a form field encoded in the wrong charset, or missing, answers
+        // with a page the rules find nothing on, and only the body tells which.
+        if let body = request.httpBody, !body.isEmpty {
+            WebCrawlerDebugger.logInfo(
+                "body: " + String(decoding: body.prefix(300), as: UTF8.self),
+                url: request.url?.absoluteString
+            )
+        }
+        return .network(analyzeUrl, request)
+    }
+
+    /// `fetch`'s script half after the network: decode, `bodyJs`, `loginCheckJs`.
+    private func finishFetch(
+        data: Data, response: URLResponse, request: URLRequest, analyzeUrl: AnalyzeUrl
+    ) throws -> (String, String) {
+        // One decoder with the native path: the source's `charset` option decides when it
+        // names one, as in Legado, and otherwise the charset is detected from the header, the
+        // document and the bytes. This used to assume UTF-8 without the option, which turned
+        // every GBK page that did not name its charset into "".
+        var capturedResult = LegadoHTTPResult.make(
+            request: request, data: data, response: response, declaredCharset: analyzeUrl.charset
+        )
+        // Legado's order: `AnalyzeUrl.getStrResponseAwait` answers with the `bodyJs` result
+        // (`StrResponse(raw, body)`, AnalyzeUrl.kt:507), and `WebBook` runs `loginCheckJs` on
+        // that answer (WebBook.kt:73). The check ran on the body before its `bodyJs` until
+        // 11-08.
+        if let transformed = try applyResponseBodyScript(
+            analyzeUrl.bodyJs, to: capturedResult.body, java: analyzeUrl.scriptView
+        ) {
+            capturedResult = capturedResult.replacingBody(transformed)
+        }
+        let sourceResponse = LegadoStrResponse(result: capturedResult)
+        let checkedResponse = applyLoginCheck(to: sourceResponse, java: analyzeUrl.scriptView)
+        let body = checkedResponse.body()
+        let finalUrl = checkedResponse.url()
+
+        // The status is otherwise dropped here: a 403 error envelope reaches the rule
+        // engine as an ordinary body, matches no rule, and search/TOC just come back
+        // empty. Keep the body flowing (Legado parity — some sources DO parse error
+        // pages) and record the failure alongside it.
+        SourceAPIErrorLog.shared.record(
+            sourceUrl: sourceRuleData.source.bookSourceUrl,
+            requestUrl: request.url?.absoluteString,
+            statusCode: (response as? HTTPURLResponse)?.statusCode,
+            body: body
+        )
+        WebCrawlerDebugger.logResponse(
+            url: request.url?.absoluteString ?? analyzeUrl.url,
+            statusCode: (response as? HTTPURLResponse)?.statusCode ?? -1,
+            htmlBody: body
+        )
+
+        return (body, finalUrl)
+    }
+
+    /// Applies Legado's `UrlOption.bodyJs` response transform exactly once, after charset
+    /// decoding and before `loginCheckJs` and any explore/search/content rule see the body.
+    /// The raw response must stay a JavaScript string: ordinary rule evaluation intentionally
+    /// converts JSON strings into objects, while `bodyJs` sources commonly call
+    /// `JSON.parse(result)`. A configured transform is part of the primary request contract,
+    /// so failure is surfaced instead of silently parsing the untransformed body.
+    ///
+    /// - Parameter java: the AnalyzeUrl, whose `evalJS` runs it in Legado — `java` and its
+    ///   `baseUrl`, the request URL's scheme and host.
+    /// - Returns: the transformed body; nil when the URL has no `bodyJs`.
+    private func applyResponseBodyScript(
+        _ script: String?,
+        to body: String,
+        java view: LegadoAnalyzeUrlScriptView
+    ) throws -> String? {
+        guard let script,
+              !script.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return nil }
+
+        guard let transformed = jsEngine.evaluateIsolated(
+            script,
+            bindings: ["result": body, "baseUrl": view.baseUrl, "java": view]
+        ) else {
+            throw ModernParserBridgeError.parseError(
+                "bodyJs failed: \(jsEngine.lastError ?? "script returned no value")"
+            )
+        }
+        return transformed
+    }
+
+    // MARK: - Private: Runtime Variable Helpers
+
+    /// `body` with `scope` as where `java.put` lands, the scopes it found restored after. Nil
+    /// leaves them as they are. Synchronous on purpose: a scope held across a suspension
+    /// would catch whatever else the host ran on this bridge meanwhile.
+    func withPutScope<T>(_ scope: RuleData?, _ body: () throws -> T) rethrows -> T {
+        guard let scope else { return try body() }
+        let scopes = (book: runtimeBookScope, chapter: runtimeChapterScope)
+        runtimeBookScope = scope
+        runtimeChapterScope = nil
+        defer {
+            runtimeBookScope = scopes.book
+            runtimeChapterScope = scopes.chapter
+        }
+        return try body()
+    }
+
+    private func loadRuntimeVariables(_ vars: [String: String]?) {
+        guard let vars, !vars.isEmpty else { return }
+        for (key, value) in vars {
+            sourceRuleData.putVariable(key: key, value: value)
+        }
+    }
+
+    private func dumpRuntimeVariables() -> [String: String]? {
+        var map = sourceRuleData.variableMap
+        if let runtimeBookScope {
+            map.merge(runtimeBookScope.variableMap) { _, new in new }
+        }
+        if let runtimeChapterScope {
+            map.merge(runtimeChapterScope.variableMap) { _, new in new }
+        }
+        map.merge(jsEngine.bookBridge.runtimeStateVariables()) { _, new in new }
+        for (key, value) in jsEngine.bookBridge.runtimeVariables() where !value.isEmpty {
+            map["book.variable.\(key)"] = value
+        }
+        return map.isEmpty ? nil : map
+    }
+
+    private func ensureCloudSettingsIfNeeded() {
+        guard sourceMayUseCloudSettings else { return }
+        evaluateJsLibIfNeeded()
+        guard !sourceVariableHasCloudConfig() else { return }
+
+        _ = jsEngine.evaluate(
+            """
+            cache.delete('gyksconfig');
+            if (typeof getCloudSettings === 'function') {
+                getCloudSettings(true);
+            }
+            """,
+            bindings: [
+                "baseUrl": sourceRuleData.source.bookSourceUrl,
+                "baseURL": sourceRuleData.source.bookSourceUrl
+            ]
+        )
+    }
+
+    private var sourceMayUseCloudSettings: Bool {
+        [
+            sourceRuleData.source.jsLib,
+            sourceRuleData.source.exploreUrl,
+            sourceRuleData.source.searchUrl
+        ].contains { script in
+            script.contains("云端配置")
+                || script.contains("getCloudSettings")
+                || script.contains("gyksconfig")
+        }
+    }
+
+    private func sourceVariableHasCloudConfig() -> Bool {
+        guard let json = runtimeStateStore.sourceVariableJSON(for: sourceRuleData.source.bookSourceUrl),
+              let data = json.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let cloudConfig = object["云端配置"]
+        else { return false }
+
+        switch cloudConfig {
+        case let dict as [String: Any]:
+            return !dict.isEmpty
+        case let array as [Any]:
+            return !array.isEmpty
+        case let string as String:
+            return !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case is NSNull:
+            return false
+        default:
+            return true
+        }
+    }
+
+    private func setBookContext(runtimeVariables: [String: String]?) {
+        var bookVariables: [String: String] = [:]
+        runtimeVariables?.forEach { key, value in
+            if key.hasPrefix("book.variable.") {
+                let rawKey = String(key.dropFirst("book.variable.".count))
+                bookVariables[rawKey] = value
+            }
+        }
+        let bridge = LegadoBookBridge(
+            durChapterIndex: Int(runtimeVariables?["book.durChapterIndex"] ?? "") ?? 0,
+            durChapterTitle: runtimeVariables?["book.durChapterTitle"] ?? "",
+            order: Int(runtimeVariables?["book.order"] ?? "") ?? 0,
+            type: Int(runtimeVariables?["book.type"] ?? "") ?? 0,
+            imageStyle: runtimeVariables?["book.imageStyle"] ?? "",
+            name: runtimeVariables?["book.name"] ?? "",
+            author: runtimeVariables?["book.author"] ?? "",
+            coverUrl: runtimeVariables?["book.coverUrl"] ?? "",
+            bookUrl: runtimeVariables?["book.bookUrl"] ?? "",
+            tocUrl: runtimeVariables?["book.tocUrl"] ?? "",
+            abstract: runtimeVariables?["book.abstract"] ?? "",
+            intro: runtimeVariables?["book.intro"] ?? "",
+            kind: runtimeVariables?["book.kind"] ?? "",
+            wordCount: runtimeVariables?["book.wordCount"] ?? "",
+            latestChapterTitle: runtimeVariables?["book.latestChapterTitle"] ?? "",
+            // Legado's book is always the source's: `origin` is its URL, `originName` its name.
+            origin: runtimeVariables?["book.origin"] ?? sourceRuleData.source.bookSourceUrl,
+            originName: runtimeVariables?["book.originName"] ?? sourceRuleData.source.bookSourceName,
+            totalChapterNum: Int(runtimeVariables?["book.totalChapterNum"] ?? "") ?? 0,
+            reverseToc: runtimeVariables?[LegadoBookBridge.reverseTocRuntimeKey] == "true",
+            variables: bookVariables
+        )
+        jsEngine.setBookBridge(bridge)
+    }
+
+    // MARK: - Private: Helpers
+
+    private static func hexPreview(_ text: String, byteLimit: Int) -> String {
+        guard let data = text.data(using: .utf8), !data.isEmpty else { return "" }
+        return data.prefix(byteLimit).map { String(format: "%02x", $0) }.joined(separator: " ")
+    }
+
+    private static func bodyForDataURI(_ analyzeUrl: AnalyzeUrl) -> String {
+        guard let decoded = analyzeUrl.decodeDataUri() else { return "" }
+        // A `type` key in the data-URI options means "return the payload hex-encoded"
+        // (binary-safe), which the source then decodes with `java.hexDecodeToString`.
+        // Matches Legado's AnalyzeUrl.getStrResponseAwait():
+        //   if (type != null) return StrResponse(url, HexUtil.encodeHexStr(getByteArrayAwait()))
+        // The VALUE is just a marker — 起点 uses `{"type":"X-QD"}` for tocUrl but
+        // `{"type":""}` (empty!) for chapter content, and BOTH content/toc JS call
+        // hexDecodeToString. Keying off `type?.isEmpty == false` wrongly sent the
+        // empty-type content payload back as UTF-8, so hexDecodeToString failed and the
+        // chapter stuck on "加载中". Hex whenever `type` is present (even empty); only a
+        // fully absent `type` returns the decoded string.
+        if analyzeUrl.type != nil {
+            return LegadoJSBridge.hexString(decoded.data)
+        }
+        return String(data: decoded.data, encoding: .utf8)
+            ?? String(decoding: decoded.data, as: UTF8.self)
+    }
+
+    // MARK: - jsLib Caching
+
+    /// Hashed `jsLib` content that was last evaluated.  `nil` means jsLib has never been evaluated.
+    private var evaluatedJsLibHash: String?
+    /// Engine generation at the time `evaluatedJsLibHash` was set.  Invalidated
+    /// when `jsEngine.generation` changes (engine was reset after a JS timeout).
+    private var evaluatedJsLibEngineGen: UInt64 = 0
+
+    /// Evaluate jsLib once per source, caching the hash so we don't re-evaluate
+    /// on every request.  jsLib functions (e.g. `BaseUrl()`, `getVariable()`,
+    /// `request()`) stay in the shared JSContext scope.
+    ///
+    /// Every entry point that runs the source's JS calls this first, not only the one that
+    /// creates the engine: a script timeout replaces the context (`JSCoreEngine.resetEngine`)
+    /// with none of jsLib's functions in it. 番茄听书 (YCK 1330 #31) lost its whole 發現 that
+    /// way — its audio decrypt ran past the timeout, and the explore script that ran next
+    /// called a jsLib function the new context did not have. A request stage gets here through
+    /// `prepareFetch`; the explore list and the image-decode hooks run before any request.
+    /// - Parameter engineOverride: the runtime to evaluate into. `wireJSEngine` passes
+    ///   its engine explicitly; every other caller leaves it nil.
+    private func evaluateJsLibIfNeeded(on engineOverride: JSCoreEngine? = nil) {
+        let jsLib = sourceRuleData.source.jsLib
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !jsLib.isEmpty else { return }
+        let engine = engineOverride ?? jsEngine
+
+        // If the JS engine was reset (timeout recovery), the new context has no
+        // jsLib code — force re-evaluation.
+        if engine.generation != evaluatedJsLibEngineGen {
+            evaluatedJsLibHash = nil
+            evaluatedJsLibEngineGen = engine.generation
+        }
+
+        let newHash = jsLib.md5Hash
+        guard newHash != evaluatedJsLibHash else { return }
+
+        // jsLib is the source's own script whichever stage first needs it — the runtime is
+        // built lazily, so that can be a search row's or a TOC's first `@js:`. A top-level
+        // `java.put` in it is the source's, not that row's or book's.
+        let scopes = (book: runtimeBookScope, chapter: runtimeChapterScope)
+        runtimeBookScope = nil
+        runtimeChapterScope = nil
+        defer {
+            runtimeBookScope = scopes.book
+            runtimeChapterScope = scopes.chapter
+        }
+
+        // A JSON-object jsLib names script libraries (Legado `SharedJsScope`). Legado throws at
+        // the first one it cannot download and keeps no scope, so the next script tries again;
+        // here the hash stays unset for the same retry.
+        let scripts: [String]
+        if let libraries = LegadoSharedJsLibrary.libraryURLs(in: jsLib) {
+            var downloaded: [String] = []
+            for url in libraries {
+                guard let script = LegadoSharedJsLibrary.script(
+                    for: url, download: engine.bridge.downloadSharedLibrary
+                ) else {
+                    AppLogger.parse("jsLib library unavailable; the source's scripts run without it", context: [
+                        "source": sourceRuleData.source.bookSourceName,
+                        "url": String(url.prefix(200))
+                    ])
+                    return
+                }
+                downloaded.append(script)
+            }
+            scripts = downloaded
+        } else {
+            scripts = [jsLib]
+        }
+        engine.withExecutionStage("jsLib") {
+            for script in scripts { _ = engine.evaluate(script) }
+        }
+        evaluatedJsLibHash = newHash
+    }
+
+    /// Re-evaluate jsLib on next use (e.g. after source variable reset).
+    func invalidateJsLibCache() {
+        evaluatedJsLibHash = nil
+    }
+}
+
+private extension String {
+    var md5Hash: String {
+        guard let data = data(using: .utf8) else { return "" }
+        let hash = CryptoKit.Insecure.MD5.hash(data: data)
+        return hash.map { String(format: "%02x", $0) }.joined()
+    }
+}
