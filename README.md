@@ -1,127 +1,141 @@
-# DZMeBookRead
+<div align="center">
 
-![Version](https://img.shields.io/badge/Version-1.3-orange.svg)
-![Swift Version](https://img.shields.io/badge/Swift-4.2-orange.svg)
-![Xcode Version](https://img.shields.io/badge/Xcode-10.2-orange.svg)
-![Author](https://img.shields.io/badge/Author-DZM-blue.svg)
+<img src="App/Assets.xcassets/BrandIcon.imageset/BrandIcon.png" width="128" height="128" alt="小浣熊阅读" />
 
-***
+# 小浣熊阅读
 
-#### OC如何集成本DEMO
+**搜书快一点，读书舒服一点。**
 
-    示例:  https://github.com/dengzemiao/OCDZMeBookRead
+一款优先兼容阅读书源的 iOS 阅读器
 
-***
+![iOS 15+](https://img.shields.io/badge/iOS-15%2B-315C50)
+![Swift](https://img.shields.io/badge/Swift-F05138?logo=swift&logoColor=white)
+[![GPL v3](https://img.shields.io/badge/License-GPL%20v3-blue)](LICENSE)
+[![TestFlight 公测](https://img.shields.io/badge/TestFlight-Beta-0D96F6?logo=apple&logoColor=white)](https://testflight.apple.com/join/RSmhQ9Xn)
 
-#### DEMO效果：
+[下载安装](#下载安装) · [主要功能](#主要功能) · [应用截图](#应用截图) · [书源说明](#书源说明) · [问题反馈](https://github.com/Aminark/legado-ios/issues)
 
-![DEMO效果](gif_0.gif)
+</div>
 
-***
+小浣熊阅读是一款 iOS 阅读器，由 [Aminark](https://github.com/Aminark) 维护，优先兼容阅读书源。希望从导入书源、搜索书籍到打开阅读，都能方便、顺手一些。
 
-#### Swift4.0 版本效果(下载地址在底部)：
+项目仍在边用边改，书源兼容和阅读体验会继续完善。
 
-![DEMO效果](gif_1.gif)
+**小浣熊阅读不提供书源或在线书库。** 书源需由用户自行从网络公开分享获取，或自行编写后导入；也可以直接阅读本地 TXT / EPUB。
 
-***
+## 下载安装
 
-#### 简介:
+支持 **iOS / iPadOS 15.0 及以上**。
 
-    提示: 导入项目流程 - 往下滚动
-    
-    下载不同版本可在上面的 Branch 选项中选择下载版本。
-    
-    v1.3 (Swift4.2) (master分支) { (TXT,有书籍首页)
-    
-        2019-5-17 修复: 更换滚动模式章节内容存储方式。待以后有解决方案在转回v1.2版本存储方式。(通过在章节列表Model存放滚动模式中的章节内容Model)
-    }
-    
-    v1.2 (Swift4.2) { (TXT,有书籍首页)
-    
-        2019-5-20 BUG: 滚动模式在iOS12版本以上会出现闪退,原因是字典里面的章节内容对象提前释放了,iOS12以下却没有问题,暂时没有更好的存储方式准备先替换为v1.3版本存储方式。
-        
-        2019-5-17 修复: 书籍首页添加标签BUG, 第一次进入创建阅读页多次BUG。
-    
-        2019-5-16 更新: 加入TXT全本快速进入阅读。
-    }
-    
-    v1.1 (Swift4.2) { (TXT,有书籍首页)
-    
-        2019-5-16 更新: 解析文本,代码细节优化。
-        
-        2019-5-10 修复: 无效果快速点击BUG。
-        
-        2019-5-7 更新: 加入书籍首页支持。
-    }
-    
-    v1.0 (Swift4.2) { (TXT,无书籍首页)
-    
-        2019-4-29 更新: 重做Demo, 升级Swift4.2, 解决遗留问题, 优化代码使用。
-    }
-    
-***
+### TestFlight 公测（推荐）
 
-#### 小说相关库：
+**[点击加入小浣熊阅读 TestFlight 公测](https://testflight.apple.com/join/RSmhQ9Xn)**
 
-    放大镜: https://github.com/dengzemiao/DZMMagnifierView
+1. 在 iPhone 或 iPad 上安装 Apple 官方的 [TestFlight](https://apps.apple.com/app/testflight/id899247664)。
+2. 使用同一台设备打开上方公测链接，按页面提示接受邀请并安装「小浣熊阅读」。
+3. 后续可在 TestFlight 中获取测试版更新，也欢迎通过 TestFlight 或 [GitHub Issues](https://github.com/Aminark/legado-ios/issues) 反馈问题。
 
-    阅读打开书籍效果: https://github.com/dengzemiao/DZMAnimatedTransitioning
+通过 TestFlight 安装无需自行签名。
 
-    小说《覆盖效果》: https://github.com/dengzemiao/DZMCoverAnimation
+### IPA 与源码安装
 
-    UIPageViewController 翻页背景颜色修改: http://www.jianshu.com/p/3e75fa22ada8
+**IPA 下载见 [GitHub Releases](https://github.com/Aminark/legado-ios/releases)，需要自行签名安装。** 请下载附件中的 `.ipa` 文件；`Source code` 是源码压缩包。
 
-***
+- **自行签名安装**：使用自己的签名工具安装 IPA。免费 Apple 账号自签的描述文件有效期通常为 7 天，到期需要重新签名安装，见 [Apple 说明](https://developer.apple.com/help/account/basics/about-your-developer-account#enable-a-personal-team-in-xcode)。
+- **巨魔安装**：已支持 [TrollStore](https://github.com/opa334/TrollStore) 的设备可自行尝试安装，具体系统兼容范围以 TrollStore 项目说明为准。
+- **源码构建**：有 macOS 和 Xcode 的朋友也可以自行编译，见 [开发指南](docs/DEVELOPMENT.md)。
 
-#### 导入项目流程:
+这个项目主要是自己使用和分享，没有盈利计划。
 
-![文件介绍1](icon_0.png)
+## 主要功能
 
-***
+| 功能 | 说明 |
+| --- | --- |
+| 阅读书源 | 支持 JSON、文件、URL 和二维码导入，以及书源分组、编辑和调试 |
+| 快速搜书 | 多书源并发搜索，结果陆续展示；重复搜索可先显示有效缓存，同书多源合并 |
+| 书架管理 | 列表、网格、分组、章节更新、换源和本机阅读进度 |
+| 阅读排版 | 字号、间距、边距、日夜主题、滚动与分页阅读、目录和书签 |
+| 本地 TXT / EPUB | TXT 自定义目录规则；EPUB 2/3 原书排版、封面、内嵌图表、目录与续读 |
+| 语音朗读 | 系统朗读与 HTTP TTS 配置 |
+| 阅读工具 | 替换净化、阅读记录、时长统计和缓存管理 |
+| RSS 订阅 | 订阅源管理与内容阅读 |
 
-### 有BUG请联系我 技术QQ群: （入群需要回答问题：写一句让APP崩溃的代码? 有的QQ版本不显示问题 已经出现过这样的情况 所以入群自己填上答案就行 防止广告之类的人进入）
-### 52181885 (已满)
-### 942885030 (新群)
+搜书速度是我比较在意的部分，目前做了并发调度、有效书源优先和结果缓存等优化。实际体验仍会受到网络和书源网站响应的影响。
 
-***
+兼容阅读书源不代表所有书源都能直接使用。复杂 JavaScript、登录、验证码和 WebView 规则仍可能存在平台差异，遇到问题欢迎反馈。
 
-#### epub提示
+## 应用截图
 
-    DTCoreText同样也可以解析txt，epub...分页相关的功能，很方便。不需要像我这个Demo中一样复杂的解析处理。当然有喜欢研究CoreText可以参考下我的Demo。
+<table>
+  <tr>
+    <td align="center"><strong>书架</strong><br /><a href="docs/images/bookshelf.png"><img src="docs/images/bookshelf.png" width="230" alt="小浣熊阅读书架" /></a></td>
+    <td align="center"><strong>搜书</strong><br /><a href="docs/images/search.png"><img src="docs/images/search.png" width="230" alt="小浣熊阅读搜索结果与缓存展示" /></a></td>
+    <td align="center"><strong>书源管理</strong><br /><a href="docs/images/sources.png"><img src="docs/images/sources.png" width="230" alt="小浣熊阅读书源管理" /></a></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>日间阅读</strong><br /><a href="docs/images/reader.png"><img src="docs/images/reader.png" width="230" alt="小浣熊阅读纸色主题" /></a></td>
+    <td align="center"><strong>夜间阅读</strong><br /><a href="docs/images/reader-dark.png"><img src="docs/images/reader-dark.png" width="230" alt="小浣熊阅读夜间主题" /></a></td>
+    <td align="center"><strong>我的</strong><br /><a href="docs/images/profile.png"><img src="docs/images/profile.png" width="230" alt="小浣熊阅读个人中心" /></a></td>
+  </tr>
+</table>
 
-    DTCoreText对于epub来说，主要功能就是能够将我们输入的HTML文件进行解析,并自动关联相对应的css样式（也帮我们解析好了),我们需要做的就是输入一个HTML文件,
+<details>
+<summary>查看更多截图：发现、阅读统计、关于</summary>
 
-    他就会给我们输出带有排版样式的NSAttributedString，然后我们直接使用CoreText进行画这个NSAttributedString就可以啦！
+<table>
+  <tr>
+    <td align="center"><strong>发现</strong><br /><a href="docs/images/explore.png"><img src="docs/images/explore.png" width="230" alt="小浣熊阅读发现页面" /></a></td>
+    <td align="center"><strong>阅读统计</strong><br /><a href="docs/images/statistics.png"><img src="docs/images/statistics.png" width="230" alt="小浣熊阅读统计页面" /></a></td>
+    <td align="center"><strong>关于</strong><br /><a href="docs/images/about.png"><img src="docs/images/about.png" width="230" alt="小浣熊阅读关于页面" /></a></td>
+  </tr>
+</table>
 
-    Github地址：https://github.com/Cocoanetics/DTCoreText
+</details>
 
-***
+截图使用演示书籍、书源和正文，点击可查看大图。
 
-#### 功能扩展 ( 本地阅读 快速进入 ):
+## 开始使用
 
-    快速进入做法(我这里列2种):
+1. 自行准备你有权使用的阅读书源，安装后进入「我的 → 书源管理」导入。
+2. 在书架点击搜索，输入书名或作者，打开书籍详情后开始阅读。
+3. 将书籍加入书架，方便下次继续阅读；也可以从书架直接导入本地 TXT 或 EPUB。
 
-    1.【这种适用于所有文章使用】单独写一个快速进入的解析器,先解析第一章(或者第一页,数值自己控制)出来进行使用.其他后台线程解析获取。
-        
-        通过正则先搜索出来一个章节进行阅读,其他剩下的则再次通过DEMO里面给与的正则搜索获得文章的所有章节位置ranges
-        
-        然后取出第一个range进行解析进入阅读,其他的后台解析读取,每次解析一个章节时需要检查本地是否存在
-        
-        这样就可以在阅读过程中,可能随意点击一个没有解析到的章节
-        
-        直接优先解析出来进行阅读,且还可以像网络数据一样预加载前后章节,相当于解析器里面存的就是服务器数据
-        
-        你只是在获取回来使用而已。这样也不会出现重复解析章节的情况。
-    
-    2.【这种适用中小文章使用,原因是大文章查询以及解析久】直接全部解析成章节内容列表放在内存中使用, 一般不是天大的章节数目内存还是够用的。
+4. 在阅读页调整排版、主题、书签和朗读设置。
 
-***
+EPUB 导入入口：书架 → 更多 → 本地书，或「我的 → 文件管理 → 导入 TXT / EPUB」。自 v0.1.13 起使用 Readium 显示无 DRM EPUB 2/3，保留原书 XHTML、CSS、SVG 封面、内嵌插图和表格，支持目录、书签、翻页／滚动、主题与字号设置，并保存原排版阅读位置。已导入但缺封面的书会自动尝试补回封面；原有朗读和文字工具可从 EPUB 阅读菜单「文字阅读与朗读」进入。
 
-#### DEMO老版本
+应用支持 `legado://` 规则导入链接。来源网站改版或停止服务时，书源规则可能需要更新。
 
-    2019-4-29 (停止更新)
-    Swift4.0 - https://github.com/dengzemiao/DZMeBookRead-Swift4.0
+## 书源说明
 
-    2018-9-6 (停止更新)
-    Swift3.x - https://github.com/dengzemiao/DZMeBookRead-Swift3.x
+小浣熊阅读仅提供书源解析、书籍管理和阅读功能，**不提供、内置或分发网络书源**。用户使用的书源来自网络公开分享，或由用户自行编写、导入。
 
+在线书籍正文、封面、简介及订阅内容由书源对应的第三方网站提供，版权归原作者或合法权利人所有。网络公开分享、书源可导入或内容可访问，不代表已获得内容授权。
+
+请自行核实书源和内容的来源，在获得授权或法律允许的范围内使用，遵守来源网站的使用规则，支持正版阅读。第三方网站或书源失效时，需要更新规则或更换来源。
+
+## 为什么做这个
+
+我之前一直用香色闺阁看书，也用得挺习惯。不过在自己的使用过程中，搜书等待时间一直让我比较难受。后来能用的书源越来越少，就想着干脆自己折腾一个。
+
+最开始只是打算自己用：搜书快一点，导入书源方便一点，找到书以后能舒舒服服地看下去。
+
+后来就这样边写边用、缺什么补什么，慢慢成了现在的小浣熊阅读。既然可能还有朋友有同样的需求，就把它开源出来，欢迎一起折腾。
+
+## 反馈与贡献
+
+遇到问题或有功能建议，欢迎提交 [Issue](https://github.com/Aminark/legado-ios/issues)。反馈时请附上应用版本、系统版本、设备和复现步骤；书源问题尽量提供最小规则。
+
+请先去掉日志和规则中的账号、Cookie、Token 等个人信息。欢迎提交代码、兼容用例和文档改进，具体见 [贡献指南](CONTRIBUTING.md)。
+
+## 开源许可
+
+本项目采用 **GNU GPL v3**，详见 [LICENSE](LICENSE)。
+
+第三方材料的版权与许可见 [第三方声明](THIRD_PARTY_NOTICES.md)。
+
+请遵守书源网站的使用规则和内容授权，支持正版阅读。
+
+## 友情链接
+
+[LINUX DO](https://linux.do/) —— 真诚分享、友好讨论的技术社区，本项目的交流与反馈也发布于此
