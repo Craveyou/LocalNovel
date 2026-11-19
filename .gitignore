@@ -1,69 +1,68 @@
-.DS_Store
-# Obsidian vault: keep personal UI state and recoverable trash local.
-docs/.obsidian/
-docs/.trash/
-*.xcuserstate
+# Xcode
+#
+# gitignore contributors: remember to update Global/Xcode.gitignore, Objective-C.gitignore & Swift.gitignore
+
+## User settings
 xcuserdata/
-DerivedData/
-.build/
-functions/lib/
-functions/node_modules/
-.worktrees/
+
+## compatibility with Xcode 8 and earlier (ignoring not required starting Xcode 9)
+*.xcscmblueprint
+*.xccheckout
+
+## compatibility with Xcode 3 and earlier (ignoring not required starting Xcode 4)
 build/
+DerivedData/
+*.moved-aside
+*.pbxuser
+!default.pbxuser
+*.mode1v3
+!default.mode1v3
+*.mode2v3
+!default.mode2v3
+*.perspectivev3
+!default.perspectivev3
 
-# Firebase CLI local state and debug logs
-.firebase/
-*-debug.log
-pglite-debug.log
+## Obj-C/Swift specific
+*.hmap
 
-# Local agent/skill tooling and backups
-.agents/
-.understand-anything/
-skills-lock.json
-*.bak
+## App packaging
+*.ipa
+*.dSYM.zip
+*.dSYM
 
-# Log captures from diff toolchain
-scripts/logs/*.txt
-scripts/logs/*.html
-
-docs/superpowers/
-.superpowers/
-
-# OAuth / credentials
-*.plist
-!Info.plist
-# App Store Connect API keys & signing material — NEVER commit
-*.p8
-AuthKey_*
-*.mobileprovision
-*.cer
-*.certSigningRequest
-serviceAccount*.json
-.env
-.env.*
-
-# Xcode build artifacts
-.derivedData/
-*.xcworkspace/xcuserdata/
-
-# CocoaPods (if added later)
+# CocoaPods
+#
+# We recommend against adding the Pods directory to your .gitignore. However
+# you should judge for yourself, the pros and cons are mentioned at:
+# https://guides.cocoapods.org/using/using-cocoapods.html#should-i-check-the-pods-directory-into-source-control
+#
 Pods/
+#
+# Add this line if you want to avoid checking in source code from the Xcode workspace
+*.xcworkspace
 
-# Claude Code skills (local dev only)
-.claude/
+# Carthage
+#
+# Add this line if you want to avoid checking in source code from Carthage dependencies.
+# Carthage/Checkouts
 
-# Agent instructions (local dev only)
-AGENTS.md
+Carthage/Build/
 
-# Local SPM package forks (local dev only)
-LocalPackages/
-CLAUDE.md
-.codex/
+# fastlane
+#
+# It is recommended to not store the screenshots in the git repo.
+# Instead, use fastlane to re-generate the screenshots whenever they are needed.
+# For more information about the recommended setup visit:
+# https://docs.fastlane.tools/best-practices/source-control/#source-control
 
-# Local theme-pack sample material (IP images, ~52MB) — not shipped; theme packs deferred
-Resources/Assets/ReaderThemes/
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots/**/*.png
+fastlane/test_output
 
-# legado reference sources (read-only, cloned for comparison — see CLAUDE.md)
-legado-upstream/
-legado-md3/
-legado-E/
+# Code Injection
+#
+# After new code Injection tools there's a generated folder /iOSInjectionProject
+# https://github.com/johnno1962/injectionforxcode
+
+iOSInjectionProject/
