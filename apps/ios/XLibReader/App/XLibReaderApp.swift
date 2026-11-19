@@ -1,0 +1,236 @@
+import SwiftUI
+
+@main
+struct XLibReaderApp: App {
+    private struct StartupContext {
+        let settings: SettingsStore
+        let library: LibraryModel
+        let sync: ProgressSyncCoordinator
+        let store: LibraryStore
+        #if DEBUG || XLIB_P8_DEVICE_PERFORMANCE
+        let prepareFixture: (() async throws -> Void)?
+        #endif
+    }
+
+    private let startup: Result<StartupContext, Error>
+
+    init() {
+        do {
+            #if XLIB_P8_DEVICE_PERFORMANCE
+            if let value = ProcessInfo.processInfo.environment["XLIB_P8_BULK_TEST_ID"],
+               let id = UUID(uuidString: value) {
+                let root = FileManager.default.temporaryDirectory.appending(path: "XLibP8Bulk-\(id.uuidString)")
+                let defaults = UserDefaults(suiteName: "com.xlib.p8bulk.\(id.uuidString)")!
+                let database = try LocalDatabase.open(root: root, defaults: defaults)
+                let store = LibraryStore(root: root, database: database)
+                let sync = ProgressSyncCoordinator(
+                    api: Self.fixtureAPI,
+                    vault: SyncCredentialVault(load: { nil }, save: { _ in }, clear: {}),
+                    stateStore: SyncStateStore(database: database),
+                    connectivity: SyncConnectivityMonitor(started: false),
+                    database: database
+                )
+                let mode = ProcessInfo.processInfo.environment["XLIB_P8_BULK_MODE"]
+                startup = .success(StartupContext(
+                    settings: SettingsStore(database: database),
+                    library: LibraryModel(store: store),
+                    sync: sync,
+                    store: store,
+                    prepareFixture: {
+                        try await P8BulkPerformanceHarness.prepare(mode: mode, root: root, store: store)
+                    }
+                ))
+                return
+            }
+            #endif
+
+            #if DEBUG
+            if let value = ProcessInfo.processInfo.environment["XLIB_UI_TEST_ID"],
+               let id = UUID(uuidString: value) {
+                let root = FileManager.default.temporaryDirectory.appending(path: "XLibUITests-\(id.uuidString)")
+                let defaults = UserDefaults(suiteName: "com.xlib.uitests.\(id.uuidString)")!
+                let database = try LocalDatabase.open(root: root, defaults: defaults)
+                let store = LibraryStore(root: root, database: database)
+                // Live UI runs require a separate explicit opt-in; ordinary UI
+                // fixtures remain offline. Never use the user's library or Keychain.
+                let liveUI = ProcessInfo.processInfo.environment["XLIB_LIVE_BACKEND_OPT_IN"] == "1"
+                if liveUI {
+                    guard let address = ProcessInfo.processInfo.environment["XLIB_LIVE_BACKEND_URL"],
+                          let normalized = SyncServerConfiguration.normalizedAddress(address),
+                          let host = URL(string: normalized)?.host,
+                          !["localhost", "127.0.0.1", "::1"].contains(host) else {
+                        throw SyncAPIError.notConfigured
+                    }
+                    try database.setSyncString(normalized, for: SyncServerConfiguration.storageKey)
+                }
+                let testCredentials = UITestCredentialMemory()
+                let sync = ProgressSyncCoordinator(
+                    api: liveUI ? nil : Self.fixtureAPI,
+                    vault: liveUI
+                        ? SyncCredentialVault(load: { await testCredentials.load() }, save: { await testCredentials.save($0) }, clear: { await testCredentials.clear() })
+                        : SyncCredentialVault(load: { nil }, save: { _ in }, clear: {}),
+                    stateStore: SyncStateStore(database: database),
+                    connectivity: SyncConnectivityMonitor(started: false),
+                    database: database
+                )
+                let scenario = ProcessInfo.processInfo.environment["XLIB_UI_TEST_SCENARIO"]
+                let prepareFixture = {
+                    if scenario != nil, try await store.load().isEmpty {
+                        let source = root.appending(path: "能力验收.txt")
+                        let text = (1...30).map { "第\($0)章\n这是第\($0)段测试正文。needle 用于验证搜索与临时阅读。\n" }.joined()
+                        try Data(text.utf8).write(to: source)
+                        let book = try await store.importBook(from: source)
+                        try await store.saveTOC([], for: book)
+                        if scenario == "documents" {
+                            for (key,name) in [("XLIB_UI_PDF","PDF验收.pdf"),("XLIB_UI_EPUB","EPUB验收.epub"),("XLIB_UI_LOCKED_PDF","密码验收.pdf")] {
+                                if let encoded = ProcessInfo.processInfo.environment[key],let bytes = Data(base64Encoded:encoded) {
+                                    let file = root.appending(path:name)
+                                    try bytes.write(to:file)
+                                    _ = try await store.importBook(from:file)
+                                }
+                            }
+                        }
+                        if scenario == "kindle",let encoded = ProcessInfo.processInfo.environment["XLIB_UI_KINDLE"],let bytes = Data(base64Encoded:encoded) {
+                            let file = root.appending(path:"Kindle验收.mobi")
+                            try bytes.write(to:file)
+                            _ = try await store.importBook(from:file)
+                        }
+                        if scenario == "comics", let encoded = ProcessInfo.processInfo.environment["XLIB_UI_COMIC"], let bytes = Data(base64Encoded: encoded) {
+                            let suffix = ProcessInfo.processInfo.environment["XLIB_UI_COMIC_EXTENSION"] == "cbr" ? "cbr" : "cbz"
+                            let file = root.appending(path: "漫画验收.\(suffix)")
+                            try bytes.write(to: file)
+                            _ = try await store.importBook(from: file)
+                        }
+                        if scenario == "library" {
+                            try await store.saveProgress(bookID: book.id, offset: 3, updatedAt: Date(timeIntervalSince1970: 1_700_000_000))
+                            _ = try await store.addBookmark(bookID: book.id, offset: 3, excerpt: "保留至确认删除")
+                            for index in 1...12 {
+                                let other = root.appending(path: "保留书籍\(index).txt")
+                                try Data("第\(index)本书的独立正文。".utf8).write(to: other)
+                                _ = try await store.importBook(from: other)
+                            }
+                        }
+                    }
+                    if scenario == "sync" {
+                        await sync.start()
+                        _ = await sync.saveConfiguredEmail("fixture@example.com")
+                        _ = await sync.startConfiguredSync()
+                    }
+                }
+                startup = .success(StartupContext(
+                    settings: SettingsStore(database: database),
+                    library: LibraryModel(store: store),
+                    sync: sync,
+                    store: store,
+                    prepareFixture: prepareFixture
+                ))
+                return
+            }
+            #endif
+
+            let database = try LocalDatabase.open()
+            let store = LibraryStore(database: database)
+            #if DEBUG || XLIB_P8_DEVICE_PERFORMANCE
+            startup = .success(StartupContext(
+                settings: SettingsStore(database: database),
+                library: LibraryModel(store: store),
+                sync: ProgressSyncCoordinator(database: database),
+                store: store,
+                prepareFixture: nil
+            ))
+            #else
+            startup = .success(StartupContext(
+                settings: SettingsStore(database: database),
+                library: LibraryModel(store: store),
+                sync: ProgressSyncCoordinator(database: database),
+                store: store
+            ))
+            #endif
+        } catch {
+            startup = .failure(error)
+        }
+    }
+
+    var body: some Scene {
+        WindowGroup {
+            Group {
+                switch startup {
+                case .success(let context):
+                    LibraryView(model: context.library, store: context.store, settings: context.settings)
+                        .environment(context.sync)
+                        .tint(context.settings.settings.theme.accent)
+                        .preferredColorScheme(context.settings.settings.theme.colorScheme)
+                        .task {
+                            #if DEBUG || XLIB_P8_DEVICE_PERFORMANCE
+                            do { try await context.prepareFixture?() }
+                            catch { assertionFailure("UI fixture setup failed: \(error)") }
+                            #endif
+                            await context.library.load()
+                            await context.sync.start()
+                        }
+                        .modifier(SyncAppLifecycleModifier(sync: context.sync))
+                case .failure:
+                    ContentUnavailableView(
+                        "本地书库暂时无法打开",
+                        systemImage: "externaldrive.badge.exclamationmark",
+                        description: Text("原有书籍和凭据未被修改，请重新启动应用后再试。")
+                    )
+                }
+            }
+            .overlay(alignment: .bottomLeading) {
+                #if DEBUG
+                if let value = ProcessInfo.processInfo.environment["XLIB_UI_TEST_ID"], UUID(uuidString: value) != nil {
+                    UITestClipboardProbe()
+                }
+                #endif
+            }
+        }
+    }
+}
+
+#if DEBUG || XLIB_P8_DEVICE_PERFORMANCE
+private actor UITestCredentialMemory {
+    private var credentials: SyncCredentials?
+    func load() -> SyncCredentials? { credentials }
+    func save(_ value: SyncCredentials) { credentials = value }
+    func clear() { credentials = nil }
+}
+
+private extension XLibReaderApp {
+    // Default UI fixtures use in-memory responses. Explicit live opt-in uses
+    // normal HTTPS with a separate in-memory vault, never the user's Keychain.
+    static var fixtureAPI: SyncAPIClient {
+        SyncAPIClient(
+            isConfigured: true,
+            startSync: { request in
+                SyncStartResponse(token: "ui-fixture", user: .init(userId: UUID(), email: request.email),
+                                  device: .init(deviceId: request.device.deviceId, deviceName: request.device.deviceName, platform: "ios"), serverTimeMs: 0)
+            },
+            pullProgress: { _ in .init(serverTimeMs: 0, items: []) },
+            syncProgress: { _, _ in .init(serverTimeMs: 0, results: []) },
+            deleteBookProgress: { _, _ in },
+            listDevices: { _ in [] },
+            deleteDevice: { _, _ in },
+            health: { true }
+        )
+    }
+}
+#endif
+
+private struct SyncAppLifecycleModifier: ViewModifier {
+    let sync: ProgressSyncCoordinator
+    @Environment(\.scenePhase) private var scenePhase
+
+    func body(content: Content) -> some View {
+        content.onChange(of: scenePhase) { _, phase in
+            Task {
+                switch phase {
+                case .active: await sync.appBecameActive()
+                case .background: await sync.appEnteredBackground()
+                case .inactive: break
+                @unknown default: break
+                }
+            }
+        }
+    }
+}

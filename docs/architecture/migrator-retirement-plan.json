@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "enabled": true,
+  "first_sqlite_migration_release": "0.10.0",
+  "retirement_release": "0.11.0",
+  "minimum_direct_upgrade_from": "0.10.0",
+  "forced_intermediate_release": "0.10.0",
+  "retired_source_markers": {
+    "apps/android/app/src/main/java/com/xlib/txtreader/LocalDatabase.java": [
+      "migrateBooks(",
+      "migrateBookmarks(",
+      "migrateSettings(",
+      "migrateSyncState("
+    ],
+    "apps/ios/XLibReader/Persistence/LocalDatabase.swift": [
+      "migrateLegacyIfNeeded(",
+      "loadLegacyData(",
+      "struct LegacyBook",
+      "struct LegacySync"
+    ]
+  },
+  "retired_fixtures": [
+    "scripts/test-android-storage-upgrade.sh",
+    "scripts/test-ios-storage-upgrade.sh"
+  ]
+}

@@ -1,0 +1,115 @@
+plugins {
+    id "com.android.application"
+}
+
+// version.properties is the single source of truth for the app's versionCode
+// and versionName. Builds are intentionally reproducible and never mutate it;
+// version changes require explicit release preparation.
+def versionPropsFile = rootProject.file("version.properties")
+def versionProps = new Properties()
+if (!versionPropsFile.exists()) {
+    throw new GradleException("version.properties is required; builds do not create version files")
+}
+versionPropsFile.withInputStream { versionProps.load(it) }
+def currentCode = versionProps.getProperty("versionCode")
+def currentName = versionProps.getProperty("versionName")
+if (currentCode == null || !(currentCode ==~ /[1-9][0-9]*/) || currentName == null || currentName.isBlank()) {
+    throw new GradleException("version.properties must contain a valid versionCode and versionName")
+}
+currentCode = currentCode.toInteger()
+
+// local.properties holds signing credentials for the release build. Kept out of
+// git (see .gitignore); copy local.properties.example if you need a fresh start.
+def localPropsFile = rootProject.file("local.properties")
+def localProps = new Properties()
+if (localPropsFile.exists()) {
+    localPropsFile.withInputStream { localProps.load(it) }
+}
+
+android {
+    namespace "com.xlib.txtreader"
+    compileSdk 35
+    ndkVersion "27.2.12479018"
+    externalNativeBuild { cmake { path file("src/main/cpp/CMakeLists.txt"); version "3.22.1" } }
+
+    signingConfigs {
+        create("release") {
+            storeFile file(localProps.getProperty("RELEASE_STORE_FILE", "release.jks"))
+            storePassword localProps.getProperty("RELEASE_STORE_PASSWORD", "")
+            keyAlias localProps.getProperty("RELEASE_KEY_ALIAS", "")
+            keyPassword localProps.getProperty("RELEASE_KEY_PASSWORD", "")
+        }
+    }
+
+    defaultConfig {
+        applicationId "com.xlib.txtreader"
+        minSdk 23
+        ndk { abiFilters "arm64-v8a", "armeabi-v7a", "x86_64" }
+        externalNativeBuild { cmake { arguments "-DANDROID_STL=c++_static" } }
+        targetSdk 35
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        versionCode currentCode
+        versionName currentName
+    }
+
+    buildTypes {
+        release {
+            signingConfig = signingConfigs.getByName("release")
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    sourceSets {
+        main.assets.srcDir layout.buildDirectory.dir("generated/kindleAssets")
+        test.resources.srcDir rootProject.file("../../contracts/fixtures")
+        androidTest.assets.srcDir rootProject.file("../../contracts/fixtures")
+        // Large fixtures are opt-in test inputs, never shipped in the application.
+        if (project.hasProperty("documentPerfFixtures")) {
+            androidTest.assets.srcDir file(project.property("documentPerfFixtures"))
+        }
+    }
+
+    testOptions {
+        unitTests.returnDefaultValues = true
+        unitTests.includeAndroidResources = true
+    }
+
+    applicationVariants.configureEach { variant ->
+        variant.outputs.configureEach { output ->
+            if (variant.buildType.name == "debug") {
+                output.outputFileName = "xlib-debug.apk"
+            } else if (variant.buildType.name == "release") {
+                output.outputFileName = "xlib-release.apk"
+            }
+        }
+    }
+}
+
+// Bundle the exact shared sources; never maintain a second Android canonicalizer.
+def kindleRoot = rootProject.file("../../packages/kindle-core")
+def kindleAssets = tasks.register("prepareKindleAssets") {
+    inputs.files(["entities.js", "vendor/mobi.decoder.js", "core.js", "vendor/LICENSE"].collect { new File(kindleRoot, it) })
+    outputs.dir layout.buildDirectory.dir("generated/kindleAssets")
+    doLast {
+        def out = layout.buildDirectory.dir("generated/kindleAssets").get().asFile
+        out.mkdirs()
+        new File(out, "kindle-core.js").setText(["entities.js", "vendor/mobi.decoder.js", "core.js"].collect { new File(kindleRoot,it).getText("UTF-8") }.join("\n"), "UTF-8")
+        new File(out, "kindle-LICENSE.txt").bytes = new File(kindleRoot,"vendor/LICENSE").bytes
+    }
+}
+tasks.named("preBuild").configure { dependsOn kindleAssets }
+
+dependencies {
+    implementation "com.tom-roush:pdfbox-android:2.0.27.0"
+    implementation "com.ibm.icu:icu4j:76.1"
+    androidTestImplementation "androidx.test:runner:1.6.2"
+    androidTestImplementation "androidx.test.ext:junit:1.2.1"
+    testImplementation "junit:junit:4.13.2"
+    testImplementation "org.json:json:20240303"
+    testImplementation "org.mockito:mockito-core:5.14.2"
+    testImplementation "org.robolectric:robolectric:4.17"
+}

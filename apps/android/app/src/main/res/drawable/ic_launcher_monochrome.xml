@@ -1,0 +1,7 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="338" android:viewportHeight="338">
+    <!-- Monochrome silhouette of the existing six-blade XLib mark. -->
+    <path android:fillColor="#FFFFFFFF"
+        android:pathData="M152,93L200,79L160,171Z M190,120L223,138L172,169Z M183,171L242,204L227,251L170,180Z M165,185L196,221L164,241Z M151,181L68,191L98,227L159,193Z M106,142L154,173L106,179Z" />
+</vector>

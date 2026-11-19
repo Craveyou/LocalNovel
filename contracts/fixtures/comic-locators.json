@@ -1,0 +1,48 @@
+{
+  "description": "Synthetic locator-only contract vectors; invalidOverrides are merged into base. No archive sorting fixtures or real books.",
+  "base": {
+    "format": "cbz", "version": 1, "profile": "comic-order-v1",
+    "manifestHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pageKey": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "page": 0, "pageCount": 3, "y": 0
+  },
+  "validOverrides": [
+    {"id": "cbz-first", "overrides": {}, "progress": 0.3333333333333333},
+    {"id": "cbr-last", "overrides": {"format": "cbr", "page": 2, "y": 1}, "progress": 1},
+    {"id": "single-page", "overrides": {"pageCount": 1, "y": 0.25}, "progress": 1},
+    {"id": "maximum-page-count", "overrides": {"pageCount": 10000, "page": 9999}, "progress": 1}
+  ],
+  "rounding": [
+    {"input": 0, "expected": 0},
+    {"input": 1, "expected": 1},
+    {"input": 0.00000049, "expected": 0},
+    {"input": 0.0000005, "expected": 0.000001},
+    {"input": 0.0001245, "expected": 0.000125},
+    {"input": 0.5000004999999998, "expected": 0.5},
+    {"input": 0.5000005, "expected": 0.500001},
+    {"input": 0.1234565, "expected": 0.123457},
+    {"input": 0.9999995, "expected": 1},
+    {"input": 5e-324, "expected": 0}
+  ],
+  "invalidOverrides": [
+    {"id": "future-profile", "overrides": {"profile": "comic-order-v2"}, "schemaInvalid": true},
+    {"id": "future-version", "overrides": {"version": 2}, "schemaInvalid": true},
+    {"id": "kindle-not-enabled", "overrides": {"format": "kindle"}, "schemaInvalid": true},
+    {"id": "uppercase-manifest", "overrides": {"manifestHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}, "schemaInvalid": true},
+    {"id": "short-page-key", "overrides": {"pageKey": "bb"}, "schemaInvalid": true},
+    {"id": "uppercase-page-key", "overrides": {"pageKey": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"}, "schemaInvalid": true},
+    {"id": "bad-manifest", "overrides": {"manifestHash": "gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg"}, "schemaInvalid": true},
+    {"id": "zero-count", "overrides": {"pageCount": 0}, "schemaInvalid": true},
+    {"id": "too-many-pages", "overrides": {"pageCount": 10001}, "schemaInvalid": true},
+    {"id": "fractional-count", "overrides": {"pageCount": 2.5}, "schemaInvalid": true},
+    {"id": "page-at-count", "overrides": {"page": 3}, "schemaInvalid": false},
+    {"id": "negative-page", "overrides": {"page": -1}, "schemaInvalid": true},
+    {"id": "fractional-page", "overrides": {"page": 0.5}, "schemaInvalid": true},
+    {"id": "negative-y", "overrides": {"y": -0.0000001}, "schemaInvalid": true},
+    {"id": "high-y", "overrides": {"y": 1.0000001}, "schemaInvalid": true},
+    {"id": "null-y", "overrides": {"y": null}, "schemaInvalid": true},
+    {"id": "string-page", "overrides": {"page": "0"}, "schemaInvalid": true},
+    {"id": "private-path", "overrides": {"path": "pages/1.png"}, "schemaInvalid": true},
+    {"id": "pdf-fields", "overrides": {"resource": "private.xhtml"}, "schemaInvalid": true}
+  ]
+}

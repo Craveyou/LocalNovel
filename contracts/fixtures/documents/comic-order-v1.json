@@ -1,0 +1,522 @@
+{
+  "profile": "comic-order-v1",
+  "description": "Synthetic filename-only vectors; not an archive or image-decoder acceptance fixture. Canonical paths are NFC. Digits are ASCII only; non-digit runs compare ASCII-folded Unicode scalars; equal numeric runs ignore leading zeros until full-path raw-scalar tie-break. Hash inputs are UTF-8 with LF, including the final LF. Hidden unsupported images are excluded after all-entry safety/duplicate checks.",
+  "entries": [
+    {
+      "path": "😀.png",
+      "kind": "file"
+    },
+    {
+      "path": "中/第10.png",
+      "kind": "file"
+    },
+    {
+      "path": "中/第2.png",
+      "kind": "file"
+    },
+    {
+      "path": "é.png",
+      "kind": "file"
+    },
+    {
+      "path": "ä.png",
+      "kind": "file"
+    },
+    {
+      "path": "Ä.png",
+      "kind": "file"
+    },
+    {
+      "path": "z.png",
+      "kind": "file"
+    },
+    {
+      "path": "long10000000000000000000000000000000000000000.png",
+      "kind": "file"
+    },
+    {
+      "path": "long9999999999999999999999999999999999999999.png",
+      "kind": "file"
+    },
+    {
+      "path": "chapter02/10.jpg",
+      "kind": "file"
+    },
+    {
+      "path": "chapter2/3.jpg",
+      "kind": "file"
+    },
+    {
+      "path": "case.PNG",
+      "kind": "file"
+    },
+    {
+      "path": "Case.png",
+      "kind": "file"
+    },
+    {
+      "path": "a-1.png",
+      "kind": "file"
+    },
+    {
+      "path": "a10.png",
+      "kind": "file"
+    },
+    {
+      "path": "a2z.png",
+      "kind": "file"
+    },
+    {
+      "path": "a02z.png",
+      "kind": "file"
+    },
+    {
+      "path": "a2.png",
+      "kind": "file"
+    },
+    {
+      "path": "a1.png",
+      "kind": "file"
+    },
+    {
+      "path": "a/10.png",
+      "kind": "file"
+    },
+    {
+      "path": "A/2.png",
+      "kind": "file"
+    },
+    {
+      "path": "10.jpeg",
+      "kind": "file"
+    },
+    {
+      "path": "2.PNG",
+      "kind": "file"
+    },
+    {
+      "path": "1.jpg",
+      "kind": "file"
+    },
+    {
+      "path": "01.jpg",
+      "kind": "file"
+    },
+    {
+      "path": "001.jpg",
+      "kind": "file"
+    },
+    {
+      "path": "00.png",
+      "kind": "file"
+    },
+    {
+      "path": "0.png",
+      "kind": "file"
+    },
+    {
+      "path": "chapter2/",
+      "kind": "directory"
+    },
+    {
+      "path": ".cover.jpg",
+      "kind": "file"
+    },
+    {
+      "path": "hidden/.data/1.png",
+      "kind": "file"
+    },
+    {
+      "path": "__MACOSX/cover.png",
+      "kind": "file"
+    },
+    {
+      "path": ".hidden/unsupported.webp",
+      "kind": "file"
+    },
+    {
+      "path": "README.txt",
+      "kind": "file"
+    },
+    {
+      "path": "ComicInfo.xml",
+      "kind": "file"
+    }
+  ],
+  "canonicalPaths": [
+    "😀.png",
+    "中/第10.png",
+    "中/第2.png",
+    "é.png",
+    "ä.png",
+    "Ä.png",
+    "z.png",
+    "long10000000000000000000000000000000000000000.png",
+    "long9999999999999999999999999999999999999999.png",
+    "chapter02/10.jpg",
+    "chapter2/3.jpg",
+    "case.PNG",
+    "Case.png",
+    "a-1.png",
+    "a10.png",
+    "a2z.png",
+    "a02z.png",
+    "a2.png",
+    "a1.png",
+    "a/10.png",
+    "A/2.png",
+    "10.jpeg",
+    "2.PNG",
+    "1.jpg",
+    "01.jpg",
+    "001.jpg",
+    "00.png",
+    "0.png",
+    "chapter2",
+    ".cover.jpg",
+    "hidden/.data/1.png",
+    "__MACOSX/cover.png",
+    ".hidden/unsupported.webp",
+    "README.txt",
+    "ComicInfo.xml"
+  ],
+  "pages": [
+    {
+      "canonicalPath": "0.png",
+      "pageKey": "0f25cc56a5248acaff1dea34989e04c0a94a321da43e1f806eb49b8551432759"
+    },
+    {
+      "canonicalPath": "00.png",
+      "pageKey": "2372123d1d2fb39b2d8ebcc3c208c0f1e37586b578fee79623a98a1fd752c137"
+    },
+    {
+      "canonicalPath": "001.jpg",
+      "pageKey": "6a0e4bdac023067c7761eb213dc59f4b80682a8a17d0ab790a59ea831350b320"
+    },
+    {
+      "canonicalPath": "01.jpg",
+      "pageKey": "d63f70a650b260fb9f849fe630848fa9b59f66bfa431d8669ac512f6e80ce63a"
+    },
+    {
+      "canonicalPath": "1.jpg",
+      "pageKey": "4c468b3b16999fd9578189576d5f770cb4a16ad9fca0e798a251f00a54a87c5d"
+    },
+    {
+      "canonicalPath": "2.PNG",
+      "pageKey": "e84556ea511e98c934de632f2b4b9e757a50b7871836d9dfec1e77ae7150ea78"
+    },
+    {
+      "canonicalPath": "10.jpeg",
+      "pageKey": "9ef19a0d0d8c2799aad7ae47ae159ea627d1f5f375a0b0ddbfd236c3e3e65256"
+    },
+    {
+      "canonicalPath": "A/2.png",
+      "pageKey": "35ca9372a4a4701642f7487c1de4a392708dc8e761f1220af0ea7443b92928d9"
+    },
+    {
+      "canonicalPath": "a/10.png",
+      "pageKey": "5cadee32abcebfcedb179d3a90ad1aeb11618ec30dba1a2773713f68b3dfa1c4"
+    },
+    {
+      "canonicalPath": "a1.png",
+      "pageKey": "861305b919d82df443bd52f0dd9c093f027ba00c8f4bc9962acd1e16e00c20dd"
+    },
+    {
+      "canonicalPath": "a2.png",
+      "pageKey": "ca503d12778f03690352c3f0c38d147b2e8e727edd641c297713e269fdbbdcd0"
+    },
+    {
+      "canonicalPath": "a02z.png",
+      "pageKey": "ccef6417a2710f5ae1e59ae78da17cf12caf097475793821e05621ddf815d92b"
+    },
+    {
+      "canonicalPath": "a2z.png",
+      "pageKey": "44ef34d05c420a1b5081813bfddfbe1c05e5bee2cbef4584cb912c3528470273"
+    },
+    {
+      "canonicalPath": "a10.png",
+      "pageKey": "cc6463df6eb0b823d70ad986dd191ec5cfff21a370228356f9a3284dfab77562"
+    },
+    {
+      "canonicalPath": "a-1.png",
+      "pageKey": "5acafbfca43be35c7e810674987dd766df6487ab1cee27afb00acd01ce44726f"
+    },
+    {
+      "canonicalPath": "Case.png",
+      "pageKey": "a76e4a1bed093472394fa7054f8d01e1f02446c7c25deb4e9cdfc2fcd799ee2f"
+    },
+    {
+      "canonicalPath": "case.PNG",
+      "pageKey": "2e93ee707d5d66dfaa3c65fbf345038bcbc1d113db640a3c1995f8bfd8aa9a22"
+    },
+    {
+      "canonicalPath": "chapter2/3.jpg",
+      "pageKey": "85c31465a50feb5e7bf036c9c60c1333ac8ba91fbb12ae0c10c0bfbc053ab591"
+    },
+    {
+      "canonicalPath": "chapter02/10.jpg",
+      "pageKey": "0c4693dff433cd1eb1d0fef59666aa277879e8dd359c0d430e33f6a6ca2ee3f3"
+    },
+    {
+      "canonicalPath": "long9999999999999999999999999999999999999999.png",
+      "pageKey": "213b8af3f7e44e1c2d75d51ac8722f7c4a163c3b8c3a385e81301e9a87b515b1"
+    },
+    {
+      "canonicalPath": "long10000000000000000000000000000000000000000.png",
+      "pageKey": "d526b6cfe8c764e9b487f69036b28bda748ea725420de08fb080ec8cce254744"
+    },
+    {
+      "canonicalPath": "z.png",
+      "pageKey": "69c1774f308c5b0cd0642c46b7877c17be66194647ae8149d86620f16da41798"
+    },
+    {
+      "canonicalPath": "Ä.png",
+      "pageKey": "28fd0b70ee271e0fef5c9a4cbdc4b0d7b61a3b2c09722041b3aa13fd6825e037"
+    },
+    {
+      "canonicalPath": "ä.png",
+      "pageKey": "278a578354eefcfd20e83694bb3bf728d07828969fc4d13b5bc9348345e22cfa"
+    },
+    {
+      "canonicalPath": "é.png",
+      "pageKey": "001c0a7aface380b082b3fa75e03705e816eae83de1af0012a854c42d21c9b75"
+    },
+    {
+      "canonicalPath": "中/第2.png",
+      "pageKey": "d7cf9d6d3bd76b88b412185307b400df4c1c2efa166f6d37f6902cb28b9e8e57"
+    },
+    {
+      "canonicalPath": "中/第10.png",
+      "pageKey": "08abdf928d03a1de75b7ddea232d336d56b0b9aa3af32b75f70cb2c0f7a92b3f"
+    },
+    {
+      "canonicalPath": "😀.png",
+      "pageKey": "0ac8627f107609157d59c4903703f8fd3230da6739dad05a4714ee4e57b7dd52"
+    }
+  ],
+  "manifestHash": "6e389c8c6872fd60122c76a7866e1bd2aaabb0919755e28772895471446654b5",
+  "locators": [
+    {
+      "locator": {
+        "format": "cbz",
+        "version": 1,
+        "profile": "comic-order-v1",
+        "manifestHash": "6e389c8c6872fd60122c76a7866e1bd2aaabb0919755e28772895471446654b5",
+        "pageKey": "0f25cc56a5248acaff1dea34989e04c0a94a321da43e1f806eb49b8551432759",
+        "page": 0,
+        "pageCount": 28,
+        "y": 0.0
+      },
+      "progress": 0.03571428571428571,
+      "positionKey": "cbz:1:comic-order-v1:6e389c8c6872fd60122c76a7866e1bd2aaabb0919755e28772895471446654b5:0f25cc56a5248acaff1dea34989e04c0a94a321da43e1f806eb49b8551432759:0.000000"
+    },
+    {
+      "locator": {
+        "format": "cbz",
+        "version": 1,
+        "profile": "comic-order-v1",
+        "manifestHash": "6e389c8c6872fd60122c76a7866e1bd2aaabb0919755e28772895471446654b5",
+        "pageKey": "2372123d1d2fb39b2d8ebcc3c208c0f1e37586b578fee79623a98a1fd752c137",
+        "page": 1,
+        "pageCount": 28,
+        "y": 0.123457
+      },
+      "progress": 0.07142857142857142,
+      "positionKey": "cbz:1:comic-order-v1:6e389c8c6872fd60122c76a7866e1bd2aaabb0919755e28772895471446654b5:2372123d1d2fb39b2d8ebcc3c208c0f1e37586b578fee79623a98a1fd752c137:0.123457"
+    },
+    {
+      "locator": {
+        "format": "cbr",
+        "version": 1,
+        "profile": "comic-order-v1",
+        "manifestHash": "6e389c8c6872fd60122c76a7866e1bd2aaabb0919755e28772895471446654b5",
+        "pageKey": "0ac8627f107609157d59c4903703f8fd3230da6739dad05a4714ee4e57b7dd52",
+        "page": 27,
+        "pageCount": 28,
+        "y": 1.0
+      },
+      "progress": 1.0,
+      "positionKey": "cbr:1:comic-order-v1:6e389c8c6872fd60122c76a7866e1bd2aaabb0919755e28772895471446654b5:0ac8627f107609157d59c4903703f8fd3230da6739dad05a4714ee4e57b7dd52:1.000000"
+    }
+  ],
+  "invalidCases": [
+    {
+      "entries": [
+        {
+          "path": "/x.png",
+          "kind": "file"
+        }
+      ],
+      "error": "unsafePath"
+    },
+    {
+      "entries": [
+        {
+          "path": "../x.png",
+          "kind": "file"
+        }
+      ],
+      "error": "unsafePath"
+    },
+    {
+      "entries": [
+        {
+          "path": "a/../x.png",
+          "kind": "file"
+        }
+      ],
+      "error": "unsafePath"
+    },
+    {
+      "entries": [
+        {
+          "path": "a/./x.png",
+          "kind": "file"
+        }
+      ],
+      "error": "unsafePath"
+    },
+    {
+      "entries": [
+        {
+          "path": "a//x.png",
+          "kind": "file"
+        }
+      ],
+      "error": "unsafePath"
+    },
+    {
+      "entries": [
+        {
+          "path": "a\\x.png",
+          "kind": "file"
+        }
+      ],
+      "error": "unsafePath"
+    },
+    {
+      "entries": [
+        {
+          "path": "C:/x.png",
+          "kind": "file"
+        }
+      ],
+      "error": "unsafePath"
+    },
+    {
+      "entries": [
+        {
+          "path": "a/\u0000x.png",
+          "kind": "file"
+        }
+      ],
+      "error": "unsafePath"
+    },
+    {
+      "entries": [
+        {
+          "path": "a/x.png",
+          "kind": "file"
+        }
+      ],
+      "error": "unsafePath"
+    },
+    {
+      "entries": [
+        {
+          "path": "",
+          "kind": "file"
+        }
+      ],
+      "error": "unsafePath"
+    },
+    {
+      "entries": [
+        {
+          "path": "a.png/",
+          "kind": "file"
+        }
+      ],
+      "error": "unsafePath"
+    },
+    {
+      "entries": [
+        {
+          "path": "é.png",
+          "kind": "file"
+        },
+        {
+          "path": "é.png",
+          "kind": "file"
+        }
+      ],
+      "error": "duplicatePath"
+    },
+    {
+      "entries": [
+        {
+          "path": ".hidden",
+          "kind": "file"
+        },
+        {
+          "path": ".hidden",
+          "kind": "file"
+        }
+      ],
+      "error": "duplicatePath"
+    },
+    {
+      "entries": [
+        {
+          "path": "dir/",
+          "kind": "directory"
+        },
+        {
+          "path": "dir",
+          "kind": "file"
+        }
+      ],
+      "error": "duplicatePath"
+    },
+    {
+      "entries": [
+        {
+          "path": "1.jpg",
+          "kind": "file"
+        },
+        {
+          "path": "2.webp",
+          "kind": "file"
+        }
+      ],
+      "error": "unsupportedImage"
+    },
+    {
+      "entries": [
+        {
+          "path": "a.png",
+          "kind": "symbolicLink"
+        }
+      ],
+      "error": "link"
+    },
+    {
+      "entries": [
+        {
+          "path": ".hidden",
+          "kind": "hardLink"
+        }
+      ],
+      "error": "link"
+    },
+    {
+      "entries": [
+        {
+          "path": ".only.png",
+          "kind": "file"
+        }
+      ],
+      "error": "empty"
+    }
+  ]
+}
