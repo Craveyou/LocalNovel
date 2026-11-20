@@ -350,8 +350,8 @@ def main():
           and "DocumentsBootstrap.guideFileName" in resolver)
     check("切回前台补写说明文件", "DocumentsBootstrap.ensureVisibleInFilesApp()" in store)
     check("版本号提升以刷新系统元数据",
-          "<string>2.17.2</string>" in plist and "CURRENT_PROJECT_VERSION = 25" in pbx
-          and "MARKETING_VERSION = 2.17.2" in pbx)
+          "<string>2.17.3</string>" in plist and "CURRENT_PROJECT_VERSION = 26" in pbx
+          and "MARKETING_VERSION = 2.17.3" in pbx)
     check("UI 给出「文件 App 搜索本地小说」兜底路径",
           "搜索框搜「本地小说」" in welcome and "搜索「本地小说」" in store)
     check("AppIcon asset catalog（1024 + Contents.json）",
@@ -718,9 +718,9 @@ def main():
     check("文档正文含双格式包一节",
           "### 5. 同一部书按格式分成两个包（PDF 包 + 图片包）"
           in (ROOT / "Docs" / "漫画目录结构说明.md").read_text(encoding="utf-8"))
-    check("版本升到 2.17.2 / build 25",
-          "<string>2.17.2</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>25</string>" in plist)
+    check("版本升到 2.17.3 / build 26",
+          "<string>2.17.3</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>26</string>" in plist)
 
 
     print("\n== N. 本轮：底部三页 / 短剧 / NAS 连接 ==")
@@ -971,9 +971,9 @@ def main():
     check("远端文件缓存有上限并会按最久未修改淘汰",
           "static let byteLimit: Int64 = 512 * 1024 * 1024" in nas_lib
           and "Task.detached(priority: .utility) { trim(folder: folder, limit: byteLimit) }" in nas_lib)
-    check("版本升到 2.17.2 / build 25",
-          "<string>2.17.2</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>25</string>" in plist)
+    check("版本升到 2.17.3 / build 26",
+          "<string>2.17.3</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>26</string>" in plist)
 
     print("\n== S. 本轮：txt 乱码（UTF-16 误判 / GBK / Big5） ==")
     encoding_src = (APP / "Core" / "TextEncoding.swift").read_text(encoding="utf-8")
@@ -1287,8 +1287,8 @@ def main():
     check("相邻章正文预取（切章不空等；已下沉到纯 UIKit 阅读核心）",
           "func schedulePrefetch()" in (APP / "Core" / "BookReaderCore.swift").read_text(encoding="utf-8")
           and "library.paragraphs(for: next)" in (APP / "Core" / "BookReaderCore.swift").read_text(encoding="utf-8"))
-    check("版本已升到 2.17.2 / build 25",
-          "2.17.2" in (APP / "Info.plist").read_text(encoding="utf-8"))
+    check("版本已升到 2.17.3 / build 26",
+          "2.17.3" in (APP / "Info.plist").read_text(encoding="utf-8"))
 
     print("\n== Z. 本轮：上下菜单栏 + 进度滑杆 + 目录面板 ==")
     bars = (APP / "Views" / "ReaderChromeBars.swift").read_text(encoding="utf-8")
@@ -1783,9 +1783,9 @@ def main():
           and "let waiters = self.splitWaiters.removeValue(forKey: book.id) ?? []" in store
           and "waiters.forEach { $0() }" in store)
 
-    check("版本已升到 2.17.2 / build 25",
-          "<string>2.17.2</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>25</string>" in plist)
+    check("版本已升到 2.17.3 / build 26",
+          "<string>2.17.3</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>26</string>" in plist)
 
     # ------------------------------------------------------------------
     # X4. 2.15.0：删掉字体/简繁/音量键/启动直进/自定义主题 + 修跳转
@@ -1933,9 +1933,35 @@ def main():
     check("重分章统计失效标注时包含段落越界",
           "paragraphCounts: counts" in store)
 
-    check("版本已升到 2.17.2 / build 25",
-          "<string>2.17.2</string>" in plist
-          and "<key>CFBundleVersion</key>\n\t<string>25</string>" in plist)
+    # ------------------------------------------------------------------
+    # X12. 2.17.3：整理正文 [图NN] 定位标记 → 图片内嵌
+    # ------------------------------------------------------------------
+    print("\n== X12. 本轮：整理正文 [图NN] 图片定位混排（2.17.3） ==")
+    x12_reader = (APP / "Views" / "ReaderView.swift").read_text(encoding="utf-8")
+    check("正文图片定位标记正则（半角 [图NN] 与全角 【图NN】）",
+          'pattern: "\\\\[[ \\\\t]*图[ \\\\t]*(\\\\d{1,3})[ \\\\t]*\\\\]|【[ \\\\t]*图[ \\\\t]*(\\\\d{1,3})[ \\\\t]*】"'
+          in x12_reader)
+    check("混排流构建按分区与图片/正文存在性收紧",
+          "guard category == .organized, !content.images.isEmpty, !paragraphs.isEmpty,"
+          in x12_reader)
+    check("标记序号与图片序号（文件名数字）对应，重复标记不重复用图",
+          "queueBySequence" in x12_reader
+          and "first(where: { !used.contains($0) })" in x12_reader)
+    check("无对应图片时标记原样保留成文字",
+          "标记原样留在正文里" in x12_reader)
+    check("混排正文片段样式与普通段落同源",
+          "private func inlineTextBlock(_ text: String, anchor: String, records: Bool = true)"
+          in x12_reader)
+    check("段首片段沿用原段锚点，续段不记录锚点（阅读记忆兼容）",
+          'inlineTextBlock(text, anchor: "blk-p\\(paragraphIndex)")' in x12_reader
+          and 'anchor: "blk-p\\(paragraphIndex)s\\(segmentIndex)",\n                                                    records: false)'
+          in x12_reader)
+    check("未引用图片保留章末插图区兜底",
+          "content.images.indices.filter { !matchedIndexes.contains($0) }" in x12_reader)
+
+    check("版本已升到 2.17.3 / build 26",
+          "<string>2.17.3</string>" in plist
+          and "<key>CFBundleVersion</key>\n\t<string>26</string>" in plist)
 
     print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")
     if FAIL:

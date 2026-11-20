@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import Foundation
 
 // MARK: - 第三栏：阅读器
 // 四种形态：
@@ -633,6 +634,104 @@ struct ReaderView: View {
         }
     }
 
+    // MARK: 正文 [图NN] 定位标记 → 图片内嵌（「整理」图文混排）
+
+    /// 混排渲染流里的一块：正文片段或按标记定位的图片
+    private enum InlineFlowBlock {
+        /// 正文片段（paragraphIndex = 原段落下标，segmentIndex = 段内第几个片段）
+        case paragraph(String, paragraphIndex: Int, segmentIndex: Int)
+        /// 按标记嵌入的图片（content.images 的下标）
+        case inlineImage(index: Int)
+    }
+
+    /// [图3] / [图03] / 【图3】：NN 是图片序号（文件名里的数字，与 1.jpg 对应）
+    private static let imageMarkerRegex = try? NSRegularExpression(
+        pattern: "\\[[ \\t]*图[ \\t]*(\\d{1,3})[ \\t]*\\]|【[ \\t]*图[ \\t]*(\\d{1,3})[ \\t]*】"
+    )
+
+    /// 把「整理」的正文段落与图片按 [图NN] 标记混排成渲染流。
+    /// 规则：
+    /// · 标记 NN 匹配一张尚未被引用的对应序号图片，嵌入到标记位置；
+    /// · 没有对应图片（或已被更早的标记占用）时，标记原样保留成文字；
+    /// · 全章没有任何标记时返回空数组，走原来的「正文 → 插图」排布。
+    private var inlineImageFlow: [InlineFlowBlock] {
+        guard category == .organized, !content.images.isEmpty, !paragraphs.isEmpty,
+              let regex = Self.imageMarkerRegex else { return [] }
+        var queueBySequence: [Int: [Int]] = [:]
+        for (index, item) in content.images.enumerated() {
+            if let sequence = item.sequence {
+                queueBySequence[sequence, default: []].append(index)
+            }
+        }
+        var used = Set<Int>()
+        var blocks: [InlineFlowBlock] = []
+        for (paragraphIndex, paragraph) in paragraphs.enumerated() {
+            let nsParagraph = paragraph as NSString
+            let full = NSRange(location: 0, length: nsParagraph.length)
+            let matches = regex.matches(in: paragraph, range: full)
+            guard !matches.isEmpty else {
+                blocks.append(.paragraph(paragraph,
+                                         paragraphIndex: paragraphIndex, segmentIndex: 0))
+                continue
+            }
+            var segment = 0
+            var cursor = 0
+            for match in matches {
+                if match.range.location > cursor {
+                    let head = nsParagraph.substring(
+                        with: NSRange(location: cursor,
+                                      length: match.range.location - cursor))
+                    if !head.isEmpty {
+                        blocks.append(.paragraph(head, paragraphIndex: paragraphIndex,
+                                                 segmentIndex: segment))
+                        segment += 1
+                    }
+                }
+                // 捕获组：半角 / 全角括号二选一命中
+                let group = match.range(at: 1).location != NSNotFound ? 1 : 2
+                let sequence = Int(nsParagraph.substring(with: match.range(at: group))) ?? -1
+                if let index = (queueBySequence[sequence] ?? []).first(where: { !used.contains($0) }) {
+                    used.insert(index)
+                    blocks.append(.inlineImage(index: index))
+                } else {
+                    // 没有可用的对应图片：标记原样留在正文里
+                    let marker = nsParagraph.substring(with: match.range)
+                    blocks.append(.paragraph(marker, paragraphIndex: paragraphIndex,
+                                             segmentIndex: segment))
+                    segment += 1
+                }
+                cursor = match.range.location + match.range.length
+            }
+            if cursor < nsParagraph.length {
+                let tail = nsParagraph.substring(
+                    with: NSRange(location: cursor, length: nsParagraph.length - cursor))
+                if !tail.isEmpty {
+                    blocks.append(.paragraph(tail, paragraphIndex: paragraphIndex,
+                                             segmentIndex: segment))
+                }
+            }
+        }
+        return blocks
+    }
+
+    /// 混排流里的正文片段：样式与普通段落完全一致。
+    /// 段首片段沿用原段锚点 blk-pN（阅读记忆兼容）；标记切出来的续段
+    /// 用 blk-pN sK 展示但不记录锚点，保证存量锚点集合不变。
+    private func inlineTextBlock(_ text: String, anchor: String, records: Bool = true) -> some View {
+        Text(text)
+            .font(Font(bodyFont))
+            .kerning(prefs.wordSpacing)
+            .lineSpacing(prefs.lineSpacing)
+            .foregroundStyle(prefs.theme.uiText)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .id(anchor)
+            .onAppear {
+                if records {
+                    ProgressStore.shared.noteAnchor(anchor, for: chapter.id)
+                }
+            }
+    }
+
     // MARK: 小说 / 整理：段落流
 
     private func scrollBody(_ content: ChapterContent) -> some View {
@@ -656,33 +755,72 @@ struct ReaderView: View {
                         chapterTitleBlock
                     }
 
-                    // 1. 正文（逐段懒加载）
-                    ForEach(paragraphs.indices, id: \.self) { index in
-                        Text(paragraphs[index])
-                            .font(Font(bodyFont))
-                            .kerning(prefs.wordSpacing)
-                            .lineSpacing(prefs.lineSpacing)
-                            .foregroundStyle(prefs.theme.uiText)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .id("blk-p\(index)")
-                            .onAppear {
-                                ProgressStore.shared.noteAnchor("blk-p\(index)",
-                                                                for: chapter.id)
-                            }
-                    }
+                    // 1+2. 正文与插图混排：「整理」正文里的 [图NN] / 【图NN】定位标记
+                    // 把对应序号的图片嵌进标记位置；没有被任何标记引用的图片
+                    // 保留在章末「插图」区兜底。章末音视频仍固定排在最后（见 3）。
+                    let flow = inlineImageFlow
+                    if flow.isEmpty {
+                        // 原排布：正文（逐段懒加载）
+                        ForEach(paragraphs.indices, id: \.self) { index in
+                            inlineTextBlock(paragraphs[index], anchor: "blk-p\(index)")
+                        }
 
-                    // 2. 图片（按序号；动图离屏暂停由子视图自己管理）
-                    if !content.images.isEmpty {
-                        sectionLabel("插图 · \(content.images.count)")
-                    }
-                    ForEach(content.images.indices, id: \.self) { index in
-                        let item = content.images[index]
-                        InlineMediaView(item: item) { galleryItem = item }
-                            .id("blk-i\(index)")
-                            .onAppear {
-                                ProgressStore.shared.noteAnchor("blk-i\(index)",
-                                                                for: chapter.id)
+                        // 图片（按序号；动图离屏暂停由子视图自己管理）
+                        if !content.images.isEmpty {
+                            sectionLabel("插图 · \(content.images.count)")
+                        }
+                        ForEach(content.images.indices, id: \.self) { index in
+                            let item = content.images[index]
+                            InlineMediaView(item: item) { galleryItem = item }
+                                .id("blk-i\(index)")
+                                .onAppear {
+                                    ProgressStore.shared.noteAnchor("blk-i\(index)",
+                                                                    for: chapter.id)
+                                }
+                        }
+                    } else {
+                        // 标记混排：正文片段与图片交错出现
+                        ForEach(flow.indices, id: \.self) { blockIndex in
+                            switch flow[blockIndex] {
+                            case .paragraph(let text, let paragraphIndex, let segmentIndex):
+                                if segmentIndex == 0 {
+                                    // 段首片段沿用原段锚点（阅读记忆兼容）
+                                    inlineTextBlock(text, anchor: "blk-p\(paragraphIndex)")
+                                } else {
+                                    // 标记切出来的续段：只展示，不记录锚点
+                                    inlineTextBlock(text,
+                                                    anchor: "blk-p\(paragraphIndex)s\(segmentIndex)",
+                                                    records: false)
+                                }
+                            case .inlineImage(let index):
+                                let item = content.images[index]
+                                InlineMediaView(item: item) { galleryItem = item }
+                                    .id("blk-i\(index)")
+                                    .onAppear {
+                                        ProgressStore.shared.noteAnchor("blk-i\(index)",
+                                                                        for: chapter.id)
+                                    }
                             }
+                        }
+
+                        // 没被任何标记引用的图片：保留在章末插图区（旧书 / 漏标兜底）
+                        let matchedIndexes = Set(flow.compactMap { block -> Int? in
+                            if case .inlineImage(let index) = block { return index }
+                            return nil
+                        })
+                        let residual = content.images.indices.filter { !matchedIndexes.contains($0) }
+                        if !residual.isEmpty {
+                            sectionLabel("插图 · \(residual.count)")
+                        }
+                        ForEach(residual, id: \.self) { index in
+                            let item = content.images[index]
+                            InlineMediaView(item: item) { galleryItem = item }
+                                .id("blk-i\(index)")
+                                .onAppear {
+                                    ProgressStore.shared.noteAnchor("blk-i\(index)",
+                                                                    for: chapter.id)
+                                }
+                        }
                     }
 
                     // 3. 章末音视频（点击播放；无则不显示）
