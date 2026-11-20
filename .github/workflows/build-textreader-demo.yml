@@ -1,0 +1,92 @@
+# 编译 TextReaderKitDemo（TextReaderKit framework + TextReaderDemo App）的未签名 ipa。
+# 这是独立于主 App 的纯文本小说阅读器 Demo 工程，用来在无 Mac 环境下验证编译。
+# 触发：push 到 main，或在 Actions 页手动 Run workflow。
+# 产物：Actions 运行页 Artifacts → TextReaderDemo-1.0-b1-unsigned-ipa
+
+name: 构建 TextReaderDemo IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: 'Xcode 27 专用镜像标签'
+        required: false
+        default: 'xcode-27'
+  push:
+    branches: [main]
+    paths:
+      - 'TextReaderKit/**'
+      - 'TextReaderDemo/**'
+      - 'TextReaderKitDemo.xcodeproj/**'
+      - '.github/workflows/build-textreader-demo.yml'
+
+jobs:
+  build:
+    runs-on: ${{ github.event.inputs.runner || 'xcode-27' }}
+    timeout-minutes: 30
+
+    steps:
+      - name: 检出工程
+        uses: actions/checkout@v4
+
+      - name: 选择 Xcode 27 并断言 SDK 版本
+        run: |
+          set -euo pipefail
+          CANDIDATE="$(ls -d /Applications/Xcode_27*.app 2>/dev/null | sort -V | tail -1 || true)"
+          if [ -z "$CANDIDATE" ]; then
+            CANDIDATE="$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1 || true)"
+          fi
+          [ -n "$CANDIDATE" ] || { echo "::error::镜像里没有 Xcode"; exit 1; }
+          sudo xcode-select -s "$CANDIDATE/Contents/Developer"
+          xcodebuild -version
+
+      - name: 列出 scheme（诊断）
+        run: xcodebuild -project TextReaderKitDemo.xcodeproj -list
+
+      - name: 编译未签名 archive
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project TextReaderKitDemo.xcodeproj \
+            -scheme TextReaderDemo \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -sdk iphoneos \
+            -archivePath "$RUNNER_TEMP/TextReaderDemo.xcarchive" \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            DEVELOPMENT_TEAM="" \
+            PROVISIONING_PROFILE="" \
+            PROVISIONING_PROFILE_SPECIFIER="" \
+            clean archive
+
+      - name: 打包未签名 ipa
+        run: |
+          set -euo pipefail
+          APP="$RUNNER_TEMP/TextReaderDemo.xcarchive/Products/Applications/TextReaderDemo.app"
+          test -d "$APP"
+          test -f "$APP/TextReaderDemo"
+          file "$APP/TextReaderDemo" | grep -q arm64
+          # framework 必须随 App 一起打包
+          test -d "$APP/Frameworks/TextReaderKit.framework" || {
+            echo "::error::TextReaderKit.framework 未嵌入 App"; exit 1; }
+          VER="$(plutil -extract CFBundleShortVersionString raw "$APP/Info.plist")"
+          BUILD="$(plutil -extract CFBundleVersion raw "$APP/Info.plist")"
+          IPA="$GITHUB_WORKSPACE/TextReaderDemo-${VER}-b${BUILD}-unsigned.ipa"
+          rm -rf "$RUNNER_TEMP/ipa"
+          mkdir -p "$RUNNER_TEMP/ipa/Payload"
+          ditto "$APP" "$RUNNER_TEMP/ipa/Payload/TextReaderDemo.app"
+          (cd "$RUNNER_TEMP/ipa" && zip -q -r "$IPA" Payload)
+          echo "IPA_NAME=TextReaderDemo-${VER}-b${BUILD}-unsigned.ipa" >> "$GITHUB_ENV"
+          echo "IPA_LABEL=TextReaderDemo-${VER}-b${BUILD}" >> "$GITHUB_ENV"
+          unzip -l "$IPA" | head -14
+          ls -lh "$IPA"
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.IPA_LABEL }}-unsigned-ipa
+          path: ${{ env.IPA_NAME }}
+          retention-days: 14
+          if-no-files-found: error

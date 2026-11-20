@@ -1,0 +1,106 @@
+# 云端编译【未签名】ipa：无需本地 Mac，CI 从不接触 Apple 账号或你的书库文件。
+# 触发：push 到 main，或在 Actions 页手动 Run workflow。
+# 产物：Actions 运行页的 Artifacts → 名字形如 LocalNovel-1.5-b6-unsigned-ipa，
+#       里面是 LocalNovel-1.5-b6-unsigned.ipa（版本号取自 Info.plist，每次编译自动带上）。
+#
+# 工程部署目标是 iOS 27，必须用带 Xcode 27 的镜像：
+#   - 默认 xcode-27（GitHub 官方 2026-10-15 GA 的 arm64 镜像，含 Xcode 27 + iOS 27 SDK）
+#   - 备用 xcode-27-xlarge（更大规格，可能产生费用）
+# 注意：macos-26 镜像只到 Xcode 26.6，无法编译 iOS 27 目标，切勿使用。
+# 参考：https://github.blog/changelog/2026-10-15-xcode-27-runner-image-generally-available
+
+name: 构建未签名 IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: 'Xcode 27 专用镜像标签'
+        required: false
+        default: 'xcode-27'
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ${{ github.event.inputs.runner || 'xcode-27' }}
+    timeout-minutes: 30
+
+    steps:
+      - name: 检出工程
+        uses: actions/checkout@v4
+
+      - name: 选择 Xcode 27 并断言 SDK 版本
+        run: |
+          set -euo pipefail
+          echo "镜像内可用 Xcode："
+          ls -1 /Applications | grep '^Xcode' || true
+          CANDIDATE="$(ls -d /Applications/Xcode_27*.app 2>/dev/null | sort -V | tail -1 || true)"
+          if [ -z "$CANDIDATE" ]; then
+            CANDIDATE="$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1 || true)"
+          fi
+          [ -n "$CANDIDATE" ] || { echo "::error::镜像里没有 Xcode"; exit 1; }
+          sudo xcode-select -s "$CANDIDATE/Contents/Developer"
+          xcodebuild -version
+          MAJOR="$(xcodebuild -version | awk 'NR==1{print $2}' | cut -d. -f1)"
+          [ "$MAJOR" -ge 27 ] || {
+            echo "::error::需要 Xcode 27+（IPHONEOS_DEPLOYMENT_TARGET = 27.0），当前 $(xcodebuild -version | head -1)。请把 runner 设为 xcode-27 专用镜像。"
+            exit 1
+          }
+          xcodebuild -showsdks | grep -i iphoneos
+
+      - name: 检查工程打包就绪
+        run: python3 Tools/check_ipa_readiness.py
+
+      - name: 编译未签名 archive
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project LocalNovel.xcodeproj \
+            -scheme LocalNovel \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -sdk iphoneos \
+            -archivePath "$RUNNER_TEMP/LocalNovel.xcarchive" \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            DEVELOPMENT_TEAM="" \
+            PROVISIONING_PROFILE="" \
+            PROVISIONING_PROFILE_SPECIFIER="" \
+            clean archive
+
+      - name: 打包未签名 ipa
+        run: |
+          set -euo pipefail
+          APP="$RUNNER_TEMP/LocalNovel.xcarchive/Products/Applications/LocalNovel.app"
+          test -d "$APP"
+          test -f "$APP/LocalNovel"
+          file "$APP/LocalNovel" | grep -q arm64
+          # 图标：asset catalog 必须编进 Assets.car，且 Info.plist 里有图标声明
+          test -f "$APP/Assets.car" || { echo "::error::Assets.car 缺失，AppIcon 资源未被编译"; exit 1; }
+          plutil -p "$APP/Info.plist" | grep -qE "CFBundleIconName|CFBundleIconFiles" || {
+            echo "::error::Info.plist 缺少图标声明"; exit 1; }
+          echo "== 图标配置 =="
+          plutil -p "$APP/Info.plist" | grep -A6 -E "CFBundleIcons|CFBundleIconName" | head -20
+          rm -rf "$RUNNER_TEMP/ipa"
+          mkdir -p "$RUNNER_TEMP/ipa/Payload"
+          ditto "$APP" "$RUNNER_TEMP/ipa/Payload/LocalNovel.app"
+          # 命名规范：LocalNovel-<版本>-b<build>-unsigned.ipa，避免多版本互相覆盖
+          VER="$(plutil -extract CFBundleShortVersionString raw "$APP/Info.plist")"
+          BUILD="$(plutil -extract CFBundleVersion raw "$APP/Info.plist")"
+          IPA="$GITHUB_WORKSPACE/LocalNovel-${VER}-b${BUILD}-unsigned.ipa"
+          (cd "$RUNNER_TEMP/ipa" && zip -q -r "$IPA" Payload)
+          echo "IPA_NAME=LocalNovel-${VER}-b${BUILD}-unsigned.ipa" >> "$GITHUB_ENV"
+          echo "IPA_LABEL=LocalNovel-${VER}-b${BUILD}" >> "$GITHUB_ENV"
+          echo "== ipa 内容 =="
+          unzip -l "$IPA" | head -14
+          ls -lh "$IPA"
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.IPA_LABEL }}-unsigned-ipa
+          path: ${{ env.IPA_NAME }}
+          retention-days: 14
+          if-no-files-found: error

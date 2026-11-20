@@ -1,29 +1,13 @@
-.DS_Store
-.build/
+# 构建产物（CI 会通过 upload-artifact 单独提供 ipa）
+build/
 DerivedData/
-*.xcuserstate
-xcuserdata/
-reference/
-/GITHUB_UPLOAD.local.md
-
-artifacts/
-/output/
-*.xcresult/
+*.xcarchive
 *.ipa
-*.dSYM/
-*.log
+*.xcresult
+.DS_Store
 __pycache__/
-*.py[cod]
-.swiftpm/
-.env
-.env.*
-!.env.example
-*.p12
-*.p8
-*.mobileprovision
-*.pem
-*.key
-*.keystore
-*.jks
-*.apk
-*.aab
+*.pyc
+
+# 隐私提醒：真实书库文件（作者文件夹 / TXT / 图片 / 视频 / 音频）
+# 永远不要放进这个仓库。CI 只需要工程源码，不接触你的阅读内容。
+# SampleBook/ 是脚本生成的示例素材，可保留。
