@@ -23,7 +23,6 @@ struct OtherSettingsView: View {
                 Picker("启动页面", selection: $defaultHomePage) {
                     Text("书架").tag("bookshelf")
                     Text("发现").tag("explore")
-                    Text("统计").tag("statistics")
                     Text("设置").tag("settings")
                 }
                 Toggle("启动时更新书架", isOn: $autoRefresh)

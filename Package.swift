@@ -40,7 +40,7 @@ let package = Package(
             path: "App/Features",
             exclude: [
                 "Explore/ExploreView.swift", "NAS/NASView.swift", "Settings",
-                "Activity/CacheManagementView.swift", "Activity/FileManagementView.swift", "Activity/ReadingHistoryView.swift", "Activity/ReadingStatisticsView.swift",
+                "Activity/CacheManagementView.swift", "Activity/FileManagementView.swift", "Activity/ReadingHistoryView.swift",
                 "RSS/RSSAddBookView.swift", "RSS/RSSSourceDebugView.swift", "RSS/RSSSourceEditorView.swift", "RSS/RSSViews.swift", "RSS/RSSWebReaderView.swift",
                 "Sources/SourceManagementView.swift", "Sources/SourceDebugView.swift", "Sources/SourceLoginView.swift", "Sources/SourceEditorView.swift",
                 "Rules/ReplaceRuleManagementView.swift", "Rules/ReplaceRuleEditorView.swift", "Rules/RuleSubscriptionView.swift", "Rules/TxtTocRuleManagementView.swift", "Rules/Editor",

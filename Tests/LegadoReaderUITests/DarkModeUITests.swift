@@ -47,14 +47,9 @@ final class DarkModeUITests: XCTestCase {
         XCTAssertTrue(app.tabBars.buttons["书架"].waitForExistence(timeout: 20))
         for (tab, heading) in [("书架", "阅读，让时间有了形状"), ("发现", "下一本好书，在这里遇见"),
                                ("本地", "文件管理"), ("NAS", "网络存储，随处阅读"),
-                               ("统计", "每一页，都算数"), ("我的", "按照你的方式阅读")] {
+                               ("我的", "按照你的方式阅读")] {
             app.tabBars.buttons[tab].tap()
             XCTAssertTrue(app.staticTexts[heading].waitForExistence(timeout: 5))
-            if tab == "统计" {
-                let today = app.otherElements["statistics.todayCard"]
-                XCTAssertTrue(today.waitForExistence(timeout: 5))
-                try assertReadableDarkFill(today, in: app)
-            }
             attach(app, name: "Dark tab \(tab)")
         }
         app.buttons["profile.globe"].tap()

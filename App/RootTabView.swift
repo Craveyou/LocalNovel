@@ -3,7 +3,7 @@ import UniformTypeIdentifiers
 
 struct RootTabView: View {
     @EnvironmentObject private var sourceLibrary: SourceLibraryModel
-    private enum Tab: Hashable { case bookshelf, explore, local, nas, statistics, my }
+    private enum Tab: Hashable { case bookshelf, explore, local, nas, my }
     @State private var selection: Tab
     @State private var showsDemoReader = false
     @State private var didOpenDemoReader = false
@@ -19,14 +19,12 @@ struct RootTabView: View {
         case "explore": .explore
         case "local": .local
         case "nas": .nas
-        case "statistics": .statistics
         case "settings": .my
         default:
             switch UserDefaults.standard.string(forKey: "defaultHomePage") {
             case "explore": .explore
             case "local": .local
             case "nas": .nas
-            case "statistics": .statistics
             case "settings": .my
             default: .bookshelf
             }
@@ -90,10 +88,6 @@ struct RootTabView: View {
             ReadingNavigationStack { NASView() }
                 .tabItem { Label("NAS", systemImage: "externaldrive").environment(\.symbolVariants, .none) }
                 .tag(Tab.nas)
-
-            ReadingNavigationStack { ReadingStatisticsView() }
-                .tabItem { Label("统计", systemImage: selection == .statistics ? "chart.bar.fill" : "chart.bar").environment(\.symbolVariants, .none) }
-                .tag(Tab.statistics)
 
             ReadingNavigationStack {
                 if ProcessInfo.processInfo.arguments.contains("-uiDemoRules") {
