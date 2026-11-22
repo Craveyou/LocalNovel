@@ -32,7 +32,9 @@ struct LNReaderView: View {
 
     @ViewBuilder
     private func readerBody(_ content: LNChapterContent) -> some View {
-        if content.isEmpty {
+        if let pdfPath = content.pdfPath {
+            LNPDFView(path: pdfPath, source: source)
+        } else if content.isEmpty {
             ReadingUnavailableView("这一章没有可显示的内容", systemImage: "doc.questionmark",
                                    description: Text("检查目录里是否有正文 txt / 图片 / 音视频。"))
         } else {
