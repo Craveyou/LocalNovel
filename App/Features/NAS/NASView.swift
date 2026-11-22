@@ -1,5 +1,4 @@
 import SwiftUI
-import LegadoCore
 #if canImport(FoundationXML)
 import FoundationXML
 #endif
@@ -101,8 +100,23 @@ private enum FeiniuError: LocalizedError {
     }
 }
 
+/// 飞牛自签证书信任：行为与项目整体设置一致（忽略证书错误）。
+/// 单独实现以免 NAS 页依赖额外模块，保持本文件自包含。
+private final class FeiniuTrustDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    static let shared = FeiniuTrustDelegate()
+
+    func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge,
+                    completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+           let trust = challenge.protectionSpace.serverTrust {
+            completionHandler(.useCredential, URLCredential(trust: trust))
+        } else {
+            completionHandler(.performDefaultHandling, nil)
+        }
+    }
+}
+
 /// 飞牛 WebDAV 最小实现：PROPFIND 探测与列目录、GET 下载。
-/// 复用项目的 LegadoUnsafeTrustDelegate 处理飞牛自签证书。
 private enum FeiniuWebDAV {
     static func probe(_ connection: FeiniuConnection) async throws {
         let (_, response) = try await request(connection, method: "PROPFIND", path: connection.rootPath, depth: "0")
@@ -180,7 +194,7 @@ private enum FeiniuWebDAV {
         let config = URLSessionConfiguration.ephemeral
         config.urlCache = nil
         config.httpCookieAcceptPolicy = .never
-        return URLSession(configuration: config, delegate: LegadoUnsafeTrustDelegate.shared, delegateQueue: nil)
+        return URLSession(configuration: config, delegate: FeiniuTrustDelegate.shared, delegateQueue: nil)
     }
 
     private static func normalized(_ path: String) -> String {
