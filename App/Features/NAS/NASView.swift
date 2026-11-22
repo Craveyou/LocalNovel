@@ -23,12 +23,15 @@ enum NASProtocol: String, Codable, CaseIterable, Identifiable, Sendable {
     var other: NASProtocol { self == .smb ? .webdav : .smb }
 }
 
-/// 一条飞牛 NAS 的连接配置（内外网共用一个入口），持久化在 UserDefaults。
-/// 账号密码 SMB 与 WebDAV 可不同：WebDAV 留空时复用主账号。
+/// 一条飞牛 NAS 的连接配置（内外网共用一个入口，但两条链路各有各的地址），持久化在 UserDefaults。
+/// - smbHost：局域网 IP，内网走 SMB2/3 直连
+/// - webdavHost：外网域名（或公网 IP），外网走 WebDAV
+/// App 自动探测当前可用链路并记住结果；两套账号可不同，WebDAV 留空时复用主账号。
 struct FeiniuConnection: Codable, Identifiable, Hashable, Sendable {
     var id: UUID = UUID()
     var name: String = "飞牛 NAS"
-    var host: String = ""                 // 内网 IP 或外网域名/公网 IP，同一个入口
+    var smbHost: String = ""              // 局域网 IP（SMB）
+    var webdavHost: String = ""           // 外网域名（WebDAV）
     var username: String = ""             // SMB 账号（主账号）
     var password: String = ""
     var share: String = ""                // SMB 共享名
@@ -43,14 +46,18 @@ struct FeiniuConnection: Codable, Identifiable, Hashable, Sendable {
     init() {}
 
     var smbAddress: String {
-        guard !host.isEmpty else { return "未配置地址" }
-        return "smb://\(host):\(smbPort)/\(share)"
+        guard !smbHost.isEmpty else { return "未配置地址" }
+        return "smb://\(smbHost):\(smbPort)/\(share)"
     }
 
     var webdavAddress: String {
-        guard !host.isEmpty else { return "未配置地址" }
-        return "\(webdavScheme)://\(host):\(webdavPort)\(webdavRootPath)"
+        guard !webdavHost.isEmpty else { return "未配置地址" }
+        return "\(webdavScheme)://\(webdavHost):\(webdavPort)\(webdavRootPath)"
     }
+
+    /// 连接列表上的两行地址摘要：内网 IP / 外网域名。
+    var lanAddressText: String { smbHost.isEmpty ? "内网：未配置" : "内网：\(smbHost)" }
+    var wanAddressText: String { webdavHost.isEmpty ? "外网：未配置" : "外网：\(webdavHost)" }
 
     var effectiveWebDAVUsername: String { webdavUsername.isEmpty ? username : webdavUsername }
     var effectiveWebDAVPassword: String { webdavPassword.isEmpty ? password : webdavPassword }
@@ -64,7 +71,24 @@ struct FeiniuConnection: Codable, Identifiable, Hashable, Sendable {
     }
 }
 
-/// 旧版 v2（单协议）数据结构，仅用于迁移。
+/// 旧版 v3（单地址，SMB 与 WebDAV 共用一个 host）数据结构，仅用于迁移。
+private struct FeiniuConnectionV3: Decodable {
+    var id: UUID?
+    var name: String?
+    var host: String?
+    var username: String?
+    var password: String?
+    var share: String?
+    var smbPort: Int?
+    var webdavScheme: String?
+    var webdavPort: Int?
+    var webdavRootPath: String?
+    var webdavUsername: String?
+    var webdavPassword: String?
+    var createdAt: Date?
+}
+
+/// 旧版 v1/v2（单协议）数据结构，仅用于迁移。
 private struct FeiniuConnectionV2: Decodable {
     var id: UUID?
     var name: String?
@@ -83,8 +107,8 @@ private struct FeiniuConnectionV2: Decodable {
 final class FeiniuConnectionStore: ObservableObject {
     @Published private(set) var connections: [FeiniuConnection] = []
     private let defaults: UserDefaults
-    private let key = "nas.feiniu.connections.v3"
-    private let legacyKeys = ["nas.feiniu.connections.v2", "nas.feiniu.connections.v1"]
+    private let key = "nas.feiniu.connections.v4"
+    private let legacyKeys = ["nas.feiniu.connections.v3", "nas.feiniu.connections.v2", "nas.feiniu.connections.v1"]
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -97,14 +121,41 @@ final class FeiniuConnectionStore: ObservableObject {
             connections = decoded
             return
         }
-        for legacy in legacyKeys {
+        // v3：单地址。旧地址先同时填入内网/外网，用户可在编辑页改成各自的 IP / 域名。
+        if let data = defaults.data(forKey: "nas.feiniu.connections.v3"),
+           let old = try? JSONDecoder().decode([FeiniuConnectionV3].self, from: data) {
+            connections = old.map { item in
+                var value = FeiniuConnection()
+                value.id = item.id ?? UUID()
+                value.name = item.name ?? "飞牛 NAS"
+                let legacy = item.host ?? ""
+                value.smbHost = legacy
+                value.webdavHost = legacy
+                value.username = item.username ?? ""
+                value.password = item.password ?? ""
+                value.share = item.share ?? ""
+                value.smbPort = item.smbPort ?? 445
+                value.webdavScheme = item.webdavScheme ?? "http"
+                value.webdavPort = item.webdavPort ?? 5005
+                value.webdavRootPath = item.webdavRootPath ?? "/"
+                value.webdavUsername = item.webdavUsername ?? ""
+                value.webdavPassword = item.webdavPassword ?? ""
+                value.createdAt = item.createdAt ?? Date()
+                return value
+            }
+            persist()
+            return
+        }
+        for legacy in ["nas.feiniu.connections.v2", "nas.feiniu.connections.v1"] {
             guard let data = defaults.data(forKey: legacy),
                   let old = try? JSONDecoder().decode([FeiniuConnectionV2].self, from: data) else { continue }
             connections = old.map { item in
                 var value = FeiniuConnection()
                 value.id = item.id ?? UUID()
                 value.name = item.name ?? "飞牛 NAS"
-                value.host = item.host ?? ""
+                let host = item.host ?? ""
+                value.smbHost = host
+                value.webdavHost = host
                 value.username = item.username ?? ""
                 value.password = item.password ?? ""
                 value.share = item.share ?? ""
@@ -157,11 +208,11 @@ private enum FeiniuError: LocalizedError {
     case nonHTTP
     case invalidXML
     case smb(String)
-    case noLink(String, String)
+    case noLink(smbHost: String, smbError: String, webdavHost: String, webdavError: String)
 
     var errorDescription: String? {
         switch self {
-        case .invalidAddress: "地址或端口无效，请检查主机填的是 IP 或域名（不含协议和端口）"
+        case .invalidAddress: "地址或端口无效：内网填局域网 IP、外网填域名（均不含协议和端口）"
         case .missingShare: "SMB 需要填写共享名（飞牛「文件服务 → SMB」里共享文件夹的名称）"
         case .http(let code):
             switch code {
@@ -173,8 +224,8 @@ private enum FeiniuError: LocalizedError {
         case .nonHTTP: "服务器返回的不是 HTTP 响应"
         case .invalidXML: "WebDAV 返回的目录数据无法解析"
         case .smb(let detail): "SMB 连接失败：\(detail)"
-        case .noLink(let smb, let webdav):
-            "两条链路都不可用。内网 SMB：\(smb)；外网 WebDAV：\(webdav)。请确认设备与飞牛网络连通，及飞牛「文件服务」中 SMB / WebDAV 均已启用。"
+        case .noLink(let smbHost, let smbError, let webdavHost, let webdavError):
+            "两条链路都不可用。内网 SMB（\(smbHost)）：\(smbError)；外网 WebDAV（\(webdavHost)）：\(webdavError)。请分别检查内网 IP 与外网域名，及飞牛「文件服务」中 SMB / WebDAV 是否已启用。"
         }
     }
 }
@@ -230,8 +281,8 @@ private enum FeiniuSMB {
     }
 
     private static func makeManager(_ connection: FeiniuConnection) throws -> SMB2Manager {
-        guard !connection.host.isEmpty, (1...65535).contains(connection.smbPort),
-              let url = URL(string: "smb://\(connection.host):\(connection.smbPort)") else {
+        guard !connection.smbHost.isEmpty, (1...65535).contains(connection.smbPort),
+              let url = URL(string: "smb://\(connection.smbHost):\(connection.smbPort)") else {
             throw FeiniuError.invalidAddress
         }
         guard !connection.share.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -313,10 +364,10 @@ private enum FeiniuWebDAV {
     }
 
     private static func makeRequest(_ connection: FeiniuConnection, method: String, path: String, timeout: TimeInterval = 25) throws -> URLRequest {
-        guard !connection.host.isEmpty, (1...65535).contains(connection.webdavPort) else { throw FeiniuError.invalidAddress }
+        guard !connection.webdavHost.isEmpty, (1...65535).contains(connection.webdavPort) else { throw FeiniuError.invalidAddress }
         var components = URLComponents()
         components.scheme = connection.webdavScheme
-        components.host = connection.host
+        components.host = connection.webdavHost
         components.port = connection.webdavPort
         let target = path.isEmpty ? "/" : path
         components.path = target.hasPrefix("/") ? target : "/" + target
@@ -365,26 +416,22 @@ private enum FeiniuNASService {
         cached(connection)
     }
 
-    /// 内网 host 判断：私有网段 / .local / localhost。外网域名走 WebDAV 优先。
-    private static func isLANHost(_ host: String) -> Bool {
-        let value = host.lowercased().trimmingCharacters(in: .whitespaces)
-        if value == "localhost" || value.hasSuffix(".local") { return true }
-        let parts = value.split(separator: ".").compactMap { Int($0) }
-        guard parts.count == 4 else { return false }
-        let a = parts[0], b = parts[1]
-        if a == 10 || a == 127 { return true }
-        if a == 192 && b == 168 { return true }
-        if a == 172 && (16...31).contains(b) { return true }
-        return false
-    }
-
-    /// 探测两条链路，优先尝试缓存/更可能的链路，谁通用谁并写缓存。
+    /// 探测两条链路：smbHost 是内网 IP、webdavHost 是外网域名，各走各的地址。
+    /// 优先尝试缓存链路，否则先试内网 SMB（超时短、内网快），失败再试外网 WebDAV；谁通用谁并写缓存。
     @discardableResult
     static func resolve(_ connection: FeiniuConnection) async throws -> NASProtocol {
-        let preferred: NASProtocol = cached(connection) ?? (isLANHost(connection.host) ? .smb : .webdav)
+        let preferred: NASProtocol = cached(connection) ?? .smb
         let order = [preferred, preferred.other]
         var failures: [NASProtocol: String] = [:]
         for proto in order {
+            // 地址没配的链路直接跳过，避免误报「连接失败」。
+            let configured = proto == .smb
+                ? !connection.smbHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                : !connection.webdavHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            guard configured else {
+                failures[proto] = "未配置地址"
+                continue
+            }
             do {
                 switch proto {
                 case .smb: try await FeiniuSMB.probe(connection)
@@ -396,7 +443,12 @@ private enum FeiniuNASService {
                 failures[proto] = error.localizedDescription
             }
         }
-        throw FeiniuError.noLink(failures[.smb] ?? "未测试", failures[.webdav] ?? "未测试")
+        throw FeiniuError.noLink(
+            smbHost: connection.smbHost.isEmpty ? "未配置" : connection.smbHost,
+            smbError: failures[.smb] ?? "未测试",
+            webdavHost: connection.webdavHost.isEmpty ? "未配置" : connection.webdavHost,
+            webdavError: failures[.webdav] ?? "未测试"
+        )
     }
 
     static func probe(_ connection: FeiniuConnection) async throws -> NASProtocol {
@@ -575,7 +627,7 @@ struct NASView: View {
             Text("连接你的飞牛 NAS")
                 .font(.headline)
                 .foregroundStyle(ReadingTheme.ink.opacity(0.75))
-            Text("填一次地址，App 自动识别内网 / 外网：内网走 SMB、外网走 WebDAV，直接导入书架阅读。")
+            Text("填内网 IP 与外网域名，App 自动识别网络：内网走 SMB、外网走 WebDAV，直接导入书架阅读。")
                 .font(.subheadline)
                 .foregroundStyle(ReadingTheme.ink.opacity(0.5))
                 .multilineTextAlignment(.center)
@@ -609,7 +661,11 @@ struct NASView: View {
                             .background(ReadingTheme.groupedCanvas, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                         VStack(alignment: .leading, spacing: 4) {
                             Text(connection.name).font(.headline).foregroundStyle(ReadingTheme.ink)
-                            Text(connection.host)
+                            Text(connection.lanAddressText)
+                                .font(.caption)
+                                .foregroundStyle(ReadingTheme.ink.opacity(0.5))
+                                .lineLimit(1)
+                            Text(connection.wanAddressText)
                                 .font(.caption)
                                 .foregroundStyle(ReadingTheme.ink.opacity(0.5))
                                 .lineLimit(1)
@@ -658,7 +714,8 @@ struct FeiniuConnectionFormView: View {
 
     let connection: FeiniuConnection?
     @State private var name: String
-    @State private var host: String
+    @State private var smbHost: String
+    @State private var webdavHost: String
     @State private var username: String
     @State private var password: String
     @State private var share: String
@@ -676,7 +733,8 @@ struct FeiniuConnectionFormView: View {
         self.store = store
         self.connection = connection
         _name = State(initialValue: connection?.name ?? "飞牛 NAS")
-        _host = State(initialValue: connection?.host ?? "")
+        _smbHost = State(initialValue: connection?.smbHost ?? "")
+        _webdavHost = State(initialValue: connection?.webdavHost ?? "")
         _username = State(initialValue: connection?.username ?? "")
         _password = State(initialValue: connection?.password ?? "")
         _share = State(initialValue: connection?.share ?? "")
@@ -691,7 +749,8 @@ struct FeiniuConnectionFormView: View {
     private var draft: FeiniuConnection {
         var value = connection ?? FeiniuConnection()
         value.name = name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "飞牛 NAS" : name
-        value.host = FeiniuConnection.cleanedHost(host)
+        value.smbHost = FeiniuConnection.cleanedHost(smbHost)
+        value.webdavHost = FeiniuConnection.cleanedHost(webdavHost)
         value.username = username.trimmingCharacters(in: .whitespacesAndNewlines)
         value.password = password
         value.share = share.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -705,8 +764,11 @@ struct FeiniuConnectionFormView: View {
         return value
     }
 
+    /// 至少要配置一条链路：内网 IP + 共享名，或外网域名 + 账号。
     private var canSave: Bool {
-        !draft.host.isEmpty && !draft.username.isEmpty && !draft.password.isEmpty && !draft.share.isEmpty
+        let hasSMB = !draft.smbHost.isEmpty && !draft.share.isEmpty && !draft.username.isEmpty && !draft.password.isEmpty
+        let hasWebDAV = !draft.webdavHost.isEmpty && !draft.username.isEmpty && !draft.password.isEmpty
+        return hasSMB || hasWebDAV
     }
 
     var body: some View {
@@ -714,30 +776,34 @@ struct FeiniuConnectionFormView: View {
             Form {
                 Section {
                     TextField("名称", text: $name)
-                    TextField("地址（内网 IP 或外网域名）", text: $host)
+                } header: {
+                    Text("服务器")
+                }
+
+                Section {
+                    TextField("局域网 IP（如 192.168.1.10）", text: $smbHost)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
-                        .accessibilityIdentifier("nas.form.host")
-                } header: {
-                    Text("服务器")
-                } footer: {
-                    Text("同一个地址即可：App 在内网自动走 SMB、在外网自动走 WebDAV，无需手动切换。")
-                }
-
-                Section("内网 SMB") {
+                        .accessibilityIdentifier("nas.form.smbHost")
                     TextField("共享名", text: $share)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .accessibilityIdentifier("nas.form.share")
                     TextField("端口（默认 445）", text: $smbPort)
                         .keyboardType(.numberPad)
-                    Text("填飞牛「文件服务 → SMB」启用的共享文件夹名。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                } header: {
+                    Text("内网 SMB 地址")
+                } footer: {
+                    Text("填飞牛在局域网里的 IP，以及「文件服务 → SMB」启用的共享文件夹名；仅在家/Wi-Fi 下可达。")
                 }
 
-                Section("外网 WebDAV") {
+                Section {
+                    TextField("外网域名（如 nas.example.com）", text: $webdavHost)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.URL)
+                        .accessibilityIdentifier("nas.form.webdavHost")
                     Picker("协议", selection: $webdavScheme) {
                         Text("HTTP（默认 5005）").tag("http")
                         Text("HTTPS（默认 5006）").tag("https")
@@ -751,9 +817,10 @@ struct FeiniuConnectionFormView: View {
                     TextField("初始路径（默认 /）", text: $webdavRootPath)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                    Text("飞牛需在「设置 → 文件服务 → WebDAV」启用服务；外网访问需配置端口转发或反代。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                } header: {
+                    Text("外网 WebDAV 地址")
+                } footer: {
+                    Text("填外网可访问的域名；需在飞牛「文件服务 → WebDAV」启用，并配置端口转发或反代。")
                 }
 
                 Section("账号") {
