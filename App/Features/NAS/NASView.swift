@@ -1,4 +1,5 @@
 import SwiftUI
+import Network
 #if canImport(FoundationXML)
 import FoundationXML
 #endif
@@ -246,19 +247,53 @@ private final class FeiniuTrustDelegate: NSObject, URLSessionTaskDelegate, @unch
     }
 }
 
+/// 网络环境探测：判断设备当前是否具备访问内网 SMB 的条件。
+/// 用 NWPathMonitor 读取系统网络路径，比"IP 是不是私有段"更可靠：
+/// - Wi-Fi / 以太网且已连通：尝试内网 SMB；
+/// - 蜂窝 / 未连通：跳过 SMB，直接走外网 WebDAV，避免拿内网 IP 空等超时。
+private enum NASNetwork {
+    /// 逃逸闭包里的一次性标志，避免重复 resume continuation。
+    private final class Once: @unchecked Sendable {
+        private let lock = NSLock()
+        private var claimed = false
+        func claim() -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            if claimed { return false }
+            claimed = true
+            return true
+        }
+    }
+
+    static func hasLocalInterface() async -> Bool {
+        await withCheckedContinuation { continuation in
+            let once = Once()
+            let monitor = NWPathMonitor()
+            let queue = DispatchQueue(label: "nas.network.probe")
+            monitor.pathUpdateHandler = { path in
+                guard once.claim() else { return }
+                let usable = path.status == .satisfied &&
+                    (path.usesInterfaceType(.wifi) || path.usesInterfaceType(.wiredEthernet))
+                continuation.resume(returning: usable)
+                monitor.cancel()
+            }
+            monitor.start(queue: queue)
+        }
+    }
+}
+
 /// SMB2/3 客户端（内网直连）：基于 AMSMB2/libsmb2。
 /// 每条连接独立创建 SMB2Manager，Swift 对象释放时库会自动断开共享。
 private enum FeiniuSMB {
     /// 探测用短超时，避免公网环境连 445 端口长时间阻塞。
     static func probe(_ connection: FeiniuConnection, timeout: TimeInterval = 4) async throws {
-        let manager = try makeManager(connection)
-        manager.timeout = timeout
-        try await manager.connectShare(name: connection.share)
+        let manager = try makeManager(connection, timeout: timeout)
+        try await connect(manager, connection)
     }
 
     static func list(_ connection: FeiniuConnection, path: String) async throws -> [NASEntry] {
-        let manager = try makeManager(connection)
-        try await manager.connectShare(name: connection.share)
+        let manager = try makeManager(connection, timeout: 8)
+        try await connect(manager, connection)
         let items = try await manager.contentsOfDirectory(atPath: path, recursive: false)
         return items.compactMap { entry in
             guard let name = entry[.nameKey] as? String, !name.isEmpty else { return nil }
@@ -270,8 +305,8 @@ private enum FeiniuSMB {
     }
 
     static func download(_ connection: FeiniuConnection, entry: NASEntry) async throws -> URL {
-        let manager = try makeManager(connection)
-        try await manager.connectShare(name: connection.share)
+        let manager = try makeManager(connection, timeout: 20)
+        try await connect(manager, connection)
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("feiniu-smb-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let filename = entry.name.isEmpty ? "download" : entry.name
@@ -280,7 +315,7 @@ private enum FeiniuSMB {
         return target
     }
 
-    private static func makeManager(_ connection: FeiniuConnection) throws -> SMB2Manager {
+    private static func makeManager(_ connection: FeiniuConnection, timeout: TimeInterval) throws -> SMB2Manager {
         guard !connection.smbHost.isEmpty, (1...65535).contains(connection.smbPort),
               let url = URL(string: "smb://\(connection.smbHost):\(connection.smbPort)") else {
             throw FeiniuError.invalidAddress
@@ -292,7 +327,14 @@ private enum FeiniuSMB {
         guard let manager = SMB2Manager(url: url, domain: "", credential: credential) else {
             throw FeiniuError.smb("无法初始化 SMB 客户端")
         }
+        manager.timeout = timeout
         return manager
+    }
+
+    /// 底层 connectShare 是同步阻塞调用且不响应 Swift 取消，无法在 Swift 层硬超时。
+    /// 真正的防护在上层 NASNetwork：无内网接口时根本不会调用到这里。
+    private static func connect(_ manager: SMB2Manager, _ connection: FeiniuConnection) async throws {
+        try await manager.connectShare(name: connection.share)
     }
 
     /// libsmb2 的 pathKey 一般是 share 内完整路径；缺失时用父路径 + 文件名兜底。
@@ -416,20 +458,31 @@ private enum FeiniuNASService {
         cached(connection)
     }
 
+    /// 当前网络下这条链路是否"可用到值得尝试"。
+    /// 关键：SMB 是内网直连，设备走蜂窝/无网时连 192.168.x.x 会卡在底层 TCP，
+    /// 所以这里直接从候选里排除，绝不发起必然卡死的连接。
+    private static func isViable(_ proto: NASProtocol, _ connection: FeiniuConnection, onLAN: Bool) -> Bool {
+        let configured = proto == .smb
+            ? !connection.smbHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            : !connection.webdavHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if !configured { return false }
+        if proto == .smb && !onLAN { return false }
+        return true
+    }
+
     /// 探测两条链路：smbHost 是内网 IP、webdavHost 是外网域名，各走各的地址。
-    /// 优先尝试缓存链路，否则先试内网 SMB（超时短、内网快），失败再试外网 WebDAV；谁通用谁并写缓存。
+    /// 先按系统网络判断可用性：有 Wi-Fi 才试 SMB，否则只走 WebDAV；缓存链路优先。
     @discardableResult
     static func resolve(_ connection: FeiniuConnection) async throws -> NASProtocol {
-        let preferred: NASProtocol = cached(connection) ?? .smb
+        let onLAN = await NASNetwork.hasLocalInterface()
+        let preferred: NASProtocol = cached(connection) ?? (onLAN ? .smb : .webdav)
         let order = [preferred, preferred.other]
         var failures: [NASProtocol: String] = [:]
         for proto in order {
-            // 地址没配的链路直接跳过，避免误报「连接失败」。
-            let configured = proto == .smb
-                ? !connection.smbHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                : !connection.webdavHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            guard configured else {
-                failures[proto] = "未配置地址"
+            guard isViable(proto, connection, onLAN: onLAN) else {
+                failures[proto] = proto == .smb
+                    ? (onLAN ? "未配置内网 IP" : "当前非 Wi-Fi，已跳过内网 SMB")
+                    : "未配置外网域名"
                 continue
             }
             do {
@@ -455,9 +508,11 @@ private enum FeiniuNASService {
         try await resolve(connection)
     }
 
-    /// 列目录：用缓存链路；失败则强制重新探测并重试一次（覆盖 Wi-Fi↔蜂窝切换）。
+    /// 列目录：缓存链路在当前网络下仍可用则直接用；否则/失败则重新探测切换。
+    /// 这样断开 Wi-Fi 后，即便缓存是 SMB，也不会拿内网 IP 去连导致卡死。
     static func list(_ connection: FeiniuConnection, path: String) async throws -> [NASEntry] {
-        if let proto = cached(connection) {
+        let onLAN = await NASNetwork.hasLocalInterface()
+        if let proto = cached(connection), isViable(proto, connection, onLAN: onLAN) {
             do { return try await fetch(connection, proto: proto, path: path) }
             catch {
                 let refreshed = try await resolve(connection)
@@ -470,8 +525,10 @@ private enum FeiniuNASService {
     }
 
     static func download(_ connection: FeiniuConnection, entry: NASEntry) async throws -> URL {
+        let onLAN = await NASNetwork.hasLocalInterface()
+        let cachedProto = cached(connection)
         let proto: NASProtocol
-        if let cachedProto = cached(connection) {
+        if let cachedProto, isViable(cachedProto, connection, onLAN: onLAN) {
             proto = cachedProto
         } else {
             proto = try await resolve(connection)
@@ -573,16 +630,6 @@ struct NASView: View {
         }
         .background(ReadingTheme.canvas.ignoresSafeArea())
         .navigationBarHidden(true)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    showingAdd = true
-                } label: {
-                    Image(systemName: "plus")
-                }
-                .accessibilityIdentifier("nas.add.connection")
-            }
-        }
         .sheet(isPresented: $showingAdd) {
             FeiniuConnectionFormView(store: store)
         }
@@ -599,15 +646,20 @@ struct NASView: View {
                     .font(.largeTitle.bold())
                     .accessibilityAddTraits(.isHeader)
                 Spacer()
-                Image(systemName: "network")
-                    .font(.system(size: 22, weight: .regular))
-                    .foregroundStyle(ReadingTheme.ink.opacity(0.6))
-                    .frame(width: 44, height: 44)
-                    .background {
-                        RoundedRectangle(cornerRadius: 15, style: .continuous)
-                            .fill(ReadingTheme.groupedCanvas.opacity(0.75))
-                    }
-                    .accessibilityHidden(true)
+                Button {
+                    showingAdd = true
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 22, weight: .regular))
+                        .foregroundStyle(ReadingTheme.ink.opacity(0.6))
+                        .frame(width: 44, height: 44)
+                        .background {
+                            RoundedRectangle(cornerRadius: 15, style: .continuous)
+                                .fill(ReadingTheme.groupedCanvas.opacity(0.75))
+                        }
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("nas.add.connection")
             }
             Text("网络存储，随处阅读")
                 .font(.subheadline)
@@ -691,16 +743,6 @@ struct NASView: View {
                     Button("删除", role: .destructive) { store.delete(connection) }
                 }
             }
-
-            Button {
-                showingAdd = true
-            } label: {
-                Label("添加另一台飞牛 NAS", systemImage: "plus")
-                    .font(.subheadline.weight(.medium))
-            }
-            .buttonStyle(.bordered)
-            .tint(ReadingTheme.accent)
-            .padding(.top, 4)
         }
         .padding(.horizontal, 26)
     }
@@ -1023,13 +1065,9 @@ struct FeiniuBrowserView: View {
         errorMessage = nil
         defer { loading = false }
         do {
-            // 首次进入先探测链路；list 内部也会按需重探测，这里只负责展示当前链路标签。
-            let proto: NASProtocol
-            if let cached = FeiniuNASService.activeProtocol(connection) {
-                proto = cached
-            } else {
-                proto = try await FeiniuNASService.probe(connection)
-            }
+            // 每次进入都走 resolve：它按系统网络判断可用性，断开 Wi-Fi 时会跳过 SMB、选 WebDAV。
+            // 缓存链路仍可用时这里会快速探测成功，开销很小。
+            let proto = try await FeiniuNASService.probe(connection)
             linkLabel = proto == .smb ? "内网 SMB" : "外网 WebDAV"
             // 根目录首次探测后按实际链路重设初始路径：SMB 从 share 根 "/" 开始，
             // WebDAV 用配置的初始路径。子目录（path 非 nil 进入）不受影响。
