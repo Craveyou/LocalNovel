@@ -690,7 +690,7 @@
 				F30000000000000000000001 /* XCRemoteSwiftPackageReference "SwiftSoup" */,
 				F30000000000000000000002 /* XCRemoteSwiftPackageReference "Kanna" */,
 				F30000000000000000000003 /* ZIPFoundation */,
-				F30000000000000000000005 /* XCRemoteSwiftPackageReference "AMSMB2" */,
+				F30000000000000000000005 /* AMSMB2 (vendored, static) */,
                 F30000000000000000000004 /* Readium */,
 			);
 			productRefGroup = D40000000000000000000002 /* Products */;
@@ -964,6 +964,10 @@
             isa = XCLocalSwiftPackageReference;
             relativePath = Vendor/LegadoZIPFoundation;
         };
+		F30000000000000000000005 /* AMSMB2 (vendored, static) */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Vendor/AMSMB2;
+		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCRemoteSwiftPackageReference section */
@@ -977,12 +981,6 @@
 			repositoryURL = "https://github.com/tid-kijyun/Kanna.git";
 			requirement = { kind = exactVersion; version = 6.1.0; };
 		};
-		F30000000000000000000005 /* XCRemoteSwiftPackageReference "AMSMB2" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/amosavian/AMSMB2.git";
-			requirement = { kind = exactVersion; version = 4.0.3; };
-		};
-
 		F30000000000000000000004 /* Readium */ = {
             isa = XCRemoteSwiftPackageReference;
             repositoryURL = "https://github.com/readium/swift-toolkit.git";
@@ -1008,7 +1006,7 @@
 		};
 		F20000000000000000000007 /* AMSMB2 */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = F30000000000000000000005 /* XCRemoteSwiftPackageReference "AMSMB2" */;
+			package = F30000000000000000000005 /* AMSMB2 (vendored, static) */;
 			productName = AMSMB2;
 		};
         F20000000000000000000004 /* ReadiumShared */ = {
