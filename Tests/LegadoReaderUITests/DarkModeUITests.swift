@@ -46,7 +46,7 @@ final class DarkModeUITests: XCTestCase {
         let app = launch(["-themeMode", "2"])
         XCTAssertTrue(app.tabBars.buttons["书架"].waitForExistence(timeout: 20))
         for (tab, heading) in [("书架", "阅读，让时间有了形状"), ("发现", "下一本好书，在这里遇见"),
-                               ("本地", "文件管理"), ("NAS", "网络存储，随处阅读"),
+                               ("本地", "漫画"), ("NAS", "网络存储，随处阅读"),
                                ("我的", "按照你的方式阅读")] {
             app.tabBars.buttons[tab].tap()
             XCTAssertTrue(app.staticTexts[heading].waitForExistence(timeout: 5))

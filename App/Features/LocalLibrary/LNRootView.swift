@@ -8,6 +8,8 @@ struct LNCategoryView: View {
     let subtitle: String
     /// NAS 首屏不预统计（三类各一次远端探测会拖慢进入），进入分类时再加载
     var showsCounts: Bool = true
+    /// 页面底部附加内容（NAS 用来放「浏览全部文件」入口）
+    var extraContent: AnyView? = nil
 
     @State private var counts: [LNCategory: Int] = [:]
     @State private var isLoading = false
@@ -27,6 +29,9 @@ struct LNCategoryView: View {
                         .buttonStyle(.plain)
                         .accessibilityIdentifier("ln.category.\(cat.rawValue)")
                     }
+                }
+                if let extraContent {
+                    extraContent
                 }
             }
             .padding(.horizontal, 20)
