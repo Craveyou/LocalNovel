@@ -289,10 +289,19 @@ private enum NASNetwork {
     /// - 人在内网：445 通 → 强制 SMB 优先，即使上次缓存的是 WebDAV 也不会继续走外网。
     /// NWConnection 的 connect 可被 cancel，配合 DispatchSourceTimer 实现真正的硬超时。
     /// 承载不可 Sendable 的 NWConnection / Timer，供 @Sendable 回调安全捕获。
+    /// finish 做成方法而非闭包，避免"非 Sendable 闭包被 @Sendable 回调捕获"的编译错误。
     private final class TCPProbeBox: @unchecked Sendable {
         let once = Once()
         var connection: NWConnection?
         var timer: DispatchSourceTimer?
+        var continuation: CheckedContinuation<Bool, Never>?
+
+        func finish(_ reachable: Bool) {
+            guard once.claim() else { return }
+            timer?.cancel()
+            connection?.cancel()
+            continuation?.resume(returning: reachable)
+        }
     }
 
     static func canReachSMB(host: String, port: Int, timeout: TimeInterval = 1.5) async -> Bool {
@@ -302,29 +311,24 @@ private enum NASNetwork {
         let endpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(trimmed), port: nwPort)
         return await withCheckedContinuation { continuation in
             let box = TCPProbeBox()
+            box.continuation = continuation
             let queue = DispatchQueue(label: "nas.smb.tcp.probe")
             let connection = NWConnection(to: endpoint, using: .tcp)
             let timer = DispatchSource.makeTimerSource(queue: queue)
             box.connection = connection
             box.timer = timer
-            // finish 只捕获 box（@unchecked Sendable）与 continuation（Sendable），
-            // 避免直接捕获非 Sendable 的 NWConnection / Timer 触发 Swift 6 并发诊断。
-            let finish: (Bool) -> Void = { reachable in
-                guard box.once.claim() else { return }
-                box.timer?.cancel()
-                box.connection?.cancel()
-                continuation.resume(returning: reachable)
-            }
+            // 回调只捕获 box（@unchecked Sendable），并通过它的方法收尾，
+            // 不捕获任何非 Sendable 闭包或对象，满足 Swift 6 严格并发检查。
             connection.stateUpdateHandler = { state in
                 switch state {
-                case .ready: finish(true)
-                case .failed, .cancelled: finish(false)
+                case .ready: box.finish(true)
+                case .failed, .cancelled: box.finish(false)
                 default: break
                 }
             }
             connection.start(queue: queue)
             timer.schedule(deadline: .now() + timeout)
-            timer.setEventHandler { finish(false) }
+            timer.setEventHandler { box.finish(false) }
             timer.resume()
         }
     }
