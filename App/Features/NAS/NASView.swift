@@ -1088,7 +1088,7 @@ struct FeiniuBrowserView: View {
                 .listStyle(.insetGrouped)
             }
         }
-        .navigationTitle(path == FeiniuNASService.initialPath(connection) ? connection.name : (path as NSString).lastPathComponent)
+        .navigationTitle(isRoot ? connection.name : (path as NSString).lastPathComponent)
         .navigationBarTitleDisplayMode(.inline)
         .task(id: path) { await load() }
         .toolbar {
@@ -1149,16 +1149,11 @@ struct FeiniuBrowserView: View {
             // 缓存链路仍可用时这里会快速探测成功，开销很小。
             let proto = try await FeiniuNASService.probe(connection)
             linkLabel = proto == .smb ? "内网 SMB" : "外网 WebDAV"
-            // 根目录首次探测后按实际链路重设初始路径：SMB 从 share 根 "/" 开始，
-            // WebDAV 用配置的初始路径。子目录（path 非 nil 进入）不受影响。
-            if isRoot {
-                let wanted = FeiniuNASService.initialPath(connection)
-                if path != wanted {
-                    path = wanted
-                    return  // .task(id: path) 会用新路径重新加载
-                }
-            }
-            entries = try await FeiniuNASService.list(connection, path: path)
+            // 根目录按实测链路选初始路径：SMB 从 share 根 "/" 开始，WebDAV 用配置的初始路径。
+            // 关键：只用于本次取目录，不写回 @State path —— 写回会改变 .task(id: path) 的 id，
+            // 触发第二次 load，并让 navigationTitle 从连接名跳成路径末段，落在 push 动画里就是"过渡抖一下"。
+            let pathToLoad = isRoot ? FeiniuNASService.initialPath(connection) : path
+            entries = try await FeiniuNASService.list(connection, path: pathToLoad)
         } catch {
             errorMessage = error.localizedDescription
         }
