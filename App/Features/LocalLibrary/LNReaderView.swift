@@ -87,10 +87,13 @@ struct LNReaderView: View {
                     if !content.avMedia.isEmpty {
                         sectionLabel("章末媒体 · \(content.avMedia.count)")
                         ForEach(content.avMedia) { item in
-                            Label(item.fileName,
-                                  systemImage: item.kind == .video ? "play.rectangle" : "waveform")
-                                .font(.subheadline)
-                                .foregroundStyle(ReadingTheme.ink.opacity(0.7))
+                            if item.kind == .video {
+                                LNVideoView(item: item, source: source)
+                            } else {
+                                Label(item.fileName, systemImage: "waveform")
+                                    .font(.subheadline)
+                                    .foregroundStyle(ReadingTheme.ink.opacity(0.7))
+                            }
                         }
                     }
                     if content.ignoredCount > 0 {
