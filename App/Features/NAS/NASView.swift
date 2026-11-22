@@ -720,34 +720,15 @@ struct NASView: View {
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            HStack {
-                Text("NAS")
-                    .font(.largeTitle.bold())
-                    .accessibilityAddTraits(.isHeader)
-                Spacer()
-                Button {
-                    showingAdd = true
-                } label: {
-                    Image(systemName: "plus")
-                        .font(.system(size: 22, weight: .regular))
-                        .foregroundStyle(ReadingTheme.ink.opacity(0.6))
-                        .frame(width: 44, height: 44)
-                        .background {
-                            RoundedRectangle(cornerRadius: 15, style: .continuous)
-                                .fill(ReadingTheme.groupedCanvas.opacity(0.75))
-                        }
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("nas.add.connection")
+        ReadingPageHeader(title: "NAS", subtitle: "网络存储，随处阅读") {
+            Button {
+                showingAdd = true
+            } label: {
+                ReadingToolbarIcon(systemName: "plus")
             }
-            Text("网络存储，随处阅读")
-                .font(.subheadline)
-                .foregroundStyle(ReadingTheme.ink.opacity(0.55))
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("nas.add.connection")
         }
-        .padding(.horizontal, 26)
-        .padding(.top, 18)
-        .padding(.bottom, 26)
     }
 
     private var emptyState: some View {
@@ -1091,16 +1072,7 @@ struct FeiniuBrowserView: View {
         .navigationTitle(isRoot ? connection.name : (path as NSString).lastPathComponent)
         .navigationBarTitleDisplayMode(.inline)
         .task(id: path) { await load() }
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    Task { await load() }
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .disabled(loading)
-            }
-        }
+        .refreshable { await load() }
         .overlay(alignment: .bottom) {
             if let toast {
                 Text(toast)
