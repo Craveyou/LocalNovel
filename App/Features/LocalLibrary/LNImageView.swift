@@ -1,18 +1,24 @@
 import SwiftUI
 import UIKit
 
-/// 章节插图：静态图降采样 + 点击放大占位。
-/// 动图在阶段 5 接入 AnimatedImageView；这里先按静态首帧显示。
+/// 章节插图：静态图降采样 + 动图逐帧播放 + 点击放大。
+/// 动图离屏暂停由子视图自己管理，避免滚动时整页重绘。
 struct LNImageView: View {
     let item: LNMediaItem
     let source: any LNLibrarySource
     let onTap: () -> Void
 
     @State private var image: UIImage?
+    @State private var url: URL?
+    @State private var onScreen = false
 
     var body: some View {
         Group {
-            if let image {
+            if item.kind == .animatedImage, let url {
+                LNAnimatedImageView(url: url, isVisible: onScreen)
+                    .frame(maxWidth: .infinity, minHeight: 220)
+                    .background(Color.black.opacity(0.04))
+            } else if let image {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFit()
@@ -29,10 +35,14 @@ struct LNImageView: View {
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .contentShape(Rectangle())
         .onTapGesture(perform: onTap)
+        .onAppear { onScreen = true }
+        .onDisappear { onScreen = false }
         .task {
-            guard image == nil else { return }
-            if let url = try? await source.localURL(for: item.path),
-               let data = try? Data(contentsOf: url, options: .mappedIfSafe),
+            guard url == nil else { return }
+            guard let resolved = try? await source.localURL(for: item.path) else { return }
+            url = resolved
+            guard item.kind != .animatedImage else { return }
+            if let data = try? Data(contentsOf: resolved, options: .mappedIfSafe),
                let ui = UIImage(data: data) {
                 image = downsample(ui)
             }
