@@ -38,19 +38,47 @@ struct LNReaderView: View {
         } else {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 14) {
-                    // 阶段 2：正文 → 插图 → 章末音视频（阶段 3 会把插图按 [图NN] 内嵌）
-                    ForEach(content.paragraphs.indices, id: \.self) { i in
-                        Text(content.paragraphs[i])
-                            .font(.body)
-                            .foregroundStyle(ReadingTheme.ink)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .textSelection(.enabled)
-                    }
-                    if !content.images.isEmpty {
-                        sectionLabel("插图 · \(content.images.count)")
-                        ForEach(content.images) { item in
-                            LNImageView(item: item, source: source) {
-                                showingImage = item
+                    let flow = LNInlineFlow.blocks(paragraphs: content.paragraphs,
+                                                   images: content.images,
+                                                   category: book.category)
+                    if flow.isEmpty {
+                        // 原排布：正文逐段 → 插图 → 章末媒体
+                        ForEach(content.paragraphs.indices, id: \.self) { i in
+                            paragraphText(content.paragraphs[i])
+                        }
+                        if !content.images.isEmpty {
+                            sectionLabel("插图 · \(content.images.count)")
+                            ForEach(content.images) { item in
+                                LNImageView(item: item, source: source) {
+                                    showingImage = item
+                                }
+                            }
+                        }
+                    } else {
+                        // [图NN] 混排：正文片段与图片交错
+                        ForEach(flow.indices, id: \.self) { i in
+                            switch flow[i] {
+                            case .paragraph(let text, _, _):
+                                paragraphText(text)
+                            case .inlineImage(let index):
+                                if content.images.indices.contains(index) {
+                                    let item = content.images[index]
+                                    LNImageView(item: item, source: source) {
+                                        showingImage = item
+                                    }
+                                }
+                            }
+                        }
+                        // 未被任何标记引用的图片：章末兜底
+                        let matched = LNInlineFlow.matchedIndexes(flow)
+                        let residual = content.images.indices.filter { !matched.contains($0) }
+                        if !residual.isEmpty {
+                            sectionLabel("插图 · \(residual.count)")
+                            ForEach(residual, id: \.self) { index in
+                                let item = content.images[index]
+                                LNImageView(item: item, source: source) {
+                                    showingImage = item
+                                }
                             }
                         }
                     }
@@ -73,6 +101,14 @@ struct LNReaderView: View {
                 .padding(.vertical, 14)
             }
         }
+    }
+
+    private func paragraphText(_ text: String) -> some View {
+        Text(text)
+            .font(.body)
+            .foregroundStyle(ReadingTheme.ink)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .textSelection(.enabled)
     }
 
     private func sectionLabel(_ text: String) -> some View {
