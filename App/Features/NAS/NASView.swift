@@ -908,9 +908,12 @@ struct FeiniuBrowserView: View {
     @State private var downloading: String?
     @State private var toast: String?
     @State private var linkLabel: String?
+    @State private var isRoot = false
 
     init(connection: FeiniuConnection, path: String? = nil) {
         self.connection = connection
+        let root = path == nil
+        _isRoot = State(initialValue: root)
         _path = State(initialValue: path ?? FeiniuNASService.initialPath(connection))
     }
 
@@ -1028,6 +1031,15 @@ struct FeiniuBrowserView: View {
                 proto = try await FeiniuNASService.probe(connection)
             }
             linkLabel = proto == .smb ? "内网 SMB" : "外网 WebDAV"
+            // 根目录首次探测后按实际链路重设初始路径：SMB 从 share 根 "/" 开始，
+            // WebDAV 用配置的初始路径。子目录（path 非 nil 进入）不受影响。
+            if isRoot {
+                let wanted = FeiniuNASService.initialPath(connection)
+                if path != wanted {
+                    path = wanted
+                    return  // .task(id: path) 会用新路径重新加载
+                }
+            }
             entries = try await FeiniuNASService.list(connection, path: path)
         } catch {
             errorMessage = error.localizedDescription
