@@ -265,6 +265,8 @@ private enum NASNetwork {
         }
     }
 
+    /// 旧判断：只看"有没有 Wi-Fi/以太网"，无法区分家里的 WiFi 和外面的 WiFi，已不再作为链路依据。
+    /// 保留仅为诊断参考，实际选路一律以 canReachSMB 的 TCP 预检结果为准。
     static func hasLocalInterface() async -> Bool {
         await withCheckedContinuation { continuation in
             let once = Once()
@@ -278,6 +280,52 @@ private enum NASNetwork {
                 monitor.cancel()
             }
             monitor.start(queue: queue)
+        }
+    }
+
+    /// 方案1：对 smbHost:smbPort 做一次带硬超时的 TCP 连接预检。
+    /// 只有 445 端口真的能握手，才判定"当前可达 NAS 内网"，进而允许尝试 SMB。
+    /// - 外面 WiFi / 蜂窝：445 不通 → 1.5s 内失败，直接跳过 SMB，绝不进入 AMSMB2 的不可取消 connect。
+    /// - 人在内网：445 通 → 强制 SMB 优先，即使上次缓存的是 WebDAV 也不会继续走外网。
+    /// NWConnection 的 connect 可被 cancel，配合 DispatchSourceTimer 实现真正的硬超时。
+    /// 承载不可 Sendable 的 NWConnection / Timer，供 @Sendable 回调安全捕获。
+    private final class TCPProbeBox: @unchecked Sendable {
+        let once = Once()
+        var connection: NWConnection?
+        var timer: DispatchSourceTimer?
+    }
+
+    static func canReachSMB(host: String, port: Int, timeout: TimeInterval = 1.5) async -> Bool {
+        let trimmed = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, (1...65535).contains(port),
+              let nwPort = NWEndpoint.Port(rawValue: UInt16(port)) else { return false }
+        let endpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(trimmed), port: nwPort)
+        return await withCheckedContinuation { continuation in
+            let box = TCPProbeBox()
+            let queue = DispatchQueue(label: "nas.smb.tcp.probe")
+            let connection = NWConnection(to: endpoint, using: .tcp)
+            let timer = DispatchSource.makeTimerSource(queue: queue)
+            box.connection = connection
+            box.timer = timer
+            // finish 只捕获 box（@unchecked Sendable）与 continuation（Sendable），
+            // 避免直接捕获非 Sendable 的 NWConnection / Timer 触发 Swift 6 并发诊断。
+            let finish: (Bool) -> Void = { reachable in
+                guard box.once.claim() else { return }
+                box.timer?.cancel()
+                box.connection?.cancel()
+                continuation.resume(returning: reachable)
+            }
+            connection.stateUpdateHandler = { state in
+                switch state {
+                case .ready: finish(true)
+                case .failed, .cancelled: finish(false)
+                default: break
+                }
+            }
+            connection.start(queue: queue)
+            timer.schedule(deadline: .now() + timeout)
+            timer.setEventHandler { finish(false) }
+            timer.resume()
         }
     }
 }
@@ -453,35 +501,43 @@ private enum FeiniuNASService {
         UserDefaults.standard.set(proto.rawValue, forKey: cacheKey(connection.id))
     }
 
+    /// 网络变化后清掉旧链路缓存，避免"人在内网却沿用上次 WebDAV 缓存"。
+    static func clearCache(for connection: FeiniuConnection) {
+        UserDefaults.standard.removeObject(forKey: cacheKey(connection.id))
+    }
+
     /// 上次探测到的链路，仅用于 UI 展示；nil 表示还没探测过。
     static func activeProtocol(_ connection: FeiniuConnection) -> NASProtocol? {
         cached(connection)
     }
 
     /// 当前网络下这条链路是否"可用到值得尝试"。
-    /// 关键：SMB 是内网直连，设备走蜂窝/无网时连 192.168.x.x 会卡在底层 TCP，
-    /// 所以这里直接从候选里排除，绝不发起必然卡死的连接。
-    private static func isViable(_ proto: NASProtocol, _ connection: FeiniuConnection, onLAN: Bool) -> Bool {
+    /// smbReachable 来自 canReachSMB 的真实 TCP 探测（445 握手成功），不是"是否连着 WiFi"。
+    /// - WiFi 但不在 NAS 内网（外面 WiFi）：445 不通 → 排除 SMB，直接走 WebDAV，不卡死。
+    /// - 在内网：445 通 → SMB 可用。
+    private static func isViable(_ proto: NASProtocol, _ connection: FeiniuConnection, smbReachable: Bool) -> Bool {
         let configured = proto == .smb
             ? !connection.smbHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             : !connection.webdavHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         if !configured { return false }
-        if proto == .smb && !onLAN { return false }
+        if proto == .smb && !smbReachable { return false }
         return true
     }
 
     /// 探测两条链路：smbHost 是内网 IP、webdavHost 是外网域名，各走各的地址。
-    /// 先按系统网络判断可用性：有 Wi-Fi 才试 SMB，否则只走 WebDAV；缓存链路优先。
+    /// 先用 TCP 预检判定内网是否真的可达：
+    /// - 445 通 → SMB 强制排第一（忽略旧缓存，修复"在内网却因缓存走外网"）。
+    /// - 445 不通 → 只走 WebDAV，绝不调用 AMSMB2 那个不可取消的 connect。
     @discardableResult
     static func resolve(_ connection: FeiniuConnection) async throws -> NASProtocol {
-        let onLAN = await NASNetwork.hasLocalInterface()
-        let preferred: NASProtocol = cached(connection) ?? (onLAN ? .smb : .webdav)
-        let order = [preferred, preferred.other]
+        let smbReachable = await NASNetwork.canReachSMB(host: connection.smbHost, port: connection.smbPort)
+        let preferred: NASProtocol = smbReachable ? .smb : .webdav
+        let order: [NASProtocol] = smbReachable ? [.smb, .webdav] : [.webdav]
         var failures: [NASProtocol: String] = [:]
         for proto in order {
-            guard isViable(proto, connection, onLAN: onLAN) else {
+            guard isViable(proto, connection, smbReachable: smbReachable) else {
                 failures[proto] = proto == .smb
-                    ? (onLAN ? "未配置内网 IP" : "当前非 Wi-Fi，已跳过内网 SMB")
+                    ? (connection.smbHost.isEmpty ? "未配置内网 IP" : "当前网络无法连接内网 445，已跳过 SMB")
                     : "未配置外网域名"
                 continue
             }
@@ -508,11 +564,13 @@ private enum FeiniuNASService {
         try await resolve(connection)
     }
 
-    /// 列目录：缓存链路在当前网络下仍可用则直接用；否则/失败则重新探测切换。
-    /// 这样断开 Wi-Fi 后，即便缓存是 SMB，也不会拿内网 IP 去连导致卡死。
+    /// 列目录：先用 TCP 预检判定当前网络期望的链路（445 通=内网 SMB，否则外网 WebDAV）。
+    /// 缓存链路与期望一致才直接用；不一致（如人在内网但缓存是 WebDAV）则重新探测，避免继续走外网。
+    /// 这样断开 WiFi / 换到外面 WiFi 后，即便缓存是 SMB，也不会拿内网 IP 去连导致卡死。
     static func list(_ connection: FeiniuConnection, path: String) async throws -> [NASEntry] {
-        let onLAN = await NASNetwork.hasLocalInterface()
-        if let proto = cached(connection), isViable(proto, connection, onLAN: onLAN) {
+        let smbReachable = await NASNetwork.canReachSMB(host: connection.smbHost, port: connection.smbPort)
+        let expected: NASProtocol = smbReachable ? .smb : .webdav
+        if let proto = cached(connection), proto == expected, isViable(proto, connection, smbReachable: smbReachable) {
             do { return try await fetch(connection, proto: proto, path: path) }
             catch {
                 let refreshed = try await resolve(connection)
@@ -525,10 +583,11 @@ private enum FeiniuNASService {
     }
 
     static func download(_ connection: FeiniuConnection, entry: NASEntry) async throws -> URL {
-        let onLAN = await NASNetwork.hasLocalInterface()
-        let cachedProto = cached(connection)
+        let smbReachable = await NASNetwork.canReachSMB(host: connection.smbHost, port: connection.smbPort)
+        let expected: NASProtocol = smbReachable ? .smb : .webdav
         let proto: NASProtocol
-        if let cachedProto, isViable(cachedProto, connection, onLAN: onLAN) {
+        if let cachedProto = cached(connection), cachedProto == expected,
+           isViable(cachedProto, connection, smbReachable: smbReachable) {
             proto = cachedProto
         } else {
             proto = try await resolve(connection)
@@ -614,6 +673,8 @@ struct NASView: View {
     @StateObject private var store = FeiniuConnectionStore()
     @State private var showingAdd = false
     @State private var editing: FeiniuConnection?
+    /// 当前网络下每条连接实际可用的链路（实时 TCP 预检得出），不用旧缓存误导用户。
+    @State private var liveLinks: [UUID: NASProtocol] = [:]
 
     var body: some View {
         ScrollView {
@@ -630,6 +691,9 @@ struct NASView: View {
         }
         .background(ReadingTheme.canvas.ignoresSafeArea())
         .navigationBarHidden(true)
+        .task(id: store.connections.map(\.id)) {
+            await refreshLinks()
+        }
         .sheet(isPresented: $showingAdd) {
             FeiniuConnectionFormView(store: store)
         }
@@ -637,6 +701,18 @@ struct NASView: View {
             FeiniuConnectionFormView(store: store, connection: connection)
         }
         .accessibilityIdentifier("nas.scroll")
+    }
+
+    /// 进入页面 / 连接变化时，对每条连接做一次真实 TCP 预检，更新"当前链路"标签。
+    /// 只判 445 是否可达，不建立 SMB 会话，开销很小；不依赖上次缓存。
+    private func refreshLinks() async {
+        var result: [UUID: NASProtocol] = [:]
+        for connection in store.connections {
+            let reachable = await NASNetwork.canReachSMB(host: connection.smbHost, port: connection.smbPort)
+            result[connection.id] = reachable ? .smb : .webdav
+            if reachable { FeiniuNASService.clearCache(for: connection) }
+        }
+        liveLinks = result
     }
 
     private var header: some View {
@@ -721,7 +797,7 @@ struct NASView: View {
                                 .font(.caption)
                                 .foregroundStyle(ReadingTheme.ink.opacity(0.5))
                                 .lineLimit(1)
-                            if let active = FeiniuNASService.activeProtocol(connection) {
+                            if let active = liveLinks[connection.id] ?? FeiniuNASService.activeProtocol(connection) {
                                 Label(active == .smb ? "当前：内网 SMB" : "当前：外网 WebDAV",
                                       systemImage: active == .smb ? "wifi" : "globe")
                                     .font(.caption2)

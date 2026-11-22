@@ -77,10 +77,6 @@ struct RootTabView: View {
                 .tabItem { Label("书架", systemImage: selection == .bookshelf ? "book.fill" : "book").environment(\.symbolVariants, .none) }
                 .tag(Tab.bookshelf)
 
-            ReadingNavigationStack { ExploreView() }
-                .tabItem { Label("发现", systemImage: "safari").environment(\.symbolVariants, .none) }
-                .tag(Tab.explore)
-
             ReadingNavigationStack { FileManagementView() }
                 .tabItem { Label("本地", systemImage: selection == .local ? "folder.fill" : "folder").environment(\.symbolVariants, .none) }
                 .tag(Tab.local)
@@ -88,6 +84,10 @@ struct RootTabView: View {
             ReadingNavigationStack { NASView() }
                 .tabItem { Label("NAS", systemImage: "externaldrive").environment(\.symbolVariants, .none) }
                 .tag(Tab.nas)
+
+            ReadingNavigationStack { ExploreView() }
+                .tabItem { Label("发现", systemImage: "safari").environment(\.symbolVariants, .none) }
+                .tag(Tab.explore)
 
             ReadingNavigationStack {
                 if ProcessInfo.processInfo.arguments.contains("-uiDemoRules") {
