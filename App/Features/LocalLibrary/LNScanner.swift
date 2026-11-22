@@ -38,7 +38,7 @@ enum LNScanner {
     // MARK: - 扫书：根目录下每个子目录 = 一本书
 
     static func books(in nodes: [LNNode], category: LNCategory,
-                      loadChildren: (LNNode) async throws -> [LNNode]) async throws -> [LNBook] {
+                      loadChildren: @Sendable (LNNode) async throws -> [LNNode]) async throws -> [LNBook] {
         var result: [LNBook] = []
         for folder in nodes.filter({ $0.isDirectory }) {
             let children = try await loadChildren(folder)
@@ -64,7 +64,7 @@ enum LNScanner {
     // MARK: 整理：书 → 子目录 = 章；平铺文件 = 单章
 
     private static func organizedChapters(in folder: LNNode, nodes: [LNNode],
-                                          loadChildren: (LNNode) async throws -> [LNNode]) async throws -> [LNChapter] {
+                                          loadChildren: @Sendable (LNNode) async throws -> [LNNode]) async throws -> [LNChapter] {
         let dirs = nodes.filter { $0.isDirectory }
         if !dirs.isEmpty {
             return dirs.map { LNChapter(path: $0.path, name: $0.name, kind: .folder, groupName: nil) }
@@ -86,7 +86,7 @@ enum LNScanner {
     // MARK: 漫画：有图片=一话；有 pdf=每 pdf 一话；否则下钻，depth<=4
 
     private static func comicChapters(in folder: LNNode, nodes: [LNNode],
-                                      loadChildren: (LNNode) async throws -> [LNNode]) async throws -> [LNChapter] {
+                                      loadChildren: @Sendable (LNNode) async throws -> [LNNode]) async throws -> [LNChapter] {
         try await mediaChapters(in: folder, nodes: nodes, loadChildren: loadChildren,
                                  maxDepth: 4, pdfEnabled: true, videoEnabled: false,
                                  imageLabel: nil)
@@ -95,14 +95,14 @@ enum LNScanner {
     // MARK: 短剧：图片包=剧照；视频=每集；depth<=3
 
     private static func dramaChapters(in folder: LNNode, nodes: [LNNode],
-                                      loadChildren: (LNNode) async throws -> [LNNode]) async throws -> [LNChapter] {
+                                      loadChildren: @Sendable (LNNode) async throws -> [LNNode]) async throws -> [LNChapter] {
         try await mediaChapters(in: folder, nodes: nodes, loadChildren: loadChildren,
                                  maxDepth: 3, pdfEnabled: false, videoEnabled: true,
                                  imageLabel: "剧照")
     }
 
     private static func mediaChapters(in folder: LNNode, nodes: [LNNode],
-                                      loadChildren: (LNNode) async throws -> [LNNode],
+                                      loadChildren: @Sendable (LNNode) async throws -> [LNNode],
                                       maxDepth: Int, pdfEnabled: Bool, videoEnabled: Bool,
                                       imageLabel: String?) async throws -> [LNChapter] {
         var result: [LNChapter] = []
