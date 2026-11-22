@@ -77,7 +77,11 @@ struct RootTabView: View {
                 .tabItem { Label("书架", systemImage: selection == .bookshelf ? "book.fill" : "book").environment(\.symbolVariants, .none) }
                 .tag(Tab.bookshelf)
 
-            ReadingNavigationStack { FileManagementView() }
+            ReadingNavigationStack {
+                LNCategoryView(source: LNRoot.localSource(),
+                               title: "本地",
+                               subtitle: "漫画 · 整理 · 短剧 — 在「文件」App 里把书放进「本地小说」对应文件夹")
+            }
                 .tabItem { Label("本地", systemImage: selection == .local ? "folder.fill" : "folder").environment(\.symbolVariants, .none) }
                 .tag(Tab.local)
 

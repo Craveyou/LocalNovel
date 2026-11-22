@@ -194,7 +194,7 @@ final class FeiniuConnectionStore: ObservableObject {
 
 // MARK: - WebDAV 客户端
 
-private struct NASEntry: Identifiable, Hashable, Sendable {
+struct NASEntry: Identifiable, Hashable, Sendable {
     var id: String { path }
     let path: String          // 服务器路径（WebDAV 解码后的路径 / SMB share 内相对路径）
     let name: String
@@ -491,7 +491,7 @@ private enum FeiniuWebDAV {
 
 /// 自动探测结果缓存：key 为连接 id，value 为上次成功的协议。
 /// 网络切换后缓存可能失效，list 失败时会自动重新探测并切换。
-private enum FeiniuNASService {
+enum FeiniuNASService {
     private static let cachePrefix = "nas.feiniu.link."
 
     static func cacheKey(_ id: UUID) -> String { cachePrefix + id.uuidString }
