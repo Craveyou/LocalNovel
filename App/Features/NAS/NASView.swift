@@ -418,7 +418,12 @@ private enum FeiniuNASService {
     }
 
     static func download(_ connection: FeiniuConnection, entry: NASEntry) async throws -> URL {
-        let proto = cached(connection) ?? (try await resolve(connection))
+        let proto: NASProtocol
+        if let cachedProto = cached(connection) {
+            proto = cachedProto
+        } else {
+            proto = try await resolve(connection)
+        }
         switch proto {
         case .smb: return try await FeiniuSMB.download(connection, entry: entry)
         case .webdav: return try await FeiniuWebDAV.download(connection, entry: entry)
