@@ -764,7 +764,7 @@ struct NASView: View {
         VStack(spacing: 12) {
             ForEach(store.connections) { connection in
                 NavigationLink {
-                    FeiniuBrowserView(connection: connection)
+                    LNNASCategoryView(connection: connection)
                 } label: {
                     HStack(spacing: 14) {
                         Image(systemName: "externaldrive.connected.to.line.below")

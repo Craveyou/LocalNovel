@@ -6,6 +6,8 @@ struct LNCategoryView: View {
     let source: any LNLibrarySource
     let title: String
     let subtitle: String
+    /// NAS 首屏不预统计（三类各一次远端探测会拖慢进入），进入分类时再加载
+    var showsCounts: Bool = true
 
     @State private var counts: [LNCategory: Int] = [:]
     @State private var isLoading = false
@@ -33,8 +35,8 @@ struct LNCategoryView: View {
         .background(ReadingTheme.canvas.ignoresSafeArea())
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
-        .refreshable { await loadCounts() }
-        .task { await loadCounts() }
+        .refreshable { if showsCounts { await loadCounts() } }
+        .task { if showsCounts { await loadCounts() } }
     }
 
     private var header: some View {
@@ -57,7 +59,7 @@ struct LNCategoryView: View {
             Text(cat.label)
                 .font(.headline)
                 .foregroundStyle(ReadingTheme.ink)
-            Text(counts[cat].map { "\($0) 本" } ?? "—")
+            Text(showsCounts ? (counts[cat].map { "\($0) 本" } ?? "—") : "点按进入")
                 .font(.caption)
                 .foregroundStyle(ReadingTheme.ink.opacity(0.5))
             Spacer(minLength: 0)
@@ -77,7 +79,7 @@ struct LNCategoryView: View {
         defer { isLoading = false }
         var next: [LNCategory: Int] = [:]
         for cat in LNCategory.allCases {
-            let path = cat.folderName
+            let path = source.categoryRoot(cat)
             guard let nodes = try? await source.list(at: path) else { continue }
             let books = try? await LNScanner.books(in: nodes, category: cat,
                                                     loadChildren: { node in
@@ -129,7 +131,7 @@ struct LNBookListView: View {
 
     private func load() async {
         do {
-            let nodes = try await source.list(at: category.folderName)
+            let nodes = try await source.list(at: source.categoryRoot(category))
             books = try await LNScanner.books(in: nodes, category: category,
                                                loadChildren: { node in
                                                    try await source.list(at: node.path)

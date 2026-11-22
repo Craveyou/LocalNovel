@@ -4,6 +4,8 @@ import Foundation
 protocol LNLibrarySource: Sendable {
     /// 根路径标识：本地为文档目录绝对路径，NAS 为连接 UUID 前缀
     var rootID: String { get }
+    /// 某分类的扫描起点（本地 = "漫画"/"整理"/"短剧"；NAS = 该分类根，通常 "/"）
+    func categoryRoot(_ category: LNCategory) -> String
     /// 列出某目录下的条目（path 为相对根路径，""/"/" 表示根）
     func list(at path: String) async throws -> [LNNode]
     /// 取文件本地 URL；本地直接返回磁盘 URL，NAS 下载到缓存后返回
@@ -17,6 +19,8 @@ protocol LNLibrarySource: Sendable {
 struct LNLocalSource: LNLibrarySource {
     let rootURL: URL
     var rootID: String { rootURL.path }
+
+    func categoryRoot(_ category: LNCategory) -> String { category.folderName }
 
     func list(at path: String) async throws -> [LNNode] {
         let dir = url(for: path)
@@ -58,8 +62,15 @@ struct LNLocalSource: LNLibrarySource {
 
 struct LNNASSource: LNLibrarySource {
     let connection: FeiniuConnection
+    /// 分类根（相对 NAS 共享根），如 "/漫画"
     let rootPath: String
-    var rootID: String { "nas." + connection.id.uuidString }
+    var rootID: String { "nas." + connection.id.uuidString + rootPath }
+
+    /// 共享根 + 分类目录名，例如 rootPath="/" → "/漫画"
+    func categoryRoot(_ category: LNCategory) -> String {
+        let root = rootPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return root.isEmpty ? "/" + category.folderName : "/" + root + "/" + category.folderName
+    }
 
     func list(at path: String) async throws -> [LNNode] {
         let full = fullPath(path)

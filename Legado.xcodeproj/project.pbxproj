@@ -6,6 +6,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		L1000000000000000000001C /* LNNASCategoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2000000000000000000001C /* LNNASCategoryView.swift */; };
 		L1000000000000000000001A /* LNVideoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2000000000000000000001A /* LNVideoView.swift */; };
 		L10000000000000000000018 /* LNAnimatedImageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = L20000000000000000000018 /* LNAnimatedImageView.swift */; };
 		L10000000000000000000016 /* LNPDFView.swift in Sources */ = {isa = PBXBuildFile; fileRef = L20000000000000000000016 /* LNPDFView.swift */; };
@@ -153,6 +154,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		L2000000000000000000001C /* LNNASCategoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LNNASCategoryView.swift; sourceTree = "<group>"; };
 		L2000000000000000000001A /* LNVideoView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LNVideoView.swift; sourceTree = "<group>"; };
 		L20000000000000000000018 /* LNAnimatedImageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LNAnimatedImageView.swift; sourceTree = "<group>"; };
 		L20000000000000000000016 /* LNPDFView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LNPDFView.swift; sourceTree = "<group>"; };
@@ -333,6 +335,7 @@
 				L20000000000000000000016 /* LNPDFView.swift */,
 				L20000000000000000000018 /* LNAnimatedImageView.swift */,
 				L2000000000000000000001A /* LNVideoView.swift */,
+				L2000000000000000000001C /* LNNASCategoryView.swift */,
 );
 			path = Features/LocalLibrary;
 			sourceTree = "<group>";
@@ -896,6 +899,7 @@
 				L10000000000000000000016 /* LNPDFView.swift in Sources */,
 				L10000000000000000000018 /* LNAnimatedImageView.swift in Sources */,
 				L1000000000000000000001A /* LNVideoView.swift in Sources */,
+				L1000000000000000000001C /* LNNASCategoryView.swift in Sources */,
 );
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -968,7 +972,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 30;
+				CURRENT_PROJECT_VERSION = 31;
 				DEVELOPMENT_ASSET_PATHS = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = App/Info.plist;
@@ -989,7 +993,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 30;
+				CURRENT_PROJECT_VERSION = 31;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = App/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
