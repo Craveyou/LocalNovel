@@ -2,24 +2,73 @@ import SwiftUI
 #if canImport(FoundationXML)
 import FoundationXML
 #endif
+import AMSMB2
 
 // MARK: - 飞牛 NAS 连接模型
 
-/// 一条飞牛 NAS 的 WebDAV 连接配置，持久化在 UserDefaults。
+/// NAS 访问协议。SMB 走内网直连，WebDAV 走外网。
+enum NASProtocol: String, Codable, CaseIterable, Identifiable, Sendable {
+    case smb = "smb"
+    case webdav = "webdav"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .smb: "SMB（内网）"
+        case .webdav: "WebDAV（外网）"
+        }
+    }
+
+    var defaultPort: Int {
+        switch self {
+        case .smb: 445
+        case .webdav: 5005
+        }
+    }
+}
+
+/// 一条飞牛 NAS 的连接配置，持久化在 UserDefaults。
+/// 兼容旧版只有 WebDAV 的 v1 数据：缺少的字段由 Codable 默认值补齐。
 struct FeiniuConnection: Codable, Identifiable, Hashable, Sendable {
     var id: UUID = UUID()
     var name: String = "飞牛 NAS"
-    var scheme: String = "http"       // http / https
+    var proto: NASProtocol = .webdav
+    var scheme: String = "http"       // WebDAV: http / https
     var host: String = ""
-    var port: Int = 5005              // 飞牛 WebDAV：HTTP 5005 / HTTPS 5006
+    var port: Int = 5005              // SMB 445 / WebDAV HTTP 5005 / HTTPS 5006
     var username: String = ""
     var password: String = ""
-    var rootPath: String = "/"
+    var rootPath: String = "/"        // WebDAV 初始路径
+    var share: String = ""            // SMB 共享名
     var createdAt: Date = Date()
+
+    /// 旧版 v1 JSON 没有 proto/share 字段，用自定义解码补默认值，避免升级后连接丢失。
+    init(from decoder: Decoder) throws {
+        let box = try decoder.container(keyedBy: CodingKeys.self)
+        id = try box.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        name = try box.decodeIfPresent(String.self, forKey: .name) ?? "飞牛 NAS"
+        proto = try box.decodeIfPresent(NASProtocol.self, forKey: .proto) ?? .webdav
+        scheme = try box.decodeIfPresent(String.self, forKey: .scheme) ?? "http"
+        host = try box.decodeIfPresent(String.self, forKey: .host) ?? ""
+        port = try box.decodeIfPresent(Int.self, forKey: .port) ?? (proto == .smb ? 445 : 5005)
+        username = try box.decodeIfPresent(String.self, forKey: .username) ?? ""
+        password = try box.decodeIfPresent(String.self, forKey: .password) ?? ""
+        rootPath = try box.decodeIfPresent(String.self, forKey: .rootPath) ?? "/"
+        share = try box.decodeIfPresent(String.self, forKey: .share) ?? ""
+        createdAt = try box.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
+    }
+
+    init() {}
 
     var displayAddress: String {
         guard !host.isEmpty else { return "未配置地址" }
-        return "\(scheme)://\(host):\(port)\(rootPath)"
+        switch proto {
+        case .smb:
+            return "smb://\(host):\(port)/\(share)"
+        case .webdav:
+            return "\(scheme)://\(host):\(port)\(rootPath)"
+        }
     }
 
     /// 去掉用户可能一并粘贴的 scheme 与端口，只保留主机部分。
@@ -35,7 +84,8 @@ struct FeiniuConnection: Codable, Identifiable, Hashable, Sendable {
 final class FeiniuConnectionStore: ObservableObject {
     @Published private(set) var connections: [FeiniuConnection] = []
     private let defaults: UserDefaults
-    private let key = "nas.feiniu.connections.v1"
+    private let key = "nas.feiniu.connections.v2"
+    private let legacyKey = "nas.feiniu.connections.v1"
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -43,9 +93,17 @@ final class FeiniuConnectionStore: ObservableObject {
     }
 
     private func load() {
-        guard let data = defaults.data(forKey: key),
-              let decoded = try? JSONDecoder().decode([FeiniuConnection].self, from: data) else { return }
-        connections = decoded
+        if let data = defaults.data(forKey: key),
+           let decoded = try? JSONDecoder().decode([FeiniuConnection].self, from: data) {
+            connections = decoded
+            return
+        }
+        // 迁移旧版纯 WebDAV 数据
+        if let data = defaults.data(forKey: legacyKey),
+           let decoded = try? JSONDecoder().decode([FeiniuConnection].self, from: data) {
+            connections = decoded
+            persist()
+        }
     }
 
     private func persist() {
@@ -70,9 +128,9 @@ final class FeiniuConnectionStore: ObservableObject {
 
 // MARK: - WebDAV 客户端
 
-private struct WebDAVEntry: Identifiable, Hashable, Sendable {
+private struct NASEntry: Identifiable, Hashable, Sendable {
     var id: String { path }
-    let path: String          // 解码后的服务器路径，请求时由 URLComponents 重新编码
+    let path: String          // 服务器路径（WebDAV 解码后的路径 / SMB share 内相对路径）
     let name: String
     let isDirectory: Bool
     let size: Int64
@@ -80,13 +138,16 @@ private struct WebDAVEntry: Identifiable, Hashable, Sendable {
 
 private enum FeiniuError: LocalizedError {
     case invalidAddress
+    case missingShare
     case http(Int)
     case nonHTTP
     case invalidXML
+    case smb(String)
 
     var errorDescription: String? {
         switch self {
-        case .invalidAddress: "地址或端口无效，请检查主机填的是 IP 或域名（不含 http:// 和端口）"
+        case .invalidAddress: "地址或端口无效，请检查主机填的是 IP 或域名（不含协议和端口）"
+        case .missingShare: "SMB 需要填写共享名（飞牛「文件服务 → SMB」里共享文件夹的名称）"
         case .http(let code):
             switch code {
             case 401: "账号或密码错误，或该账号没有 WebDAV 权限（飞牛需使用独立 WebDAV 账号）"
@@ -96,6 +157,7 @@ private enum FeiniuError: LocalizedError {
             }
         case .nonHTTP: "服务器返回的不是 HTTP 响应"
         case .invalidXML: "WebDAV 返回的目录数据无法解析"
+        case .smb(let detail): "SMB 连接失败：\(detail)"
         }
     }
 }
@@ -116,6 +178,64 @@ private final class FeiniuTrustDelegate: NSObject, URLSessionTaskDelegate, @unch
     }
 }
 
+/// SMB2/3 客户端（内网直连）：基于 AMSMB2/libsmb2。
+/// 每条连接独立创建 SMB2Manager，Swift 对象释放时库会自动断开共享。
+private enum FeiniuSMB {
+    static func probe(_ connection: FeiniuConnection) async throws {
+        let manager = try makeManager(connection)
+        try await manager.connectShare(name: connection.share)
+    }
+
+    static func list(_ connection: FeiniuConnection, path: String) async throws -> [NASEntry] {
+        let manager = try makeManager(connection)
+        try await manager.connectShare(name: connection.share)
+        let items = try await manager.contentsOfDirectory(atPath: path, recursive: false)
+        return items.compactMap { entry in
+            guard let name = entry[.nameKey] as? String, !name.isEmpty else { return nil }
+            let resolvedPath = smbPath(entry[.pathKey] as? String, parent: path, name: name)
+            let isDirectory = (entry[.fileResourceTypeKey] as? URLFileResourceType) == .directory
+            let size = (entry[.fileSizeKey] as? NSNumber)?.int64Value ?? 0
+            return NASEntry(path: resolvedPath, name: name, isDirectory: isDirectory, size: size)
+        }
+    }
+
+    static func download(_ connection: FeiniuConnection, entry: NASEntry) async throws -> URL {
+        let manager = try makeManager(connection)
+        try await manager.connectShare(name: connection.share)
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("feiniu-smb-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let filename = entry.name.isEmpty ? "download" : entry.name
+        let target = folder.appendingPathComponent(filename)
+        try await manager.downloadItem(atPath: entry.path, to: target, progress: nil)
+        return target
+    }
+
+    private static func makeManager(_ connection: FeiniuConnection) throws -> SMB2Manager {
+        guard !connection.host.isEmpty, (1...65535).contains(connection.port),
+              let url = URL(string: "smb://\(connection.host):\(connection.port)") else {
+            throw FeiniuError.invalidAddress
+        }
+        guard !connection.share.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw FeiniuError.missingShare
+        }
+        let credential = URLCredential(user: connection.username, password: connection.password, persistence: .forSession)
+        guard let manager = SMB2Manager(url: url, domain: "", credential: credential) else {
+            throw FeiniuError.smb("无法初始化 SMB 客户端")
+        }
+        return manager
+    }
+
+    /// libsmb2 的 pathKey 一般是 share 内完整路径；缺失时用父路径 + 文件名兜底。
+    private static func smbPath(_ raw: String?, parent: String, name: String) -> String {
+        if var value = raw?.trimmingCharacters(in: .whitespaces), !value.isEmpty {
+            if !value.hasPrefix("/") { value = "/" + value }
+            return value
+        }
+        let base = parent.isEmpty ? "/" : parent
+        return (base as NSString).appendingPathComponent(name)
+    }
+}
+
 /// 飞牛 WebDAV 最小实现：PROPFIND 探测与列目录、GET 下载。
 private enum FeiniuWebDAV {
     static func probe(_ connection: FeiniuConnection) async throws {
@@ -125,7 +245,7 @@ private enum FeiniuWebDAV {
         }
     }
 
-    static func list(_ connection: FeiniuConnection, path: String) async throws -> [WebDAVEntry] {
+    static func list(_ connection: FeiniuConnection, path: String) async throws -> [NASEntry] {
         let (data, response) = try await request(connection, method: "PROPFIND", path: path, depth: "1")
         guard response.statusCode == 200 || response.statusCode == 207 else {
             throw FeiniuError.http(response.statusCode)
@@ -141,11 +261,11 @@ private enum FeiniuWebDAV {
             let itemPath = normalized(item.path)
             guard !itemPath.isEmpty, itemPath != root else { return nil }  // 过滤目录自身
             let name = item.name.isEmpty ? (item.path as NSString).lastPathComponent : item.name
-            return WebDAVEntry(path: item.path, name: name, isDirectory: item.isDirectory, size: item.size)
+            return NASEntry(path: item.path, name: name, isDirectory: item.isDirectory, size: item.size)
         }
     }
 
-    static func download(_ connection: FeiniuConnection, entry: WebDAVEntry) async throws -> URL {
+    static func download(_ connection: FeiniuConnection, entry: NASEntry) async throws -> URL {
         var urlRequest = try makeRequest(connection, method: "GET", path: entry.path)
         let session = makeSession()
         defer { session.finishTasksAndInvalidate() }
@@ -201,6 +321,38 @@ private enum FeiniuWebDAV {
         var value = path.removingPercentEncoding ?? path
         while value.count > 1, value.hasSuffix("/") { value.removeLast() }
         return value
+    }
+}
+
+/// 统一门面：按连接协议分发到 SMB 或 WebDAV 客户端。
+private enum FeiniuNASService {
+    static func probe(_ connection: FeiniuConnection) async throws {
+        switch connection.proto {
+        case .smb: try await FeiniuSMB.probe(connection)
+        case .webdav: try await FeiniuWebDAV.probe(connection)
+        }
+    }
+
+    static func list(_ connection: FeiniuConnection, path: String) async throws -> [NASEntry] {
+        switch connection.proto {
+        case .smb: try await FeiniuSMB.list(connection, path: path)
+        case .webdav: try await FeiniuWebDAV.list(connection, path: path)
+        }
+    }
+
+    static func download(_ connection: FeiniuConnection, entry: NASEntry) async throws -> URL {
+        switch connection.proto {
+        case .smb: try await FeiniuSMB.download(connection, entry: entry)
+        case .webdav: try await FeiniuWebDAV.download(connection, entry: entry)
+        }
+    }
+
+    /// SMB share 内的初始路径用 "/"；WebDAV 用连接里保存的 rootPath。
+    static func initialPath(_ connection: FeiniuConnection) -> String {
+        switch connection.proto {
+        case .smb: "/"
+        case .webdav: connection.rootPath
+        }
     }
 }
 
@@ -337,7 +489,7 @@ struct NASView: View {
             Text("连接你的飞牛 NAS")
                 .font(.headline)
                 .foregroundStyle(ReadingTheme.ink.opacity(0.75))
-            Text("通过 WebDAV 访问飞牛私有云里的书籍，直接导入书架阅读。")
+            Text("内网用 SMB 直连、外网用 WebDAV 访问飞牛私有云里的书籍，直接导入书架阅读。")
                 .font(.subheadline)
                 .foregroundStyle(ReadingTheme.ink.opacity(0.5))
                 .multilineTextAlignment(.center)
@@ -364,7 +516,7 @@ struct NASView: View {
                     FeiniuBrowserView(connection: connection)
                 } label: {
                     HStack(spacing: 14) {
-                        Image(systemName: "externaldrive")
+                        Image(systemName: connection.proto == .smb ? "externaldrive.connected.to.line.below" : "externaldrive")
                             .font(.system(size: 22))
                             .foregroundStyle(ReadingTheme.accent)
                             .frame(width: 42, height: 42)
@@ -414,12 +566,14 @@ struct FeiniuConnectionFormView: View {
 
     let connection: FeiniuConnection?
     @State private var name: String
+    @State private var proto: NASProtocol
     @State private var scheme: String
     @State private var host: String
     @State private var port: String
     @State private var username: String
     @State private var password: String
     @State private var rootPath: String
+    @State private var share: String
     @State private var testing = false
     @State private var testResult: String?
     @State private var errorMessage: String?
@@ -427,40 +581,71 @@ struct FeiniuConnectionFormView: View {
     init(store: FeiniuConnectionStore, connection: FeiniuConnection? = nil) {
         self.store = store
         self.connection = connection
+        let initialProto = connection?.proto ?? .smb
         _name = State(initialValue: connection?.name ?? "飞牛 NAS")
+        _proto = State(initialValue: initialProto)
         _scheme = State(initialValue: connection?.scheme ?? "http")
         _host = State(initialValue: connection?.host ?? "")
-        _port = State(initialValue: String(connection?.port ?? 5005))
+        _port = State(initialValue: String(connection?.port ?? initialProto.defaultPort))
         _username = State(initialValue: connection?.username ?? "")
         _password = State(initialValue: connection?.password ?? "")
         _rootPath = State(initialValue: connection?.rootPath ?? "/")
+        _share = State(initialValue: connection?.share ?? "")
     }
 
     private var draft: FeiniuConnection {
         var value = connection ?? FeiniuConnection()
         value.name = name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "飞牛 NAS" : name
+        value.proto = proto
         value.scheme = scheme
         value.host = FeiniuConnection.cleanedHost(host)
-        value.port = Int(port) ?? (scheme == "https" ? 5006 : 5005)
+        value.port = Int(port) ?? (proto == .smb ? 445 : (scheme == "https" ? 5006 : 5005))
         value.username = username.trimmingCharacters(in: .whitespacesAndNewlines)
         value.password = password
         let path = rootPath.trimmingCharacters(in: .whitespacesAndNewlines)
         value.rootPath = path.isEmpty ? "/" : (path.hasPrefix("/") ? path : "/" + path)
+        value.share = share.trimmingCharacters(in: .whitespacesAndNewlines)
         return value
+    }
+
+    private var canSave: Bool {
+        !draft.host.isEmpty && !draft.username.isEmpty && !draft.password.isEmpty &&
+        (proto == .webdav || !draft.share.isEmpty)
     }
 
     var body: some View {
         ReadingNavigationStack {
             Form {
-                Section("服务器") {
-                    TextField("名称", text: $name)
-                    Picker("协议", selection: $scheme) {
-                        Text("HTTP（默认 5005）").tag("http")
-                        Text("HTTPS（默认 5006）").tag("https")
+                Section("协议") {
+                    Picker("连接方式", selection: $proto) {
+                        ForEach(NASProtocol.allCases) { item in
+                            Text(item.title).tag(item)
+                        }
                     }
                     .pickerStyle(.segmented)
-                    .onChange(of: scheme) { newValue in
-                        port = newValue == "https" ? "5006" : "5005"
+                    .onChange(of: proto) { newValue in
+                        if port.isEmpty || port == "5005" || port == "5006" || port == "445" {
+                            port = String(newValue.defaultPort)
+                        }
+                    }
+                    Text(proto == .smb
+                         ? "SMB 适合在内网/Wi-Fi 下直连飞牛，速度更快；需先在飞牛「设置 → 文件服务 → SMB」启用并记下共享名。"
+                         : "WebDAV 适合外网远程访问飞牛；需先在飞牛「设置 → 文件服务 → WebDAV」启用服务。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section("服务器") {
+                    TextField("名称", text: $name)
+                    if proto == .webdav {
+                        Picker("协议", selection: $scheme) {
+                            Text("HTTP（默认 5005）").tag("http")
+                            Text("HTTPS（默认 5006）").tag("https")
+                        }
+                        .pickerStyle(.segmented)
+                        .onChange(of: scheme) { newValue in
+                            port = newValue == "https" ? "5006" : "5005"
+                        }
                     }
                     TextField("地址（IP 或域名）", text: $host)
                         .textInputAutocapitalization(.never)
@@ -469,12 +654,22 @@ struct FeiniuConnectionFormView: View {
                         .accessibilityIdentifier("nas.form.host")
                     TextField("端口", text: $port)
                         .keyboardType(.numberPad)
-                    TextField("初始路径", text: $rootPath)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                    Text("飞牛根目录填 /；要直接进入团队文件夹可填 /团队文件夹名。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    if proto == .smb {
+                        TextField("共享名", text: $share)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .accessibilityIdentifier("nas.form.share")
+                        Text("填飞牛 SMB 的共享文件夹名，例如「共享文件夹」或你的团队文件夹名。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        TextField("初始路径", text: $rootPath)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                        Text("飞牛根目录填 /；要直接进入团队文件夹可填 /团队文件夹名。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 Section("账号") {
@@ -482,7 +677,9 @@ struct FeiniuConnectionFormView: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                     SecureField("密码", text: $password)
-                    Text("飞牛 WebDAV 需使用独立 WebDAV 账号，管理员账号默认不可直连；请先在飞牛「设置 → 文件服务 → WebDAV」启用服务，并确认目标文件夹已开启协议访问。")
+                    Text(proto == .smb
+                         ? "使用飞牛 NAS 的 SMB 账号密码；仅在本机保存，用于内网连接。"
+                         : "飞牛 WebDAV 需使用独立 WebDAV 账号，管理员账号默认不可直连；请先在飞牛「设置 → 文件服务 → WebDAV」启用服务，并确认目标文件夹已开启协议访问。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -497,7 +694,7 @@ struct FeiniuConnectionFormView: View {
                             if testing { ProgressView() }
                         }
                     }
-                    .disabled(testing || draft.host.isEmpty)
+                    .disabled(testing || !canSave)
                     if let testResult {
                         Label(testResult, systemImage: "checkmark.circle.fill")
                             .font(.subheadline)
@@ -523,7 +720,7 @@ struct FeiniuConnectionFormView: View {
                         store.upsert(draft)
                         dismiss()
                     }
-                    .disabled(draft.host.isEmpty || draft.username.isEmpty || draft.password.isEmpty)
+                    .disabled(!canSave)
                 }
             }
         }
@@ -535,7 +732,7 @@ struct FeiniuConnectionFormView: View {
         errorMessage = nil
         defer { testing = false }
         do {
-            try await FeiniuWebDAV.probe(draft)
+            try await FeiniuNASService.probe(draft)
             testResult = "连接成功，可以保存了"
         } catch {
             errorMessage = error.localizedDescription
@@ -550,7 +747,7 @@ struct FeiniuBrowserView: View {
     let connection: FeiniuConnection
 
     @State private var path: String
-    @State private var entries: [WebDAVEntry] = []
+    @State private var entries: [NASEntry] = []
     @State private var loading = false
     @State private var errorMessage: String?
     @State private var downloading: String?
@@ -558,7 +755,7 @@ struct FeiniuBrowserView: View {
 
     init(connection: FeiniuConnection, path: String? = nil) {
         self.connection = connection
-        _path = State(initialValue: path ?? connection.rootPath)
+        _path = State(initialValue: path ?? FeiniuNASService.initialPath(connection))
     }
 
     var body: some View {
@@ -606,7 +803,7 @@ struct FeiniuBrowserView: View {
                 .listStyle(.insetGrouped)
             }
         }
-        .navigationTitle(path == connection.rootPath ? connection.name : (path as NSString).lastPathComponent)
+        .navigationTitle(path == FeiniuNASService.initialPath(connection) ? connection.name : (path as NSString).lastPathComponent)
         .navigationBarTitleDisplayMode(.inline)
         .task(id: path) { await load() }
         .toolbar {
@@ -635,7 +832,7 @@ struct FeiniuBrowserView: View {
         .accessibilityIdentifier("nas.browser.list")
     }
 
-    private func entryRow(_ entry: WebDAVEntry, systemImage: String) -> some View {
+    private func entryRow(_ entry: NASEntry, systemImage: String) -> some View {
         HStack(spacing: 12) {
             Image(systemName: systemImage)
                 .font(.system(size: 20))
@@ -663,18 +860,18 @@ struct FeiniuBrowserView: View {
         errorMessage = nil
         defer { loading = false }
         do {
-            entries = try await FeiniuWebDAV.list(connection, path: path)
+            entries = try await FeiniuNASService.list(connection, path: path)
         } catch {
             errorMessage = error.localizedDescription
         }
     }
 
-    private func importEntry(_ entry: WebDAVEntry) async {
+    private func importEntry(_ entry: NASEntry) async {
         guard downloading == nil else { return }
         downloading = entry.path
         defer { downloading = nil }
         do {
-            let localURL = try await FeiniuWebDAV.download(connection, entry: entry)
+            let localURL = try await FeiniuNASService.download(connection, entry: entry)
             await library.importLocalFiles([localURL])
             try? FileManager.default.removeItem(at: localURL.deletingLastPathComponent())
             let message = library.errorMessage ?? "已导入《\(entry.name)》"

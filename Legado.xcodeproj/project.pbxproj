@@ -15,6 +15,7 @@
 		F10000000000000000000001 /* SwiftSoup in Frameworks */ = {isa = PBXBuildFile; productRef = F20000000000000000000001 /* SwiftSoup */; };
 		F10000000000000000000002 /* Kanna in Frameworks */ = {isa = PBXBuildFile; productRef = F20000000000000000000002 /* Kanna */; };
 		F10000000000000000000003 /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = F20000000000000000000003 /* ZIPFoundation */; };
+		F10000000000000000000007 /* AMSMB2 in Frameworks */ = {isa = PBXBuildFile; productRef = F20000000000000000000007 /* AMSMB2 */; };
 		A10000000000000000000001 /* LegadoApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000001 /* LegadoApp.swift */; };
 		A10000000000000000000002 /* RootTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000002 /* RootTabView.swift */; };
 		A10000000000000000000003 /* SourceLibraryModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000003 /* SourceLibraryModel.swift */; };
@@ -277,6 +278,7 @@
 				F10000000000000000000001 /* SwiftSoup in Frameworks */,
 				F10000000000000000000002 /* Kanna in Frameworks */,
 				F10000000000000000000003 /* ZIPFoundation in Frameworks */,
+				F10000000000000000000007 /* AMSMB2 in Frameworks */,
                 F10000000000000000000006 /* ReadiumNavigator in Frameworks */,
                 F10000000000000000000005 /* ReadiumStreamer in Frameworks */,
                 F10000000000000000000004 /* ReadiumShared in Frameworks */,
@@ -646,6 +648,7 @@
 				F20000000000000000000001 /* SwiftSoup */,
 				F20000000000000000000002 /* Kanna */,
 				F20000000000000000000003 /* ZIPFoundation */,
+				F20000000000000000000007 /* AMSMB2 */,
                 F20000000000000000000006 /* ReadiumNavigator */,
                 F20000000000000000000005 /* ReadiumStreamer */,
                 F20000000000000000000004 /* ReadiumShared */,
@@ -687,6 +690,7 @@
 				F30000000000000000000001 /* XCRemoteSwiftPackageReference "SwiftSoup" */,
 				F30000000000000000000002 /* XCRemoteSwiftPackageReference "Kanna" */,
 				F30000000000000000000003 /* ZIPFoundation */,
+				F30000000000000000000005 /* XCRemoteSwiftPackageReference "AMSMB2" */,
                 F30000000000000000000004 /* Readium */,
 			);
 			productRefGroup = D40000000000000000000002 /* Products */;
@@ -973,6 +977,11 @@
 			repositoryURL = "https://github.com/tid-kijyun/Kanna.git";
 			requirement = { kind = exactVersion; version = 6.1.0; };
 		};
+		F30000000000000000000005 /* XCRemoteSwiftPackageReference "AMSMB2" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/amosavian/AMSMB2.git";
+			requirement = { kind = exactVersion; version = 4.0.3; };
+		};
 
 		F30000000000000000000004 /* Readium */ = {
             isa = XCRemoteSwiftPackageReference;
@@ -996,6 +1005,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = F30000000000000000000003 /* ZIPFoundation */;
 			productName = ZIPFoundation;
+		};
+		F20000000000000000000007 /* AMSMB2 */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = F30000000000000000000005 /* XCRemoteSwiftPackageReference "AMSMB2" */;
+			productName = AMSMB2;
 		};
         F20000000000000000000004 /* ReadiumShared */ = {
             isa = XCSwiftPackageProductDependency;
