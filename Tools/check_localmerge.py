@@ -14,6 +14,7 @@ SRC = os.path.join(ROOT, "App", "Features", "LocalLibrary")
 
 # iOS 17+ APIs that must not appear in LocalLibrary (iOS 15 target)
 BANNED = [
+    r"(?<!Reading)\bNavigationStack\b",
     r"\bContentUnavailableView\b",
     r"@Observable\b",
     r"\.onChange\(of:[^\{]*\{\s*_,",  # two-param onChange (iOS 17)

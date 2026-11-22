@@ -101,7 +101,7 @@ private struct LNImagePreview: View {
     @State private var image: UIImage?
 
     var body: some View {
-        NavigationStack {
+        ReadingNavigationStack {
             Group {
                 if let image {
                     Image(uiImage: image)

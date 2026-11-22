@@ -6,6 +6,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		L10000000000000000000014 /* LNInlineFlow.swift in Sources */ = {isa = PBXBuildFile; fileRef = L20000000000000000000014 /* LNInlineFlow.swift */; };
 		L1000000000000000000000F /* LNTextDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2000000000000000000000F /* LNTextDecoder.swift */; };
 		L1000000000000000000000E /* LNReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2000000000000000000000E /* LNReaderView.swift */; };
 		L1000000000000000000000D /* LNImageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2000000000000000000000D /* LNImageView.swift */; };
@@ -149,6 +150,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		L20000000000000000000014 /* LNInlineFlow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LNInlineFlow.swift; sourceTree = "<group>"; };
 		L2000000000000000000000F /* LNTextDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LNTextDecoder.swift; sourceTree = "<group>"; };
 		L2000000000000000000000E /* LNReaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LNReaderView.swift; sourceTree = "<group>"; };
 		L2000000000000000000000D /* LNImageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LNImageView.swift; sourceTree = "<group>"; };
@@ -321,6 +323,7 @@
 				L2000000000000000000000D /* LNImageView.swift */,
 				L2000000000000000000000E /* LNReaderView.swift */,
 				L2000000000000000000000F /* LNTextDecoder.swift */,
+				L20000000000000000000014 /* LNInlineFlow.swift */,
 );
 			path = Features/LocalLibrary;
 			sourceTree = "<group>";
@@ -880,6 +883,7 @@
 				L1000000000000000000000D /* LNImageView.swift in Sources */,
 				L1000000000000000000000E /* LNReaderView.swift in Sources */,
 				L1000000000000000000000F /* LNTextDecoder.swift in Sources */,
+				L10000000000000000000014 /* LNInlineFlow.swift in Sources */,
 );
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -952,7 +956,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 25;
+				CURRENT_PROJECT_VERSION = 26;
 				DEVELOPMENT_ASSET_PATHS = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = App/Info.plist;
@@ -973,7 +977,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 25;
+				CURRENT_PROJECT_VERSION = 26;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = App/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
