@@ -6,6 +6,10 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		L1000000000000000000000F /* LNTextDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2000000000000000000000F /* LNTextDecoder.swift */; };
+		L1000000000000000000000E /* LNReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2000000000000000000000E /* LNReaderView.swift */; };
+		L1000000000000000000000D /* LNImageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2000000000000000000000D /* LNImageView.swift */; };
+		L1000000000000000000000C /* LNContentLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2000000000000000000000C /* LNContentLoader.swift */; };
 		L1000000000000000000000A /* LNRoot.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2000000000000000000000A /* LNRoot.swift */; };
 		L10000000000000000000005 /* LNScanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = L20000000000000000000005 /* LNScanner.swift */; };
 		L10000000000000000000004 /* LNRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = L20000000000000000000004 /* LNRootView.swift */; };
@@ -145,6 +149,10 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		L2000000000000000000000F /* LNTextDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LNTextDecoder.swift; sourceTree = "<group>"; };
+		L2000000000000000000000E /* LNReaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LNReaderView.swift; sourceTree = "<group>"; };
+		L2000000000000000000000D /* LNImageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LNImageView.swift; sourceTree = "<group>"; };
+		L2000000000000000000000C /* LNContentLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LNContentLoader.swift; sourceTree = "<group>"; };
 		L2000000000000000000000A /* LNRoot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LNRoot.swift; sourceTree = "<group>"; };
 		L20000000000000000000005 /* LNScanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LNScanner.swift; sourceTree = "<group>"; };
 		L20000000000000000000004 /* LNRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LNRootView.swift; sourceTree = "<group>"; };
@@ -309,6 +317,10 @@
 				L20000000000000000000004 /* LNRootView.swift */,
 				L20000000000000000000005 /* LNScanner.swift */,
 							L2000000000000000000000A /* LNRoot.swift */,
+				L2000000000000000000000C /* LNContentLoader.swift */,
+				L2000000000000000000000D /* LNImageView.swift */,
+				L2000000000000000000000E /* LNReaderView.swift */,
+				L2000000000000000000000F /* LNTextDecoder.swift */,
 );
 			path = Features/LocalLibrary;
 			sourceTree = "<group>";
@@ -864,6 +876,10 @@
 				L10000000000000000000004 /* LNRootView.swift in Sources */,
 				L10000000000000000000005 /* LNScanner.swift in Sources */,
 				L1000000000000000000000A /* LNRoot.swift in Sources */,
+				L1000000000000000000000C /* LNContentLoader.swift in Sources */,
+				L1000000000000000000000D /* LNImageView.swift in Sources */,
+				L1000000000000000000000E /* LNReaderView.swift in Sources */,
+				L1000000000000000000000F /* LNTextDecoder.swift in Sources */,
 );
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -936,7 +952,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 24;
+				CURRENT_PROJECT_VERSION = 25;
 				DEVELOPMENT_ASSET_PATHS = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = App/Info.plist;
@@ -957,7 +973,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 24;
+				CURRENT_PROJECT_VERSION = 25;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = App/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.0;

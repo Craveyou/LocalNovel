@@ -149,10 +149,14 @@ struct LNChapterListView: View {
 
     var body: some View {
         List(book.chapters) { chapter in
-            HStack {
-                Image(systemName: symbol(for: chapter.kind))
-                    .foregroundStyle(ReadingTheme.accent)
-                Text(chapter.displayName).foregroundStyle(.primary)
+            NavigationLink {
+                LNReaderView(book: book, chapter: chapter, source: source)
+            } label: {
+                HStack {
+                    Image(systemName: symbol(for: chapter.kind))
+                        .foregroundStyle(ReadingTheme.accent)
+                    Text(chapter.displayName).foregroundStyle(.primary)
+                }
             }
         }
         .navigationTitle(book.title)
