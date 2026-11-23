@@ -202,6 +202,79 @@ struct NASEntry: Identifiable, Hashable, Sendable {
     let size: Int64
 }
 
+/// WebDAV 实际命中的接入点。
+/// 飞牛默认 5005(HTTP) / 5006(HTTPS)，但常见环境只映射了其中一个端口，
+/// 或者只在路由器/反代上放了 443。探测成功后记住命中的组合，后续直接用。
+struct FeiniuWebDAVEndpoint: Hashable, Sendable {
+    var scheme: String
+    var port: Int
+
+    var label: String { "\(scheme)://…:\(port)" }
+
+    /// 标准端口不写进 URL：部分反向代理对带端口的 Host 头不认
+    var usesStandardPort: Bool {
+        (scheme == "https" && port == 443) || (scheme == "http" && port == 80)
+    }
+}
+
+enum FeiniuEndpointStore {
+    private static func key(_ id: UUID) -> String { "nas.feiniu.webdav.endpoint." + id.uuidString }
+
+    static func endpoint(for connection: FeiniuConnection) -> FeiniuWebDAVEndpoint? {
+        guard let raw = UserDefaults.standard.string(forKey: key(connection.id)) else { return nil }
+        let parts = raw.split(separator: "|")
+        guard parts.count == 2, let port = Int(parts[1]) else { return nil }
+        return FeiniuWebDAVEndpoint(scheme: String(parts[0]), port: port)
+    }
+
+    static func store(_ endpoint: FeiniuWebDAVEndpoint, for connection: FeiniuConnection) {
+        UserDefaults.standard.set("\(endpoint.scheme)|\(endpoint.port)", forKey: key(connection.id))
+    }
+
+    static func clear(for connection: FeiniuConnection) {
+        UserDefaults.standard.removeObject(forKey: key(connection.id))
+    }
+}
+
+/// 把网络错误翻译成「该去检查哪里」，而不是甩一句 The request timed out。
+enum NASDiagnostics {
+    static func short(_ error: Error) -> String {
+        if let feiniu = error as? FeiniuError {
+            switch feiniu {
+            case .http(let code):
+                return code == 400 || code == 405
+                    ? "HTTP \(code)（该端口不是 WebDAV 服务）"
+                    : feiniu.errorDescription ?? "HTTP \(code)"
+            case .webdav(let detail):
+                return detail
+            default:
+                return feiniu.errorDescription ?? "未知错误"
+            }
+        }
+        guard let urlError = error as? URLError else { return error.localizedDescription }
+        switch urlError.code {
+        case .cannotFindHost, .dnsLookupFailed:
+            return "域名解析失败（检查域名拼写与 DDNS 是否更新）"
+        case .cannotConnectToHost:
+            return "端口未开放（连接被拒绝：服务未启用或未做端口映射）"
+        case .timedOut:
+            return "连接超时（端口被防火墙拦、映射错误，或 IPv6 不可达）"
+        case .secureConnectionFailed, .serverCertificateUntrusted,
+             .serverCertificateHasBadDate, .serverCertificateNotYetValid,
+             .serverCertificateHasUnknownRoot:
+            return "TLS 证书错误"
+        case .notConnectedToInternet:
+            return "设备当前没有网络"
+        case .networkConnectionLost:
+            return "连接被中断（切换网络或服务器断开）"
+        case .badURL, .unsupportedURL:
+            return "地址格式不对"
+        default:
+            return "网络错误 \(urlError.code.rawValue)"
+        }
+    }
+}
+
 private enum FeiniuError: LocalizedError {
     case invalidAddress
     case missingShare
@@ -209,6 +282,7 @@ private enum FeiniuError: LocalizedError {
     case nonHTTP
     case invalidXML
     case smb(String)
+    case webdav(String)
     case noLink(smbHost: String, smbError: String, webdavHost: String, webdavError: String)
 
     var errorDescription: String? {
@@ -225,8 +299,9 @@ private enum FeiniuError: LocalizedError {
         case .nonHTTP: "服务器返回的不是 HTTP 响应"
         case .invalidXML: "WebDAV 返回的目录数据无法解析"
         case .smb(let detail): "SMB 连接失败：\(detail)"
+        case .webdav(let detail): "外网 WebDAV 连不上：\(detail)"
         case .noLink(let smbHost, let smbError, let webdavHost, let webdavError):
-            "两条链路都不可用。内网 SMB（\(smbHost)）：\(smbError)；外网 WebDAV（\(webdavHost)）：\(webdavError)。请分别检查内网 IP 与外网域名，及飞牛「文件服务」中 SMB / WebDAV 是否已启用。"
+            "两条链路都不可用。内网 SMB（\(smbHost)）：\(smbError)；外网 WebDAV（\(webdavHost)）：\(webdavError)。请检查：① 飞牛「文件服务」里 SMB / WebDAV 是否已启用；② 路由器是否把外部 5005、5006 映射到 NAS；③ 域名若同时有 IPv6 记录而 IPv6 不通，蜂窝网络会先试 IPv6 导致超时。"
         }
     }
 }
@@ -402,9 +477,54 @@ private enum FeiniuSMB {
 
 /// 飞牛 WebDAV 最小实现：PROPFIND 探测与列目录、GET 下载。
 private enum FeiniuWebDAV {
-    static func probe(_ connection: FeiniuConnection, timeout: TimeInterval = 8) async throws {
+    /// 候选端点：用户配置的排第一，再补飞牛常见的 5005/5006/443。
+    /// 很多失败不是账号问题，而是公网只映射了其中一个端口。
+    static func candidates(for connection: FeiniuConnection) -> [FeiniuWebDAVEndpoint] {
+        var list = [FeiniuWebDAVEndpoint(scheme: connection.webdavScheme,
+                                         port: connection.webdavPort)]
+        let common = [
+            FeiniuWebDAVEndpoint(scheme: "http", port: 5005),
+            FeiniuWebDAVEndpoint(scheme: "https", port: 5006),
+            FeiniuWebDAVEndpoint(scheme: "https", port: 443),
+            FeiniuWebDAVEndpoint(scheme: "http", port: 5006),
+            FeiniuWebDAVEndpoint(scheme: "https", port: 5005)
+        ]
+        for item in common where !list.contains(item) { list.append(item) }
+        // 上次命中的端点排最前，避免每次进来都从错端口试起
+        if let stored = FeiniuEndpointStore.endpoint(for: connection),
+           let index = list.firstIndex(of: stored) {
+            list.remove(at: index)
+            list.insert(stored, at: 0)
+        }
+        return list
+    }
+
+    /// 逐个候选端点试 PROPFIND；成功即记住该端点。
+    /// 全部失败时把每个端点的失败原因汇总抛出，方便直接判断是端口没映射还是服务没开。
+    static func probe(_ connection: FeiniuConnection, timeout: TimeInterval = 12) async throws {
+        var notes: [String] = []
+        var isFirst = true
+        for endpoint in candidates(for: connection) {
+            // 用户配置的那个给足超时，其余快速试错
+            let budget = isFirst ? timeout : 5
+            isFirst = false
+            do {
+                try await probe(connection, endpoint: endpoint, timeout: budget)
+                FeiniuEndpointStore.store(endpoint, for: connection)
+                return
+            } catch {
+                notes.append("\(endpoint.label) \(NASDiagnostics.short(error))")
+            }
+        }
+        FeiniuEndpointStore.clear(for: connection)
+        throw FeiniuError.webdav(notes.joined(separator: "；"))
+    }
+
+    static func probe(_ connection: FeiniuConnection,
+                      endpoint: FeiniuWebDAVEndpoint,
+                      timeout: TimeInterval) async throws {
         let (_, response) = try await request(connection, method: "PROPFIND", path: connection.webdavRootPath,
-                                              depth: "0", timeout: timeout)
+                                              depth: "0", timeout: timeout, endpoint: endpoint)
         guard response.statusCode == 200 || response.statusCode == 207 else {
             throw FeiniuError.http(response.statusCode)
         }
@@ -446,8 +566,8 @@ private enum FeiniuWebDAV {
         return target
     }
 
-    private static func request(_ connection: FeiniuConnection, method: String, path: String, depth: String?, timeout: TimeInterval = 25) async throws -> (Data, HTTPURLResponse) {
-        var urlRequest = try makeRequest(connection, method: method, path: path, timeout: timeout)
+    private static func request(_ connection: FeiniuConnection, method: String, path: String, depth: String?, timeout: TimeInterval = 25, endpoint: FeiniuWebDAVEndpoint? = nil) async throws -> (Data, HTTPURLResponse) {
+        var urlRequest = try makeRequest(connection, method: method, path: path, timeout: timeout, endpoint: endpoint)
         if let depth { urlRequest.setValue(depth, forHTTPHeaderField: "Depth") }
         if method == "PROPFIND" { urlRequest.setValue("application/xml; charset=utf-8", forHTTPHeaderField: "Content-Type") }
         let session = makeSession()
@@ -457,12 +577,17 @@ private enum FeiniuWebDAV {
         return (data, http)
     }
 
-    private static func makeRequest(_ connection: FeiniuConnection, method: String, path: String, timeout: TimeInterval = 25) throws -> URLRequest {
-        guard !connection.webdavHost.isEmpty, (1...65535).contains(connection.webdavPort) else { throw FeiniuError.invalidAddress }
+    private static func makeRequest(_ connection: FeiniuConnection, method: String, path: String, timeout: TimeInterval = 25, endpoint: FeiniuWebDAVEndpoint? = nil) throws -> URLRequest {
+        guard !connection.webdavHost.isEmpty else { throw FeiniuError.invalidAddress }
+        // 优先用探测命中的端点（可能是 5006 或 443），否则回到用户配置
+        let target = endpoint
+            ?? FeiniuEndpointStore.endpoint(for: connection)
+            ?? FeiniuWebDAVEndpoint(scheme: connection.webdavScheme, port: connection.webdavPort)
+        guard (1...65535).contains(target.port) else { throw FeiniuError.invalidAddress }
         var components = URLComponents()
-        components.scheme = connection.webdavScheme
+        components.scheme = target.scheme
         components.host = connection.webdavHost
-        components.port = connection.webdavPort
+        components.port = target.usesStandardPort ? nil : target.port
         let target = path.isEmpty ? "/" : path
         components.path = target.hasPrefix("/") ? target : "/" + target
         guard let url = components.url else { throw FeiniuError.invalidAddress }
@@ -553,7 +678,7 @@ enum FeiniuNASService {
                 store(proto, for: connection)
                 return proto
             } catch {
-                failures[proto] = error.localizedDescription
+                failures[proto] = NASDiagnostics.short(error)
             }
         }
         throw FeiniuError.noLink(

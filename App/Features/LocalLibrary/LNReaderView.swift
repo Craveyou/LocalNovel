@@ -9,6 +9,8 @@ struct LNReaderView: View {
     @State private var content: LNChapterContent?
     @State private var errorMessage: String?
     @State private var showingImage: LNMediaItem?
+    /// 图文混排结果只算一次：放在 body 里的话，每次状态变化都要重跑一遍正则解析
+    @State private var flow: [LNInlineFlow.Block] = []
 
     var body: some View {
         Group {
@@ -24,6 +26,7 @@ struct LNReaderView: View {
         .background(ReadingTheme.canvas.ignoresSafeArea())
         .navigationTitle(chapter.displayName)
         .navigationBarTitleDisplayMode(.inline)
+        .lnHidesTabBar()
         .task(id: chapter.id) { await load() }
         .sheet(item: $showingImage) { item in
             LNImagePreview(item: item, source: source)
@@ -40,9 +43,6 @@ struct LNReaderView: View {
         } else {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 14) {
-                    let flow = LNInlineFlow.blocks(paragraphs: content.paragraphs,
-                                                   images: content.images,
-                                                   category: book.category)
                     if flow.isEmpty {
                         // 原排布：正文逐段 → 插图 → 章末媒体
                         ForEach(content.paragraphs.indices, id: \.self) { i in
@@ -105,6 +105,9 @@ struct LNReaderView: View {
                 .padding(.horizontal, 18)
                 .padding(.vertical, 14)
             }
+            // 逐段开启 textSelection 会为每个 Text 建一套选择层，滚动很吃亏；
+            // 挂在 ScrollView 上效果一样，开销只算一次。
+            .textSelection(.enabled)
         }
     }
 
@@ -113,7 +116,6 @@ struct LNReaderView: View {
             .font(.body)
             .foregroundStyle(ReadingTheme.ink)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .textSelection(.enabled)
     }
 
     private func sectionLabel(_ text: String) -> some View {
@@ -125,12 +127,31 @@ struct LNReaderView: View {
 
     private func load() async {
         do {
-            content = try await LNContentLoader.load(chapter, source: source)
+            let loaded = try await LNContentLoader.load(chapter, source: source)
+            flow = LNInlineFlow.blocks(paragraphs: loaded.paragraphs,
+                                       images: loaded.images,
+                                       category: book.category)
+            content = loaded
             errorMessage = nil
+            await prefetchImages(loaded)
         } catch {
             errorMessage = error.localizedDescription
             content = nil
+            flow = []
         }
+    }
+
+    /// 预取前几张图：等滚动到图片位置时解码已经在后台完成，不会有白块和卡顿
+    private func prefetchImages(_ content: LNChapterContent) async {
+        guard !content.images.isEmpty else { return }
+        // 与 LNImageView 的解码边长保持一致，才能命中同一份缓存
+        let maxPixel: CGFloat = 1440
+        var urls: [URL] = []
+        for item in content.images.prefix(8) {
+            if let url = try? await source.localURL(for: item.path) { urls.append(url) }
+        }
+        guard !urls.isEmpty else { return }
+        LNImageLoader.shared.prefetch(urls, maxPixel: maxPixel)
     }
 }
 

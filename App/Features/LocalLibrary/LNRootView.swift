@@ -126,6 +126,7 @@ struct LNBookListView: View {
         }
         .navigationTitle(category.label)
         .navigationBarTitleDisplayMode(.inline)
+        .lnShowsTabBar()
         .refreshable { await load() }
         .task { await load() }
         .alert("读取失败", isPresented: Binding(get: { errorMessage != nil },
@@ -168,6 +169,7 @@ struct LNChapterListView: View {
         }
         .navigationTitle(book.title)
         .navigationBarTitleDisplayMode(.inline)
+        .lnShowsTabBar()
     }
 
     private func symbol(for kind: LNChapterKind) -> String {

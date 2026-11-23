@@ -6,6 +6,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		L1000000000000000000001F /* LNTabBarVisibility.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2000000000000000000001F /* LNTabBarVisibility.swift */; };
+		L1000000000000000000001E /* LNImageLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2000000000000000000001E /* LNImageLoader.swift */; };
 		L1000000000000000000001C /* LNNASCategoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2000000000000000000001C /* LNNASCategoryView.swift */; };
 		L1000000000000000000001A /* LNVideoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2000000000000000000001A /* LNVideoView.swift */; };
 		L10000000000000000000018 /* LNAnimatedImageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = L20000000000000000000018 /* LNAnimatedImageView.swift */; };
@@ -154,6 +156,8 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		L2000000000000000000001F /* LNTabBarVisibility.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LNTabBarVisibility.swift; sourceTree = "<group>"; };
+		L2000000000000000000001E /* LNImageLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LNImageLoader.swift; sourceTree = "<group>"; };
 		L2000000000000000000001C /* LNNASCategoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LNNASCategoryView.swift; sourceTree = "<group>"; };
 		L2000000000000000000001A /* LNVideoView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LNVideoView.swift; sourceTree = "<group>"; };
 		L20000000000000000000018 /* LNAnimatedImageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LNAnimatedImageView.swift; sourceTree = "<group>"; };
@@ -336,6 +340,8 @@
 				L20000000000000000000018 /* LNAnimatedImageView.swift */,
 				L2000000000000000000001A /* LNVideoView.swift */,
 				L2000000000000000000001C /* LNNASCategoryView.swift */,
+				L2000000000000000000001E /* LNImageLoader.swift */,
+				L2000000000000000000001F /* LNTabBarVisibility.swift */,
 );
 			path = Features/LocalLibrary;
 			sourceTree = "<group>";
@@ -900,6 +906,8 @@
 				L10000000000000000000018 /* LNAnimatedImageView.swift in Sources */,
 				L1000000000000000000001A /* LNVideoView.swift in Sources */,
 				L1000000000000000000001C /* LNNASCategoryView.swift in Sources */,
+				L1000000000000000000001E /* LNImageLoader.swift in Sources */,
+				L1000000000000000000001F /* LNTabBarVisibility.swift in Sources */,
 );
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -972,7 +980,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 32;
+				CURRENT_PROJECT_VERSION = 33;
 				DEVELOPMENT_ASSET_PATHS = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = App/Info.plist;
@@ -993,7 +1001,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 32;
+				CURRENT_PROJECT_VERSION = 33;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = App/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.0;

@@ -17,19 +17,38 @@ private final class LNFrameBox: NSObject {
     init(_ frames: [LNAnimatedFrame]) { self.frames = frames }
 }
 
+/// 跨并发域传递帧数组（UIImage 非 Sendable）
+struct LNAnimatedFramesPayload: @unchecked Sendable {
+    let frames: [LNAnimatedFrame]
+}
+
 /// NSCache 本身线程安全；加 @unchecked Sendable 仅用于 Swift 6 静态属性检查。
 final class LNAnimatedFrameCache: @unchecked Sendable {
     static let shared = LNAnimatedFrameCache()
     private let cache = NSCache<NSURL, LNFrameBox>()
+    private let queue = DispatchQueue(label: "ln.animated.decode",
+                                      qos: .userInitiated,
+                                      attributes: .concurrent)
 
-    private init() { cache.countLimit = 12 }
+    private init() { cache.countLimit = 6 }
 
-    func frames(for url: URL) -> [LNAnimatedFrame] {
-        let key = url as NSURL
-        if let box = cache.object(forKey: key) { return box.frames }
-        let decoded = LNAnimatedDecoder.decode(url: url)
-        cache.setObject(LNFrameBox(decoded), forKey: key)
-        return decoded
+    /// 只查缓存，不触发解码（主线程安全）
+    func cached(for url: URL) -> [LNAnimatedFrame]? {
+        cache.object(forKey: url as NSURL)?.frames
+    }
+
+    /// 后台解帧；主线程绝不参与
+    func load(url: URL) async -> LNAnimatedFramesPayload {
+        if let hit = cached(for: url) { return LNAnimatedFramesPayload(frames: hit) }
+        return await withCheckedContinuation { continuation in
+            queue.async {
+                let decoded = LNAnimatedDecoder.decode(url: url)
+                if !decoded.isEmpty {
+                    self.cache.setObject(LNFrameBox(decoded), forKey: url as NSURL)
+                }
+                continuation.resume(returning: LNAnimatedFramesPayload(frames: decoded))
+            }
+        }
     }
 }
 
@@ -39,7 +58,9 @@ enum LNAnimatedDecoder {
         return CGImageSourceGetCount(source) > 1
     }
 
-    static func decode(url: URL, maxFrames: Int = 90, maxDimension: Int = 1200) -> [LNAnimatedFrame] {
+    /// 帧数与单边尺寸都收紧：90 帧 1200px 一次解码要吃几百 MB，
+    /// 45 帧 1000px 在手机上看不出差别，内存和耗时都减半。
+    static func decode(url: URL, maxFrames: Int = 45, maxDimension: Int = 1000) -> [LNAnimatedFrame] {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return [] }
         let count = CGImageSourceGetCount(source)
         guard count > 1 else {
@@ -137,6 +158,12 @@ final class LNAnimatedFrameView: UIView {
         imageView.frame = bounds
     }
 
+    /// 帧还没解好时先显示首帧静态图，避免大白块
+    func setPlaceholder(_ image: UIImage?) {
+        guard frames.isEmpty else { return }
+        imageView.image = image
+    }
+
     func configure(url: URL, frames: [LNAnimatedFrame]) {
         guard currentURL != url, !frames.isEmpty else { return }
         currentURL = url
@@ -193,16 +220,46 @@ final class LNAnimatedFrameView: UIView {
     }
 }
 
-struct LNAnimatedImageView: UIViewRepresentable {
+/// 动图视图（SwiftUI 壳）：帧数据在后台解，解好再交给 UIView 播放。
+/// 之前直接在 updateUIView 里同步解帧，等于每次刷新都在主线程卡一次，是滚动卡顿的元凶之一。
+struct LNAnimatedImageView: View {
     let url: URL
     let isVisible: Bool
+    var placeholder: UIImage?
+
+    @State private var frames: [LNAnimatedFrame] = []
+
+    var body: some View {
+        LNAnimatedFrameRepresentable(url: url,
+                                     frames: frames,
+                                     isVisible: isVisible,
+                                     placeholder: placeholder)
+            .task(id: "\(url.absoluteString)|\(isVisible)") {
+                if let hit = LNAnimatedFrameCache.shared.cached(for: url) {
+                    frames = hit
+                    return
+                }
+                guard isVisible else { return }   // 没上屏不解码
+                frames = (await LNAnimatedFrameCache.shared.load(url: url)).frames
+            }
+    }
+}
+
+struct LNAnimatedFrameRepresentable: UIViewRepresentable {
+    let url: URL
+    let frames: [LNAnimatedFrame]
+    let isVisible: Bool
+    let placeholder: UIImage?
 
     func makeUIView(context: Context) -> LNAnimatedFrameView {
         LNAnimatedFrameView(frame: .zero)
     }
 
     func updateUIView(_ uiView: LNAnimatedFrameView, context: Context) {
-        uiView.configure(url: url, frames: LNAnimatedFrameCache.shared.frames(for: url))
+        uiView.setPlaceholder(placeholder)
+        if !frames.isEmpty {
+            uiView.configure(url: url, frames: frames)
+        }
         if isVisible { uiView.start() } else { uiView.stop() }
     }
 
