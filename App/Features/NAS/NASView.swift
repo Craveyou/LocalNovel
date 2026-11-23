@@ -580,14 +580,14 @@ private enum FeiniuWebDAV {
     private static func makeRequest(_ connection: FeiniuConnection, method: String, path: String, timeout: TimeInterval = 25, endpoint: FeiniuWebDAVEndpoint? = nil) throws -> URLRequest {
         guard !connection.webdavHost.isEmpty else { throw FeiniuError.invalidAddress }
         // 优先用探测命中的端点（可能是 5006 或 443），否则回到用户配置
-        let target = endpoint
+        let resolved = endpoint
             ?? FeiniuEndpointStore.endpoint(for: connection)
             ?? FeiniuWebDAVEndpoint(scheme: connection.webdavScheme, port: connection.webdavPort)
-        guard (1...65535).contains(target.port) else { throw FeiniuError.invalidAddress }
+        guard (1...65535).contains(resolved.port) else { throw FeiniuError.invalidAddress }
         var components = URLComponents()
-        components.scheme = target.scheme
+        components.scheme = resolved.scheme
         components.host = connection.webdavHost
-        components.port = target.usesStandardPort ? nil : target.port
+        components.port = resolved.usesStandardPort ? nil : resolved.port
         let target = path.isEmpty ? "/" : path
         components.path = target.hasPrefix("/") ? target : "/" + target
         guard let url = components.url else { throw FeiniuError.invalidAddress }

@@ -40,25 +40,31 @@ extension View {
 
 enum LNTabBarController {
     static func setHidden(_ hidden: Bool) {
-        DispatchQueue.main.async {
-            guard let controller = find() else { return }
-            guard controller.tabBar.isHidden != hidden else { return }
-            UIView.performWithoutAnimation {
-                controller.tabBar.isHidden = hidden
-                controller.view.setNeedsLayout()
-                controller.view.layoutIfNeeded()
-            }
+        Task { @MainActor in apply(hidden) }
+    }
+
+    @MainActor
+    private static func apply(_ hidden: Bool) {
+        guard let controller = find() else { return }
+        guard controller.tabBar.isHidden != hidden else { return }
+        UIView.performWithoutAnimation {
+            controller.tabBar.isHidden = hidden
+            controller.view.setNeedsLayout()
+            controller.view.layoutIfNeeded()
         }
     }
 
+    @MainActor
     private static func find() -> UITabBarController? {
         let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
-        let windows = scenes.flatMap(\.windows)
-        let root = windows.first(where: \.isKeyWindow)?.rootViewController
-            ?? windows.first?.rootViewController
-        return find(in: root)
+        // 不用 keypath：UIWindowScene.windows / UIWindow.isKeyWindow 都是主线程隔离属性
+        var allWindows: [UIWindow] = []
+        for scene in scenes { allWindows.append(contentsOf: scene.windows) }
+        let keyWindow = allWindows.first { $0.isKeyWindow } ?? allWindows.first
+        return find(in: keyWindow?.rootViewController)
     }
 
+    @MainActor
     private static func find(in controller: UIViewController?) -> UITabBarController? {
         guard let controller else { return nil }
         if let tab = controller as? UITabBarController { return tab }
