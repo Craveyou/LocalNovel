@@ -1,5 +1,6 @@
 import SwiftUI
 import Network
+import Security
 #if canImport(FoundationXML)
 import FoundationXML
 #endif
@@ -236,6 +237,32 @@ enum FeiniuEndpointStore {
     }
 }
 
+/// 域名在本机实际解析出的 IP。用于区分「域名被别人解析到别处（WiFi 劫持 / 陈旧 DDNS）」与「服务没开」。
+enum NASDNSLookup {
+    static func addresses(of host: String) -> [String] {
+        var hints = addrinfo()
+        hints.ai_family = AF_UNSPEC
+        hints.ai_socktype = SOCK_STREAM
+        var result: UnsafeMutablePointer<addrinfo>?
+        guard getaddrinfo(host, nil, &hints, &result) == 0, let head = result else { return [] }
+        defer { freeaddrinfo(result) }
+        var output: [String] = []
+        var cursor: UnsafeMutablePointer<addrinfo>? = head
+        while let current = cursor {
+            if let address = current.pointee.ai_addr {
+                var buffer = [CChar](repeating: 0, count: 128)
+                if getnameinfo(address, current.pointee.ai_addrlen,
+                               &buffer, socklen_t(buffer.count), nil, 0, NI_NUMERICHOST) == 0 {
+                    let ip = String(cString: buffer)
+                    if !ip.isEmpty, !output.contains(ip) { output.append(ip) }
+                }
+            }
+            cursor = current.pointee.ai_next
+        }
+        return output
+    }
+}
+
 /// 把网络错误翻译成「该去检查哪里」，而不是甩一句 The request timed out。
 enum NASDiagnostics {
     static func short(_ error: Error) -> String {
@@ -254,15 +281,21 @@ enum NASDiagnostics {
         guard let urlError = error as? URLError else { return error.localizedDescription }
         switch urlError.code {
         case .cannotFindHost, .dnsLookupFailed:
-            return "域名解析失败（检查域名拼写与 DDNS 是否更新）"
+            return "域名解析失败（DNS 劫持/DDNS 未更新？）"
         case .cannotConnectToHost:
             return "端口未开放（连接被拒绝：服务未启用或未做端口映射）"
         case .timedOut:
             return "连接超时（端口被防火墙拦、映射错误，或 IPv6 不可达）"
-        case .secureConnectionFailed, .serverCertificateUntrusted,
-             .serverCertificateHasBadDate, .serverCertificateNotYetValid,
-             .serverCertificateHasUnknownRoot:
-            return "TLS 证书错误"
+        case .secureConnectionFailed:
+            return "TLS 握手失败（-1200，网络中断或代理/门户干扰）"
+        case .serverCertificateUntrusted:
+            return "TLS 证书不可信（-1202）"
+        case .serverCertificateHasBadDate:
+            return "TLS 证书过期（-1201）"
+        case .serverCertificateNotYetValid:
+            return "TLS 证书未生效（-1204）"
+        case .serverCertificateHasUnknownRoot:
+            return "TLS 证书根不受信任（-1203）"
         case .notConnectedToInternet:
             return "设备当前没有网络"
         case .networkConnectionLost:
@@ -270,7 +303,7 @@ enum NASDiagnostics {
         case .badURL, .unsupportedURL:
             return "地址格式不对"
         default:
-            return "网络错误 \(urlError.code.rawValue)"
+            return "网络错误（\(urlError.code.rawValue)）"
         }
     }
 }
@@ -311,14 +344,36 @@ private enum FeiniuError: LocalizedError {
 private final class FeiniuTrustDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     static let shared = FeiniuTrustDelegate()
 
+    private let lock = NSLock()
+    private var certificateNote: String?
+
+    /// 最近一次 TLS 挑战里看到的服务器证书主体。
+    /// 如果 App 报证书错误但这里记的是别人的域名，基本就是 WiFi 门户/抓包代理在换证。
+    static func lastCertificateNote() -> String? {
+        shared.lock.lock(); defer { shared.lock.unlock() }
+        return shared.certificateNote
+    }
+
+    static func resetNote() {
+        shared.lock.lock(); shared.certificateNote = nil; shared.lock.unlock()
+    }
+
     func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge,
                     completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
         if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
            let trust = challenge.protectionSpace.serverTrust {
+            let note = Self.subject(of: trust)
+            lock.lock(); certificateNote = note; lock.unlock()
             completionHandler(.useCredential, URLCredential(trust: trust))
         } else {
             completionHandler(.performDefaultHandling, nil)
         }
+    }
+
+    private static func subject(of trust: SecTrust) -> String? {
+        guard let chain = SecTrustCopyCertificateChain(trust) as? [SecCertificate],
+              let leaf = chain.first else { return nil }
+        return SecCertificateCopySubjectSummary(leaf) as String?
     }
 }
 
@@ -500,7 +555,8 @@ private enum FeiniuWebDAV {
     }
 
     /// 逐个候选端点试 PROPFIND；成功即记住该端点。
-    /// 全部失败时把每个端点的失败原因汇总抛出，方便直接判断是端口没映射还是服务没开。
+    /// 全部失败时把每个端点的失败原因（含错误码与服务器证书 CN）汇总抛出，
+    /// 这样截图就能分辨是「端口没开」「证书被换（被抓包/门户认证）」还是「账号不对」。
     static func probe(_ connection: FeiniuConnection, timeout: TimeInterval = 12) async throws {
         var notes: [String] = []
         var isFirst = true
@@ -508,26 +564,50 @@ private enum FeiniuWebDAV {
             // 用户配置的那个给足超时，其余快速试错
             let budget = isFirst ? timeout : 5
             isFirst = false
+            FeiniuTrustDelegate.resetNote()
             do {
-                try await probe(connection, endpoint: endpoint, timeout: budget)
-                FeiniuEndpointStore.store(endpoint, for: connection)
+                let hit = try await verify(connection, endpoint: endpoint, timeout: budget)
+                FeiniuEndpointStore.store(hit, for: connection)
                 return
             } catch {
-                notes.append("\(endpoint.label) \(NASDiagnostics.short(error))")
+                var note = "\(endpoint.label) \(NASDiagnostics.short(error))"
+                if let cert = FeiniuTrustDelegate.lastCertificateNote() {
+                    note += "［证书 \(cert)］"
+                }
+                notes.append(note)
             }
         }
         FeiniuEndpointStore.clear(for: connection)
-        throw FeiniuError.webdav(notes.joined(separator: "；"))
+        var summary = notes.joined(separator: "；")
+        let host = connection.webdavHost
+        let ips = await Task.detached(priority: .userInitiated) { NASDNSLookup.addresses(of: host) }.value
+        if !ips.isEmpty {
+            summary += "（本机解析 \(host) → \(ips.joined(separator: ", "))）"
+        }
+        throw FeiniuError.webdav(summary)
     }
 
-    static func probe(_ connection: FeiniuConnection,
-                      endpoint: FeiniuWebDAVEndpoint,
-                      timeout: TimeInterval) async throws {
+    /// 验证单个端点；明文端点遇到 3xx 会自动升级到 HTTPS 再试一次
+    /// （飞牛 / nginx 默认把 http 重定向到 https，旧逻辑会把它当失败）。
+    /// 返回实际生效的端点（可能是升级后的 https）。
+    private static func verify(_ connection: FeiniuConnection,
+                               endpoint: FeiniuWebDAVEndpoint,
+                               timeout: TimeInterval) async throws -> FeiniuWebDAVEndpoint {
         let (_, response) = try await request(connection, method: "PROPFIND", path: connection.webdavRootPath,
                                               depth: "0", timeout: timeout, endpoint: endpoint)
+        if endpoint.scheme == "http", (300...399).contains(response.statusCode) {
+            let upgraded = FeiniuWebDAVEndpoint(scheme: "https", port: endpoint.port)
+            let (_, again) = try await request(connection, method: "PROPFIND", path: connection.webdavRootPath,
+                                               depth: "0", timeout: timeout, endpoint: upgraded)
+            guard again.statusCode == 200 || again.statusCode == 207 else {
+                throw FeiniuError.http(again.statusCode)
+            }
+            return upgraded
+        }
         guard response.statusCode == 200 || response.statusCode == 207 else {
             throw FeiniuError.http(response.statusCode)
         }
+        return endpoint
     }
 
     static func list(_ connection: FeiniuConnection, path: String) async throws -> [NASEntry] {
@@ -1038,7 +1118,11 @@ struct FeiniuConnectionFormView: View {
                     }
                     .pickerStyle(.segmented)
                     .onChange(of: webdavScheme) { newValue in
-                        webdavPort = newValue == "https" ? "5006" : "5005"
+                        // 只在端口还是默认值时跟着换，别把用户填的 12300 这类自定义端口冲掉
+                        let isDefaultPort = webdavPort.isEmpty || webdavPort == "5005" || webdavPort == "5006"
+                        if isDefaultPort {
+                            webdavPort = newValue == "https" ? "5006" : "5005"
+                        }
                     }
                     TextField("端口", text: $webdavPort)
                         .keyboardType(.numberPad)
