@@ -12,6 +12,8 @@ protocol LNLibrarySource: Sendable {
     func localURL(for path: String) async throws -> URL
     /// 判断文件是否存在（用于媒体渲染前的检查）
     func exists(at path: String) -> Bool
+    /// 删除一个条目（文件或目录，目录递归删除）。path 语义与 list/localURL 一致。
+    func remove(at path: String) async throws
 }
 
 // MARK: - 本地文件源
@@ -50,6 +52,19 @@ struct LNLocalSource: LNLibrarySource {
 
     func exists(at path: String) -> Bool {
         FileManager.default.fileExists(atPath: url(for: path).path)
+    }
+
+    func remove(at path: String) async throws {
+        let target = url(for: path)
+        // 只允许删本地书库根目录之内的条目，防路径穿越
+        let root = rootURL.standardizedFileURL.path
+        guard target.standardizedFileURL.path.hasPrefix(root + "/") else {
+            throw LNError.outsideLibrary(path)
+        }
+        guard FileManager.default.fileExists(atPath: target.path) else {
+            throw LNError.notFound(path)
+        }
+        try FileManager.default.removeItem(at: target)
     }
 
     private func url(for path: String) -> URL {
@@ -97,6 +112,16 @@ struct LNNASSource: LNLibrarySource {
         true
     }
 
+    func remove(at path: String) async throws {
+        let full = fullPath(path)
+        let parent = (full as NSString).deletingLastPathComponent
+        let name = (full as NSString).lastPathComponent
+        // 先查是文件还是目录（命中缓存则零成本）
+        let entries = try await FeiniuNASService.list(connection, path: parent)
+        let entry = entries.first(where: { $0.name == name })
+        try await FeiniuNASService.remove(connection, path: full, isDirectory: entry?.isDirectory ?? false)
+    }
+
     private func fullPath(_ path: String) -> String {
         let rel = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let root = rootPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
@@ -113,11 +138,13 @@ struct LNNASSource: LNLibrarySource {
 enum LNError: LocalizedError {
     case notFound(String)
     case unsupported(String)
+    case outsideLibrary(String)
 
     var errorDescription: String? {
         switch self {
         case .notFound(let p): return "找不到文件：\(p)"
         case .unsupported(let e): return "不支持的格式：\(e)"
+        case .outsideLibrary(let p): return "不能删除书库之外的文件：\(p)"
         }
     }
 }

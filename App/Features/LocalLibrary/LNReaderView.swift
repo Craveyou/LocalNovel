@@ -1,10 +1,23 @@
 import SwiftUI
 
+/// 章末「下一章」跳转的共享状态：阅读页写入目标后 dismiss，章节列表读取后 push。
+/// 用 @MainActor 单例满足 Swift 6 严格并发；只在主线程读写。
+@MainActor
+final class LNReaderNavigation {
+    static let shared = LNReaderNavigation()
+    var pending: LNChapter?
+    private init() {}
+}
+
 /// 三类共用阅读页（阶段 2：正文 + 插图；阶段 3 起加 [图NN] 混排；阶段 4-6 加媒体）。
 struct LNReaderView: View {
     let book: LNBook
     let chapter: LNChapter
     let source: any LNLibrarySource
+    /// 完整章节列表（用于末尾「下一章」跳转）；不传则无跳转
+    var chapters: [LNChapter] = []
+
+    @Environment(\.dismiss) private var dismiss
 
     @State private var content: LNChapterContent?
     @State private var errorMessage: String?
@@ -101,6 +114,28 @@ struct LNReaderView: View {
                             .font(.caption)
                             .foregroundStyle(ReadingTheme.ink.opacity(0.4))
                     }
+                    if let next = nextChapter {
+                        // 章末跳转：把目标记到共享状态后返回列表，由列表push下一章，避免深层堆叠
+                        Button {
+                            LNReaderNavigation.shared.pending = next
+                            dismiss()
+                        } label: {
+                            HStack(spacing: 8) {
+                                Text("下一章：\(next.displayName)")
+                                    .font(.subheadline.weight(.semibold))
+                                Image(systemName: "chevron.right")
+                                    .font(.caption.weight(.semibold))
+                            }
+                            .foregroundStyle(ReadingTheme.accent)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 14)
+                            .background(ReadingTheme.groupedCanvas,
+                                        in: RoundedRectangle(cornerRadius: 12))
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.top, 12)
+                        .accessibilityLabel("下一章：\(next.displayName)")
+                    }
                 }
                 .padding(.horizontal, 18)
                 .padding(.vertical, 14)
@@ -123,6 +158,13 @@ struct LNReaderView: View {
             .font(.caption.weight(.semibold))
             .foregroundStyle(ReadingTheme.ink.opacity(0.45))
             .padding(.top, 8)
+    }
+
+    /// 当前章的下一章（按章节列表顺序）
+    private var nextChapter: LNChapter? {
+        guard let index = chapters.firstIndex(where: { $0.path == chapter.path }),
+              chapters.indices.contains(index + 1) else { return nil }
+        return chapters[index + 1]
     }
 
     private func load() async {

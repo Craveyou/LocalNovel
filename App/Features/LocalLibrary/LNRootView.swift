@@ -17,7 +17,11 @@ struct LNCategoryView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                header
+                ReadingPageHeader(title: title, subtitle: subtitle) {
+                    // 与 NAS tab 头部保持一致（NAS 用 + 添加连接）；
+                    // 本地书库通过「文件」App 放书，这里用空操作占位保持视觉对称。
+                    EmptyView()
+                }
                 LazyVGrid(columns: [GridItem(.flexible(), spacing: 14),
                                     GridItem(.flexible(), spacing: 14)], spacing: 14) {
                     ForEach(LNCategory.allCases) { cat in
@@ -38,22 +42,10 @@ struct LNCategoryView: View {
             .padding(.bottom, 30)
         }
         .background(ReadingTheme.canvas.ignoresSafeArea())
-        .navigationTitle(title)
-        .navigationBarTitleDisplayMode(.inline)
+        // 与 NAS tab 一致：隐藏导航栏标题，只保留页面内大标题
+        .navigationBarHidden(true)
         .refreshable { if showsCounts { await loadCounts() } }
         .task { if showsCounts { await loadCounts() } }
-    }
-
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title)
-                .font(.largeTitle.bold())
-                .accessibilityAddTraits(.isHeader)
-            Text(subtitle)
-                .font(.subheadline)
-                .foregroundStyle(ReadingTheme.ink.opacity(0.55))
-        }
-        .padding(.top, 16)
     }
 
     private func card(_ cat: LNCategory) -> some View {
@@ -96,13 +88,16 @@ struct LNCategoryView: View {
     }
 }
 
-/// 阶段 1 占位：书列表页（阶段 2 填充完整交互）
+/// 书列表页：支持单选/多选删除
 struct LNBookListView: View {
     let source: any LNLibrarySource
     let category: LNCategory
 
     @State private var books: [LNBook] = []
     @State private var errorMessage: String?
+    @State private var editMode: EditMode = .inactive
+    @State private var selected: Set<LNBook.ID> = []
+    @State private var confirmDelete = false
 
     var body: some View {
         Group {
@@ -111,7 +106,7 @@ struct LNBookListView: View {
                                        systemImage: category.symbol,
                                        description: Text(category.hint))
             } else {
-                List(books) { book in
+                List(books, id: \.path, selection: $selected) { book in
                     NavigationLink {
                         LNChapterListView(source: source, book: book)
                     } label: {
@@ -121,18 +116,61 @@ struct LNBookListView: View {
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     }
+                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                        Button(role: .destructive) {
+                            Task { await deleteBook(book) }
+                        } label: {
+                            Label("删除", systemImage: "trash")
+                        }
+                    }
                 }
+                .environment(\.editMode, $editMode)
             }
         }
         .navigationTitle(category.label)
         .navigationBarTitleDisplayMode(.inline)
         .lnShowsTabBar()
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                if editMode == .active {
+                    Button(role: .destructive) { confirmDelete = true } label: {
+                        Image(systemName: "trash").accessibilityLabel("删除选中")
+                    }
+                    .disabled(selected.isEmpty)
+                } else {
+                    Button { editMode = .active } label: {
+                        Text("选择").accessibilityLabel("进入多选模式")
+                    }
+                }
+            }
+        }
         .refreshable { await load() }
         .task { await load() }
         .alert("读取失败", isPresented: Binding(get: { errorMessage != nil },
                                              set: { if !$0 { errorMessage = nil } })) {
             Button("好") { errorMessage = nil }
         } message: { Text(errorMessage ?? "") }
+        .alert("删除 \(selected.count) 部？", isPresented: $confirmDelete) {
+            Button("取消", role: .cancel) {}
+            Button("删除", role: .destructive) { Task { await deleteSelected() } }
+        } message: {
+            Text("将删除这些书的所有章节文件，不可恢复。")
+        }
+    }
+
+    private func deleteSelected() async {
+        let targets = books.filter { selected.contains($0.path) }
+        for book in targets {
+            try? await source.remove(at: book.path)
+        }
+        selected.removeAll()
+        editMode = .inactive
+        await load()
+    }
+
+    private func deleteBook(_ book: LNBook) async {
+        try? await source.remove(at: book.path)
+        await load()
     }
 
     private func load() async {
@@ -150,15 +188,22 @@ struct LNBookListView: View {
     }
 }
 
-/// 阶段 1 占位：章节列表页
+/// 章节列表页：支持单章删除与多选删除
 struct LNChapterListView: View {
     let source: any LNLibrarySource
     let book: LNBook
 
+    @State private var chapters: [LNChapter] = []
+    @State private var editMode: EditMode = .inactive
+    @State private var selected: Set<LNChapter.ID> = []
+    @State private var confirmDelete = false
+    /// 章末「下一章」返回后自动 push 的目标
+    @State private var pendingChapter: LNChapter?
+
     var body: some View {
-        List(book.chapters) { chapter in
+        List(chapters, id: \.path, selection: $selected) { chapter in
             NavigationLink {
-                LNReaderView(book: book, chapter: chapter, source: source)
+                LNReaderView(book: book, chapter: chapter, source: source, chapters: chapters)
             } label: {
                 HStack {
                     Image(systemName: symbol(for: chapter.kind))
@@ -166,10 +211,72 @@ struct LNChapterListView: View {
                     Text(chapter.displayName).foregroundStyle(.primary)
                 }
             }
+            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                Button(role: .destructive) {
+                    Task { await deleteChapter(chapter) }
+                } label: {
+                    Label("删除", systemImage: "trash")
+                }
+            }
         }
+        // 章末点「下一章」返回后，自动 push 目标章
+        .background {
+            NavigationLink("", isActive: Binding(
+                get: { pendingChapter != nil },
+                set: { if !$0 { pendingChapter = nil } }
+            )) {
+                if let pendingChapter {
+                    LNReaderView(book: book, chapter: pendingChapter, source: source, chapters: chapters)
+                }
+            }
+            .hidden()
+        }
+        .onAppear {
+            if let next = LNReaderNavigation.shared.pending {
+                pendingChapter = next
+                LNReaderNavigation.shared.pending = nil
+            }
+        }
+        .environment(\.editMode, $editMode)
         .navigationTitle(book.title)
         .navigationBarTitleDisplayMode(.inline)
         .lnShowsTabBar()
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                if editMode == .active {
+                    Button(role: .destructive) { confirmDelete = true } label: {
+                        Image(systemName: "trash").accessibilityLabel("删除选中章节")
+                    }
+                    .disabled(selected.isEmpty)
+                } else {
+                    Button { editMode = .active } label: {
+                        Text("选择").accessibilityLabel("进入多选模式")
+                    }
+                }
+            }
+        }
+        .task { chapters = book.chapters }
+        .alert("删除 \(selected.count) 章？", isPresented: $confirmDelete) {
+            Button("取消", role: .cancel) {}
+            Button("删除", role: .destructive) { Task { await deleteSelected() } }
+        } message: {
+            Text("将删除这些章节文件，不可恢复。")
+        }
+    }
+
+    private func deleteSelected() async {
+        let targets = chapters.filter { selected.contains($0.path) }
+        for chapter in targets {
+            try? await source.remove(at: chapter.path)
+        }
+        chapters.removeAll { selected.contains($0.path) }
+        selected.removeAll()
+        editMode = .inactive
+    }
+
+    private func deleteChapter(_ chapter: LNChapter) async {
+        try? await source.remove(at: chapter.path)
+        chapters.removeAll { $0.path == chapter.path }
     }
 
     private func symbol(for kind: LNChapterKind) -> String {

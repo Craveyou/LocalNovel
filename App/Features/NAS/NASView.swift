@@ -500,6 +500,14 @@ private enum FeiniuSMB {
         }
     }
 
+    /// SMB 删除：AMSMB2 的 removeItem 递归删目录
+    static func remove(_ connection: FeiniuConnection, path: String) async throws {
+        let manager = try makeManager(connection, timeout: 8)
+        try await connect(manager, connection)
+        try await manager.removeItem(atPath: path)
+        FeiniuNASService.invalidateListCache(prefix: connection.id.uuidString)
+    }
+
     static func download(_ connection: FeiniuConnection, entry: NASEntry) async throws -> URL {
         let manager = try makeManager(connection, timeout: 20)
         try await connect(manager, connection)
@@ -659,6 +667,18 @@ private enum FeiniuWebDAV {
         return target
     }
 
+    /// WebDAV DELETE：删文件；删目录时带 Depth: infinity，服务端递归删除
+    static func remove(_ connection: FeiniuConnection, path: String, isDirectory: Bool) async throws {
+        var urlRequest = try makeRequest(connection, method: "DELETE", path: path)
+        if isDirectory { urlRequest.setValue("infinity", forHTTPHeaderField: "Depth") }
+        let session = makeSession()
+        let (_, response) = try await session.data(for: urlRequest)
+        guard let http = response as? HTTPURLResponse else { throw FeiniuError.nonHTTP }
+        guard (200...299).contains(http.statusCode) else { throw FeiniuError.http(http.statusCode) }
+        // 目录列表缓存失效，否则删完还能看到
+        FeiniuNASService.invalidateListCache(prefix: connection.id.uuidString)
+    }
+
     private static func request(_ connection: FeiniuConnection, method: String, path: String, depth: String?, timeout: TimeInterval = 25, endpoint: FeiniuWebDAVEndpoint? = nil) async throws -> (Data, HTTPURLResponse) {
         var urlRequest = try makeRequest(connection, method: method, path: path, timeout: timeout, endpoint: endpoint)
         if let depth { urlRequest.setValue(depth, forHTTPHeaderField: "Depth") }
@@ -734,6 +754,14 @@ private final class NASTimedCache<V: Sendable>: @unchecked Sendable {
     func clear() {
         lock.lock(); defer { lock.unlock() }
         storage.removeAll()
+    }
+
+    /// 删除 key 含指定前缀的缓存项（例如某条 NAS 连接下的所有目录）
+    func removeAll(containing prefix: String) {
+        lock.lock(); defer { lock.unlock() }
+        for key in storage.keys where key.contains(prefix) {
+            storage[key] = nil
+        }
     }
 }
 
@@ -827,6 +855,11 @@ enum FeiniuNASService {
         listCache.clear()
     }
 
+    /// 只清某条连接的目录缓存（删除文件后调用）
+    static func invalidateListCache(prefix: String) {
+        listCache.removeAll(containing: prefix)
+    }
+
     private static func listCacheKey(_ connection: FeiniuConnection, _ path: String) -> String {
         "\(connection.id.uuidString)|\(path)"
     }
@@ -852,6 +885,20 @@ enum FeiniuNASService {
         }
         listCache.set(entries, for: key)
         return entries
+    }
+
+    /// 删除远端条目：按当前链路分发到 SMB/WebDAV
+    static func remove(_ connection: FeiniuConnection, path: String, isDirectory: Bool) async throws {
+        let smbReachable = await NASNetwork.canReachSMB(host: connection.smbHost, port: connection.smbPort)
+        if smbReachable, !connection.smbHost.isEmpty {
+            do {
+                try await FeiniuSMB.remove(connection, path: path)
+                return
+            } catch {
+                // SMB 删除失败则尝试 WebDAV（某些共享只读）
+            }
+        }
+        try await FeiniuWebDAV.remove(connection, path: path, isDirectory: isDirectory)
     }
 
     static func download(_ connection: FeiniuConnection, entry: NASEntry) async throws -> URL {
@@ -1284,6 +1331,9 @@ struct FeiniuBrowserView: View {
     @State private var toast: String?
     @State private var linkLabel: String?
     @State private var isRoot = false
+    @State private var editMode: EditMode = .inactive
+    @State private var selected: Set<NASEntry.ID> = []
+    @State private var confirmDelete = false
 
     init(connection: FeiniuConnection, path: String? = nil) {
         self.connection = connection
@@ -1302,10 +1352,10 @@ struct FeiniuBrowserView: View {
             } else if let errorMessage, entries.isEmpty {
                 ReadingUnavailableView("无法连接飞牛 NAS", systemImage: "wifi.exclamationmark", description: Text(errorMessage))
             } else {
-                List {
+                List(selection: $selected) {
                     if !entries.isEmpty {
                         Section {
-                            ForEach(entries) { entry in
+                            ForEach(entries, id: \.path) { entry in
                                 if entry.isDirectory {
                                     NavigationLink {
                                         FeiniuBrowserView(connection: connection, path: entry.path)
@@ -1325,6 +1375,13 @@ struct FeiniuBrowserView: View {
                                     }
                                     .disabled(downloading != nil)
                                 }
+                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                    Button(role: .destructive) {
+                                        Task { await deleteEntry(entry) }
+                                    } label: {
+                                        Label("删除", systemImage: "trash")
+                                    }
+                                }
                             }
                         } header: {
                             HStack {
@@ -1339,6 +1396,27 @@ struct FeiniuBrowserView: View {
                     }
                 }
                 .listStyle(.insetGrouped)
+                .environment(\.editMode, $editMode)
+                .toolbar {
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        if editMode == .active {
+                            Button(role: .destructive) { confirmDelete = true } label: {
+                                Image(systemName: "trash").accessibilityLabel("删除选中")
+                            }
+                            .disabled(selected.isEmpty)
+                        } else {
+                            Button { editMode = .active } label: {
+                                Text("选择").accessibilityLabel("进入多选模式")
+                            }
+                        }
+                    }
+                }
+                .alert("删除选中项？", isPresented: $confirmDelete) {
+                    Button("取消", role: .cancel) {}
+                    Button("删除", role: .destructive) { Task { await deleteSelected() } }
+                } message: {
+                    Text("将删除 NAS 上选中的文件/目录，不可恢复。")
+                }
             }
         }
         .navigationTitle(isRoot ? connection.name : (path as NSString).lastPathComponent)
@@ -1404,10 +1482,41 @@ struct FeiniuBrowserView: View {
             // 关键：只用于本次取目录，不写回 @State path —— 写回会改变 .task(id: path) 的 id，
             // 触发第二次 load，并让 navigationTitle 从连接名跳成路径末段，落在 push 动画里就是"过渡抖一下"。
             let pathToLoad = isRoot ? FeiniuNASService.initialPath(connection) : path
-            entries = try await FeiniuNASService.list(connection, path: pathToLoad)
+            // 按名称自然排序（数字章节 2/10 顺序正确），目录在前、文件在后
+            let listed = try await FeiniuNASService.list(connection, path: pathToLoad)
+            entries = listed.sorted { a, b in
+                if a.isDirectory != b.isDirectory { return a.isDirectory }
+                return a.name.localizedStandardCompare(b.name) == .orderedAscending
+            }
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    private func deleteEntry(_ entry: NASEntry) async {
+        do {
+            try await FeiniuNASService.remove(connection, path: entry.path, isDirectory: entry.isDirectory)
+            entries.removeAll { $0.path == entry.path }
+            toast = "已删除 \(entry.name)"
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func deleteSelected() async {
+        let targets = entries.filter { selected.contains($0.path) }
+        var failed = 0
+        for entry in targets {
+            do {
+                try await FeiniuNASService.remove(connection, path: entry.path, isDirectory: entry.isDirectory)
+            } catch {
+                failed += 1
+            }
+        }
+        entries.removeAll { selected.contains($0.path) }
+        toast = failed == 0 ? "已删除 \(targets.count) 项" : "已删除 \(targets.count - failed) 项，失败 \(failed) 项"
+        selected.removeAll()
+        editMode = .inactive
     }
 
     private func importEntry(_ entry: NASEntry) async {
