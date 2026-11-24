@@ -276,6 +276,9 @@ private struct LNPlayerSurface: UIViewRepresentable {
         controller.player = player
         controller.showsPlaybackControls = true
         context.coordinator.controller = controller
+        // ★ b48 黑屏根因：漏了这行，attachIfNeeded 的 guard let container 永远失败，
+        //   播放器视图从未被 addSubview —— 章内/全屏全部纯黑
+        context.coordinator.container = container
         container.coordinator = context.coordinator
 
         let longPress = UILongPressGestureRecognizer(
@@ -318,6 +321,9 @@ private struct LNPlayerSurface: UIViewRepresentable {
                 attached = true
                 return
             }
+            // 未进入视图层级时不装配，等 didMoveToWindow 回调再试；
+            // 否则会走错分支（层级未建立时找不到宿主 VC）
+            guard container.window != nil else { return }
             if let parent = parentViewController(of: container) {
                 parent.addChild(controller)
                 surface.translatesAutoresizingMaskIntoConstraints = false
@@ -329,6 +335,12 @@ private struct LNPlayerSurface: UIViewRepresentable {
                     surface.trailingAnchor.constraint(equalTo: container.trailingAnchor)
                 ])
                 controller.didMove(toParent: parent)
+                attached = true
+            } else {
+                // 兑底：找不到宿主 VC 也先把视图挂上，至少画面能渲染
+                surface.frame = container.bounds
+                surface.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+                container.addSubview(surface)
                 attached = true
             }
         }
