@@ -1,14 +1,5 @@
 import SwiftUI
 
-/// 章末「下一章」跳转的共享状态：阅读页写入目标后 dismiss，章节列表读取后 push。
-/// 用 @MainActor 单例满足 Swift 6 严格并发；只在主线程读写。
-@MainActor
-final class LNReaderNavigation {
-    static let shared = LNReaderNavigation()
-    var pending: LNChapter?
-    private init() {}
-}
-
 /// 三类共用阅读页（阶段 2：正文 + 插图；阶段 3 起加 [图NN] 混排；阶段 4-6 加媒体）。
 struct LNReaderView: View {
     let book: LNBook
@@ -16,8 +7,6 @@ struct LNReaderView: View {
     let source: any LNLibrarySource
     /// 完整章节列表（用于末尾「下一章」跳转）；不传则无跳转
     var chapters: [LNChapter] = []
-
-    @Environment(\.dismiss) private var dismiss
 
     @State private var content: LNChapterContent?
     @State private var errorMessage: String?
@@ -115,10 +104,11 @@ struct LNReaderView: View {
                             .foregroundStyle(ReadingTheme.ink.opacity(0.4))
                     }
                     if let next = nextChapter {
-                        // 章末跳转：把目标记到共享状态后返回列表，由列表push下一章，避免深层堆叠
-                        Button {
-                            LNReaderNavigation.shared.pending = next
-                            dismiss()
+                        // 章末跳转：直接 push 下一章。
+                        // 之前的 dismiss + 共享状态方案不可靠：返回后章节列表的 onAppear
+                        // 不保证触发（尤其从 NavigationLink 详情返回时），导致点了只回到目录。
+                        NavigationLink {
+                            LNReaderView(book: book, chapter: next, source: source, chapters: chapters)
                         } label: {
                             HStack(spacing: 8) {
                                 Text("下一章：\(next.displayName)")

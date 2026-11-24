@@ -867,7 +867,12 @@ enum FeiniuNASService {
     static func list(_ connection: FeiniuConnection, path: String) async throws -> [NASEntry] {
         // 先查缓存（刷新/下拉时会主动清）
         let key = listCacheKey(connection, path)
-        if let hit = listCache.value(for: key, ttl: 30) { return hit }
+        if let hit = listCache.value(for: key, ttl: 30) {
+            return hit.sorted { a, b in
+                if a.isDirectory != b.isDirectory { return a.isDirectory }
+                return a.name.localizedStandardCompare(b.name) == .orderedAscending
+            }
+        }
 
         let smbReachable = await NASNetwork.canReachSMB(host: connection.smbHost, port: connection.smbPort)
         let expected: NASProtocol = smbReachable ? .smb : .webdav
@@ -883,8 +888,14 @@ enum FeiniuNASService {
             let proto = try await resolve(connection)
             entries = try await fetch(connection, proto: proto, path: path)
         }
-        listCache.set(entries, for: key)
-        return entries
+        // 统一按名称自然排序（数字序号 2 排在 10 前），目录在前。
+        // 放在数据源层：FeiniuBrowserView、LNNASSource 三类书库等所有调用点都受益。
+        let sorted = entries.sorted { a, b in
+            if a.isDirectory != b.isDirectory { return a.isDirectory }
+            return a.name.localizedStandardCompare(b.name) == .orderedAscending
+        }
+        listCache.set(sorted, for: key)
+        return sorted
     }
 
     /// 删除远端条目：按当前链路分发到 SMB/WebDAV
@@ -1373,6 +1384,13 @@ struct FeiniuBrowserView: View {
                 .listStyle(.insetGrouped)
                 .environment(\.editMode, $editMode)
                 .toolbar {
+                    ToolbarItem(placement: .navigationBarLeading) {
+                        if editMode == .active {
+                            Button { cancelSelection() } label: {
+                                Text("取消").accessibilityLabel("取消多选")
+                            }
+                        }
+                    }
                     ToolbarItem(placement: .navigationBarTrailing) {
                         if editMode == .active {
                             Button(role: .destructive) { confirmDelete = true } label: {
@@ -1498,6 +1516,11 @@ struct FeiniuBrowserView: View {
                 Label("删除", systemImage: "trash")
             }
         }
+    }
+
+    private func cancelSelection() {
+        selected.removeAll()
+        editMode = .inactive
     }
 
     private func deleteEntry(_ entry: NASEntry) async {

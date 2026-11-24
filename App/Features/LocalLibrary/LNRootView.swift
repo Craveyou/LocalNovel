@@ -131,6 +131,13 @@ struct LNBookListView: View {
         .navigationBarTitleDisplayMode(.inline)
         .lnShowsTabBar()
         .toolbar {
+            ToolbarItem(placement: .navigationBarLeading) {
+                if editMode == .active {
+                    Button { cancelSelection() } label: {
+                        Text("取消").accessibilityLabel("取消多选")
+                    }
+                }
+            }
             ToolbarItem(placement: .navigationBarTrailing) {
                 if editMode == .active {
                     Button(role: .destructive) { confirmDelete = true } label: {
@@ -168,6 +175,11 @@ struct LNBookListView: View {
         await load()
     }
 
+    private func cancelSelection() {
+        selected.removeAll()
+        editMode = .inactive
+    }
+
     private func deleteBook(_ book: LNBook) async {
         try? await source.remove(at: book.path)
         await load()
@@ -197,8 +209,6 @@ struct LNChapterListView: View {
     @State private var editMode: EditMode = .inactive
     @State private var selected: Set<LNChapter.ID> = []
     @State private var confirmDelete = false
-    /// 章末「下一章」返回后自动 push 的目标
-    @State private var pendingChapter: LNChapter?
 
     var body: some View {
         List(chapters, id: \.path, selection: $selected) { chapter in
@@ -219,29 +229,18 @@ struct LNChapterListView: View {
                 }
             }
         }
-        // 章末点「下一章」返回后，自动 push 目标章
-        .background {
-            NavigationLink("", isActive: Binding(
-                get: { pendingChapter != nil },
-                set: { if !$0 { pendingChapter = nil } }
-            )) {
-                if let pendingChapter {
-                    LNReaderView(book: book, chapter: pendingChapter, source: source, chapters: chapters)
-                }
-            }
-            .hidden()
-        }
-        .onAppear {
-            if let next = LNReaderNavigation.shared.pending {
-                pendingChapter = next
-                LNReaderNavigation.shared.pending = nil
-            }
-        }
         .environment(\.editMode, $editMode)
         .navigationTitle(book.title)
         .navigationBarTitleDisplayMode(.inline)
         .lnShowsTabBar()
         .toolbar {
+            ToolbarItem(placement: .navigationBarLeading) {
+                if editMode == .active {
+                    Button { cancelSelection() } label: {
+                        Text("取消").accessibilityLabel("取消多选")
+                    }
+                }
+            }
             ToolbarItem(placement: .navigationBarTrailing) {
                 if editMode == .active {
                     Button(role: .destructive) { confirmDelete = true } label: {
@@ -270,6 +269,11 @@ struct LNChapterListView: View {
             try? await source.remove(at: chapter.path)
         }
         chapters.removeAll { selected.contains($0.path) }
+        selected.removeAll()
+        editMode = .inactive
+    }
+
+    private func cancelSelection() {
         selected.removeAll()
         editMode = .inactive
     }
