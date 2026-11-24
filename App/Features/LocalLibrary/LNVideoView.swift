@@ -2,16 +2,18 @@ import SwiftUI
 import AVKit
 import AVFoundation
 
-/// 章末视频 / 短剧单集：点击播放、不自动播放；支持全屏、长按倍速、旋转。
+/// 章末视频 / 短剧单集：点击播放、不自动播放；支持全屏、长按倍速、旋转画面。
 ///
 /// 重要：内嵌播放器与全屏播放器**必须共用同一个 AVPlayer 实例**。
 /// 之前两处各自 `AVPlayer(url:)`，全屏时两个播放器同时在播 → 双音轨。
 ///
-/// 实现要点（b47）：
+/// 实现要点：
 /// - 加载后**不设 rate**：AVPlayer 对未播放的实例直接设 `rate = 1.0` 会立刻开播，
 ///   这就是「没点播放自己响」的根因；倍速只在正在播放时套用。
 /// - 长按手势不能挂在 SwiftUI 层（会被 AVPlayerViewController 的系统手势吞掉），
-///   改为在自定义 UIViewRepresentable 里给播放器视图挂 UIGestureRecognizer 并行识别。
+///   用 LNPlayerSurface 在播放器视图上挂 UIGestureRecognizer 并行识别。
+/// - 播放器必须以 childViewController 方式装配（addChild/didMove），
+///   只 addSubview 不 addChild 在新系统上会黑屏（b47 的教训）。
 struct LNVideoView: View {
     let item: LNMediaItem
     let source: any LNLibrarySource
@@ -76,7 +78,7 @@ struct LNVideoView: View {
                     }
                 }
                 // 播放/暂停由系统控制条接管；用户点播放时把记住的倍速套回去
-                // （VideoPlayer 的 play 固定以 1.0 开播）
+                // （系统控件的 play 固定以 1.0 开播）
                 .onReceive(player.publisher(for: \.timeControlStatus)) { status in
                     guard status == .playing, player.rate != speed else { return }
                     player.rate = speed
@@ -106,7 +108,7 @@ struct LNVideoView: View {
                         .font(.caption)
                         .foregroundStyle(ReadingTheme.accent)
                 }
-                .accessibilityLabel("旋转全屏播放")
+                .accessibilityLabel("全屏播放")
             }
         }
         .task(id: item.path) { await load() }
@@ -164,6 +166,7 @@ struct LNVideoView: View {
 }
 
 /// 全屏播放器：复用内嵌传进来的同一个 AVPlayer，绝不自己新建，避免双音轨。
+/// 长按画面也能循环倍速；「旋转」是画面旋转（转 90° 后握持手机方向即可），退出自动复原。
 private struct LNVideoFullscreen: View {
     let item: LNMediaItem
     let source: any LNLibrarySource
@@ -172,24 +175,27 @@ private struct LNVideoFullscreen: View {
     let onSpeedChange: (Float) -> Void
 
     @Environment(\.dismiss) private var dismiss
-    @State private var speedMenu = false
+    @State private var rotated = false
 
     private let speeds: [Float] = [0.75, 1.0, 1.25, 1.5, 2.0]
 
     var body: some View {
         ReadingNavigationStack {
-            ZStack {
-                Color.black.ignoresSafeArea()
-                if let player {
-                    VideoPlayer(player: player)
-                        .ignoresSafeArea()
-                        .onTapGesture {
-                            // 点击空白处不做处理，交给系统 VideoPlayer 控件
-                        }
-                } else {
-                    ProgressView().tint(.white)
+            GeometryReader { geo in
+                ZStack {
+                    Color.black
+                    if let player {
+                        LNPlayerSurface(player: player, onLongPress: cycleSpeed)
+                            .frame(width: rotated ? geo.size.height : geo.size.width,
+                                   height: rotated ? geo.size.width : geo.size.height)
+                            .rotationEffect(.degrees(rotated ? 90 : 0))
+                    } else {
+                        ProgressView().tint(.white)
+                    }
                 }
+                .frame(width: geo.size.width, height: geo.size.height)
             }
+            .ignoresSafeArea()
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
@@ -223,12 +229,12 @@ private struct LNVideoFullscreen: View {
                         }
                         .accessibilityLabel("播放倍速")
                         Button {
-                            requestLandscape()
+                            rotated.toggle()
                         } label: {
-                            Image(systemName: "rotate.3deg")
-                                .foregroundStyle(.white)
+                            Image(systemName: rotated ? "arrow.counterclockwise" : "rotate.3deg")
+                                .foregroundStyle(rotated ? ReadingTheme.accent : .white)
                         }
-                        .accessibilityLabel("旋转屏幕")
+                        .accessibilityLabel(rotated ? "恢复画面方向" : "旋转画面")
                         Button("完成") { dismiss() }
                             .foregroundStyle(.white)
                     }
@@ -238,20 +244,23 @@ private struct LNVideoFullscreen: View {
         .onAppear { onSpeedChange(speed) }
     }
 
-    private func formatSpeed(_ value: Float) -> String {
-        value == 1 ? "1.0" : String(format: "%.2g", value)
+    private func cycleSpeed() {
+        guard let index = speeds.firstIndex(of: speed) else { return }
+        let next = speeds[(index + 1) % speeds.count]
+        onSpeedChange(next)
     }
 
-    /// 请求横屏：优先用项目的 ReaderScreenOrientation，它封装了 iOS 16 的 requestGeometryUpdate
-    private func requestLandscape() {
-        ReaderScreenOrientation.apply("5")  // landscapeLeft
+    private func formatSpeed(_ value: Float) -> String {
+        value == 1 ? "1.0" : String(format: "%.2g", value)
     }
 }
 
 /// AVPlayerViewController 的 SwiftUI 包装：
-/// 系统播放控制条照常可用，同时给画面挂一个与系统手势**并行识别**的长按手势。
+/// - 以 childViewController 方式正式装配（黑屏修复的关键，只 addSubview 不够）；
+/// - 系统播放控制条照常可用；
+/// - 挂一个与系统手势**并行识别**的长按手势用于循环切换倍速。
 ///
-/// 为什么不用 SwiftUI 的 `.onLongPressGesture`：VideoPlayer / AVPlayerViewController
+/// 为什么不用 SwiftUI 的 `.onLongPressGesture`：AVPlayerViewController
 /// 内部的 UIKit 手势（点按呼出控制条等）优先级更高，SwiftUI 层的长按收不到任何事件。
 private struct LNPlayerSurface: UIViewRepresentable {
     let player: AVPlayer
@@ -259,19 +268,15 @@ private struct LNPlayerSurface: UIViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(onLongPress: onLongPress) }
 
-    func makeUIView(context: Context) -> UIView {
-        let container = UIView()
+    func makeUIView(context: Context) -> AttachContainerView {
+        let container = AttachContainerView()
         container.backgroundColor = .black
 
         let controller = AVPlayerViewController()
         controller.player = player
         controller.showsPlaybackControls = true
-        let surface = controller.view ?? UIView()
-        surface.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        surface.frame = container.bounds
-        container.addSubview(surface)
-        // 必须持有 controller，否则控制条会被释放
         context.coordinator.controller = controller
+        container.coordinator = context.coordinator
 
         let longPress = UILongPressGestureRecognizer(
             target: context.coordinator,
@@ -284,19 +289,66 @@ private struct LNPlayerSurface: UIViewRepresentable {
         return container
     }
 
-    func updateUIView(_ uiView: UIView, context: Context) {
+    func updateUIView(_ uiView: AttachContainerView, context: Context) {
         context.coordinator.onLongPress = onLongPress
         if context.coordinator.controller?.player !== player {
             context.coordinator.controller?.player = player
         }
+        // 首次 updateUIView 时可能还没进视图层级，didMoveToWindow 回调会兜底再试
+        context.coordinator.attachIfNeeded()
     }
 
+    @MainActor
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
         var onLongPress: () -> Void
-        weak var controller: AVPlayerViewController?
+        var controller: AVPlayerViewController?
+        weak var container: AttachContainerView?
+        private var attached = false
 
         init(onLongPress: @escaping () -> Void) {
             self.onLongPress = onLongPress
+        }
+
+        /// 正式装配：找到宿主 VC → addChild → 加视图 + 四边约束 → didMove。
+        /// 只 addSubview 不 addChild 时，新系统上渲染层/控制条会失效（黑屏）。
+        func attachIfNeeded() {
+            guard let controller, let container, !attached else { return }
+            guard controller.view.superview == nil else {
+                attached = true
+                return
+            }
+            if let parent = parentViewController(of: container) {
+                parent.addChild(controller)
+                let surface = controller.view
+                surface.translatesAutoresizingMaskIntoConstraints = false
+                container.addSubview(surface)
+                NSLayoutConstraint.activate([
+                    surface.topAnchor.constraint(equalTo: container.topAnchor),
+                    surface.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+                    surface.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+                    surface.trailingAnchor.constraint(equalTo: container.trailingAnchor)
+                ])
+                controller.didMove(toParent: parent)
+                attached = true
+            }
+        }
+
+        /// 视图离开窗口（被滚动回收/销毁）时摘除 child 关系，避免父 VC 持续持有泄漏
+        func detachIfNeeded() {
+            guard attached, let controller, controller.parent != nil else { return }
+            controller.willMove(toParent: nil)
+            controller.view.removeFromSuperview()
+            controller.removeFromParent()
+            attached = false
+        }
+
+        private func parentViewController(of view: UIView) -> UIViewController? {
+            var responder: UIResponder? = view.next
+            while let r = responder {
+                if let vc = r as? UIViewController { return vc }
+                responder = r.next
+            }
+            return nil
         }
 
         @objc func handle(_ gesture: UILongPressGestureRecognizer) {
@@ -309,5 +361,20 @@ private struct LNPlayerSurface: UIViewRepresentable {
                                shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
             true
         }
+    }
+}
+
+/// 容器视图：进窗口时触发装配、离窗口时触发摘除。
+final class AttachContainerView: UIView {
+    var coordinator: LNPlayerSurface.Coordinator?
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window != nil { coordinator?.attachIfNeeded() }
+    }
+
+    override func willMove(toWindow newWindow: UIWindow?) {
+        super.willMove(toWindow: newWindow)
+        if newWindow == nil { coordinator?.detachIfNeeded() }
     }
 }
