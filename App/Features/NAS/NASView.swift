@@ -434,12 +434,32 @@ private enum NASNetwork {
         }
     }
 
+    /// 预检结果缓存：外网每次列目录都会先问"445 通不通"，不通要白等满 1.5s。
+    /// 同一网络下这个结果短时间内不会变，缓存 5 秒能把连续浏览的延迟直接砍掉。
+    private static let probeLock = NSLock()
+    private static var probeCache: [String: (reachable: Bool, at: Date)] = [:]
+
+    static func invalidateProbeCache() {
+        probeLock.lock()
+        probeCache.removeAll()
+        probeLock.unlock()
+    }
+
     static func canReachSMB(host: String, port: Int, timeout: TimeInterval = 1.5) async -> Bool {
         let trimmed = host.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, (1...65535).contains(port),
               let nwPort = NWEndpoint.Port(rawValue: UInt16(port)) else { return false }
+
+        let cacheKey = "\(trimmed):\(port)"
+        probeLock.lock()
+        if let hit = probeCache[cacheKey], Date().timeIntervalSince(hit.at) < 5 {
+            probeLock.unlock()
+            return hit.reachable
+        }
+        probeLock.unlock()
+
         let endpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(trimmed), port: nwPort)
-        return await withCheckedContinuation { continuation in
+        let reachable = await withCheckedContinuation { continuation in
             let box = TCPProbeBox()
             box.continuation = continuation
             let queue = DispatchQueue(label: "nas.smb.tcp.probe")
@@ -461,6 +481,10 @@ private enum NASNetwork {
             timer.setEventHandler { box.finish(false) }
             timer.resume()
         }
+        probeLock.lock()
+        probeCache[cacheKey] = (reachable, Date())
+        probeLock.unlock()
+        return reachable
     }
 }
 
@@ -633,7 +657,6 @@ private enum FeiniuWebDAV {
     static func download(_ connection: FeiniuConnection, entry: NASEntry) async throws -> URL {
         var urlRequest = try makeRequest(connection, method: "GET", path: entry.path)
         let session = makeSession()
-        defer { session.finishTasksAndInvalidate() }
         let (tempURL, response) = try await session.download(for: urlRequest)
         guard let http = response as? HTTPURLResponse else { throw FeiniuError.nonHTTP }
         guard (200...299).contains(http.statusCode) else { throw FeiniuError.http(http.statusCode) }
@@ -651,7 +674,6 @@ private enum FeiniuWebDAV {
         if let depth { urlRequest.setValue(depth, forHTTPHeaderField: "Depth") }
         if method == "PROPFIND" { urlRequest.setValue("application/xml; charset=utf-8", forHTTPHeaderField: "Content-Type") }
         let session = makeSession()
-        defer { session.finishTasksAndInvalidate() }
         let (data, response) = try await session.data(for: urlRequest)
         guard let http = response as? HTTPURLResponse else { throw FeiniuError.nonHTTP }
         return (data, http)
@@ -680,12 +702,20 @@ private enum FeiniuWebDAV {
         return request
     }
 
-    private static func makeSession() -> URLSession {
+    /// 复用同一个 session：TLS 会话恢复 + 连接复用，外网每次列目录能省一次完整握手。
+    /// 之前每次 request 都新建 ephemeral session，等于每次都重做 TCP+TLS 握手，
+    /// 高 RTT 的外网每次点目录都要多等一个 RTT 以上。
+    private static let session: URLSession = {
         let config = URLSessionConfiguration.ephemeral
         config.urlCache = nil
         config.httpCookieAcceptPolicy = .never
+        config.httpMaximumConnectionsPerHost = 4
+        config.timeoutIntervalForRequest = 25
+        config.timeoutIntervalForResource = 60
         return URLSession(configuration: config, delegate: FeiniuTrustDelegate.shared, delegateQueue: nil)
-    }
+    }()
+
+    private static func makeSession() -> URLSession { session }
 
     private static func normalized(_ path: String) -> String {
         var value = path.removingPercentEncoding ?? path
@@ -776,19 +806,49 @@ enum FeiniuNASService {
     /// 列目录：先用 TCP 预检判定当前网络期望的链路（445 通=内网 SMB，否则外网 WebDAV）。
     /// 缓存链路与期望一致才直接用；不一致（如人在内网但缓存是 WebDAV）则重新探测，避免继续走外网。
     /// 这样断开 WiFi / 换到外面 WiFi 后，即便缓存是 SMB，也不会拿内网 IP 去连导致卡死。
+    /// 目录列表缓存：外网上一张图片就要列一次父目录（LNNASSource.localURL），
+    /// 没有缓存的话预取 8 张图就是 8 次 PROPFIND。缓存 30 秒，覆盖一次章节阅读。
+    private static let listLock = NSLock()
+    private static var listCache: [String: (entries: [NASEntry], at: Date)] = [:]
+
+    static func invalidateListCache() {
+        listLock.lock()
+        listCache.removeAll()
+        listLock.unlock()
+    }
+
+    private static func listCacheKey(_ connection: FeiniuConnection, _ path: String) -> String {
+        "\(connection.id.uuidString)|\(path)"
+    }
+
     static func list(_ connection: FeiniuConnection, path: String) async throws -> [NASEntry] {
+        // 先查缓存（刷新/下拉时会主动清）
+        let key = listCacheKey(connection, path)
+        listLock.lock()
+        if let hit = listCache[key], Date().timeIntervalSince(hit.at) < 30 {
+            listLock.unlock()
+            return hit.entries
+        }
+        listLock.unlock()
+
         let smbReachable = await NASNetwork.canReachSMB(host: connection.smbHost, port: connection.smbPort)
         let expected: NASProtocol = smbReachable ? .smb : .webdav
+        let entries: [NASEntry]
         if let proto = cached(connection), proto == expected, isViable(proto, connection, smbReachable: smbReachable) {
-            do { return try await fetch(connection, proto: proto, path: path) }
+            do { entries = try await fetch(connection, proto: proto, path: path) }
             catch {
                 let refreshed = try await resolve(connection)
                 if refreshed == proto { throw error }
-                return try await fetch(connection, proto: refreshed, path: path)
+                entries = try await fetch(connection, proto: refreshed, path: path)
             }
+        } else {
+            let proto = try await resolve(connection)
+            entries = try await fetch(connection, proto: proto, path: path)
         }
-        let proto = try await resolve(connection)
-        return try await fetch(connection, proto: proto, path: path)
+        listLock.lock()
+        listCache[key] = (entries, Date())
+        listLock.unlock()
+        return entries
     }
 
     static func download(_ connection: FeiniuConnection, entry: NASEntry) async throws -> URL {
@@ -1280,8 +1340,11 @@ struct FeiniuBrowserView: View {
         }
         .navigationTitle(isRoot ? connection.name : (path as NSString).lastPathComponent)
         .navigationBarTitleDisplayMode(.inline)
-        .task(id: path) { await load() }
-        .refreshable { await load() }
+        .task(id: path) { await load(forceRefresh: false) }
+        .refreshable {
+            FeiniuNASService.invalidateListCache()
+            await load(forceRefresh: true)
+        }
         .overlay(alignment: .bottom) {
             if let toast {
                 Text(toast)
@@ -1321,15 +1384,19 @@ struct FeiniuBrowserView: View {
         return String(format: "%.1f MB", Double(bytes) / 1_048_576)
     }
 
-    private func load() async {
+    private func load(forceRefresh: Bool = false) async {
         loading = true
         errorMessage = nil
         defer { loading = false }
         do {
-            // 每次进入都走 resolve：它按系统网络判断可用性，断开 Wi-Fi 时会跳过 SMB、选 WebDAV。
-            // 缓存链路仍可用时这里会快速探测成功，开销很小。
-            let proto = try await FeiniuNASService.probe(connection)
-            linkLabel = proto == .smb ? "内网 SMB" : "外网 WebDAV"
+            if forceRefresh {
+                // 手动下拉才强制重新探测链路
+                let proto = try await FeiniuNASService.probe(connection)
+                linkLabel = proto == .smb ? "内网 SMB" : "外网 WebDAV"
+            } else if let proto = FeiniuNASService.activeProtocol(connection) {
+                // 平时直接用上次成功的链路标签，不重复探测（list 内部会按需重探）
+                linkLabel = proto == .smb ? "内网 SMB" : "外网 WebDAV"
+            }
             // 根目录按实测链路选初始路径：SMB 从 share 根 "/" 开始，WebDAV 用配置的初始路径。
             // 关键：只用于本次取目录，不写回 @State path —— 写回会改变 .task(id: path) 的 id，
             // 触发第二次 load，并让 navigationTitle 从连接名跳成路径末段，落在 push 动画里就是"过渡抖一下"。

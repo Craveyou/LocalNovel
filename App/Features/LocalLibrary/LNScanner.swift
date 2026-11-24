@@ -37,10 +37,41 @@ enum LNScanner {
 
     // MARK: - 扫书：根目录下每个子目录 = 一本书
 
+    /// 并发扫描的分发上限：本地随便并发，外网 WebDAV 太多并发反而会被服务器限流。
+    private static let scanConcurrency = 4
+
+    /// 带并发上限的 map。外网 NAS 上每个目录一次 PROPFIND，
+    /// 串行遍历 N 个目录就是 N 个 RTT；限流并发后降到 N/4。
+    private static func mapConcurrent<T: Sendable, U: Sendable>(
+        _ items: [T],
+        limit: Int = scanConcurrency,
+        operation: @Sendable @escaping (T) async throws -> U
+    ) async throws -> [U] {
+        guard !items.isEmpty else { return [] }
+        var values = [U?](repeating: nil, count: items.count)
+        var index = 0
+        try await withThrowingTaskGroup(of: (Int, U).self) { group in
+            func fill(_ n: Int) {
+                for _ in 0..<n where index < items.count {
+                    let i = index
+                    let item = items[i]
+                    index += 1
+                    group.addTask { (i, try await operation(item)) }
+                }
+            }
+            fill(min(limit, items.count))
+            while let (i, value) = try await group.next() {
+                values[i] = value
+                fill(1)
+            }
+        }
+        return values.compactMap { $0 }
+    }
+
     static func books(in nodes: [LNNode], category: LNCategory,
                       loadChildren: @Sendable (LNNode) async throws -> [LNNode]) async throws -> [LNBook] {
-        var result: [LNBook] = []
-        for folder in nodes.filter({ $0.isDirectory }) {
+        let folders = nodes.filter { $0.isDirectory }
+        let scanned: [LNBook?] = try await mapConcurrent(folders) { folder in
             let children = try await loadChildren(folder)
             let chapters: [LNChapter]
             switch category {
@@ -54,11 +85,11 @@ enum LNScanner {
                 chapters = try await dramaChapters(in: folder, nodes: children,
                                                    loadChildren: loadChildren)
             }
-            guard !chapters.isEmpty else { continue }
-            result.append(LNBook(path: folder.path, title: folder.name,
-                                  category: category, chapters: chapters))
+            guard !chapters.isEmpty else { return nil }
+            return LNBook(path: folder.path, title: folder.name,
+                          category: category, chapters: chapters)
         }
-        return result
+        return scanned.compactMap { $0 }
     }
 
     // MARK: 整理：书 → 子目录 = 章；平铺文件 = 单章
@@ -134,14 +165,16 @@ enum LNScanner {
         }
         let depth = folder.path.split(separator: "/").count
         guard depth < maxDepth else { return sortChapters(result) }
-        for sub in nodes.filter({ $0.isDirectory }) {
+        let subdirs = nodes.filter { $0.isDirectory }
+        let nested: [[LNChapter]] = try await mapConcurrent(subdirs) { sub in
             let children = try await loadChildren(sub)
-            result += try await mediaChapters(in: sub, nodes: children,
-                                              loadChildren: loadChildren,
-                                              maxDepth: maxDepth, pdfEnabled: pdfEnabled,
-                                              videoEnabled: videoEnabled,
-                                              imageLabel: imageLabel)
+            return try await mediaChapters(in: sub, nodes: children,
+                                           loadChildren: loadChildren,
+                                           maxDepth: maxDepth, pdfEnabled: pdfEnabled,
+                                           videoEnabled: videoEnabled,
+                                           imageLabel: imageLabel)
         }
+        for chapters in nested { result += chapters }
         return sortChapters(result)
     }
 

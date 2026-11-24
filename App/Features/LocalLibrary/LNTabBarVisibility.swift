@@ -3,31 +3,23 @@ import UIKit
 
 /// 阅读页隐藏底部 Tab 栏。
 ///
-/// iOS 16+ 直接用原生 `.toolbar(.hidden, for: .tabBar)`；
-/// iOS 15 没有这个 API，退化为找到宿主 UITabBarController 手动设置 tabBar 可见性
-/// （工程部署目标是 15.0，必须留这条兜底）。
+/// 经验教训：iOS 17/18/27 上，从 `List` 里的 NavigationLink push 出的详情页，
+/// 单靠 `.toolbar(.hidden, for: .tabBar)` 会失效（SwiftUI 的 tabBar 由外层 TabView 管，
+/// 子页面的 toolbar 覆盖不到）。所以**所有版本统一走 UIKit 强制控制**：
+/// 直接找到宿主 UITabBarController 设 tabBar.isHidden，并同步修正底部安全区，
+/// 这样正文不会被空出来的 49pt 截掉。
 struct LNHidesTabBarModifier: ViewModifier {
-    @ViewBuilder
     func body(content: Content) -> some View {
-        if #available(iOS 16.0, *) {
-            content.toolbar(.hidden, for: .tabBar)
-        } else {
-            content
-                .onAppear { LNTabBarController.setHidden(true) }
-                .onDisappear { LNTabBarController.setHidden(false) }
-        }
+        content
+            .onAppear { LNTabBarController.setHidden(true) }
+            .onDisappear { LNTabBarController.setHidden(false) }
     }
 }
 
-/// 列表页显式恢复 tab 栏，避免 iOS 16 上从阅读页返回后偶发残留隐藏。
+/// 列表页兜底：确保从阅读页返回后 tab 栏恢复可见。
 struct LNShowsTabBarModifier: ViewModifier {
-    @ViewBuilder
     func body(content: Content) -> some View {
-        if #available(iOS 16.0, *) {
-            content.toolbar(.visible, for: .tabBar)
-        } else {
-            content.onAppear { LNTabBarController.setHidden(false) }
-        }
+        content.onAppear { LNTabBarController.setHidden(false) }
     }
 }
 
@@ -39,6 +31,9 @@ extension View {
 }
 
 enum LNTabBarController {
+    /// 记录哪些 tabBarController 当前被我们隐藏过（按对象地址），保证 inset 加减严格对称。
+    private static var hiddenTabs = Set<ObjectIdentifier>()
+
     static func setHidden(_ hidden: Bool) {
         Task { @MainActor in apply(hidden) }
     }
@@ -46,12 +41,25 @@ enum LNTabBarController {
     @MainActor
     private static func apply(_ hidden: Bool) {
         guard let controller = find() else { return }
-        guard controller.tabBar.isHidden != hidden else { return }
+        let id = ObjectIdentifier(controller)
+        guard hiddenTabs.contains(id) != hidden else { return }
+
+        // isHidden 会被 SwiftUI TabView 在下次布局时改回去，这里同时用 transform 兜底：
+        // 把 tabBar 平移到屏幕外，并把子控制器的底部附加安全区减掉 tabBar 高度，
+        // 否则正文底部会空出一条。
+        let height = controller.tabBar.frame.height
         UIView.performWithoutAnimation {
             controller.tabBar.isHidden = hidden
+            controller.tabBar.transform = hidden
+                ? CGAffineTransform(translationX: 0, y: height)
+                : .identity
+            for child in controller.viewControllers {
+                child.additionalSafeAreaInsets.bottom += hidden ? -height : height
+            }
             controller.view.setNeedsLayout()
             controller.view.layoutIfNeeded()
         }
+        if hidden { hiddenTabs.insert(id) } else { hiddenTabs.remove(id) }
     }
 
     @MainActor
