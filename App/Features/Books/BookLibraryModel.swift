@@ -176,6 +176,10 @@ final class BookLibraryModel: ObservableObject {
                     await restoreLocalCover(for: book, dataURL: "data:image/png;base64,\(cover.base64EncodedString())")
                 }
             }
+            // 覆盖安装（sideload 重签）后 App 容器路径会变，bookUrl 里的绝对路径失效，
+            // 但书文件本身仍在**新**容器的 LocalBooks 里。按文件名重新定位并修复，
+            // 否则书架会显示书、点开却报「本地书文件已丢失」。
+            await healStaleLocalBookPaths()
         } catch {
             if generation == loadGeneration, booksGeneration == bookSaveGeneration, groupsGeneration == groupSaveGeneration {
                 errorMessage = error.localizedDescription
@@ -185,6 +189,107 @@ final class BookLibraryModel: ObservableObject {
 
     func contains(_ book: Book) -> Bool {
         books.contains { $0.bookUrl == book.bookUrl }
+    }
+
+    /// Documents 下的书架备份目录（用户可在「文件」App 里看到）。
+    /// 这里的文件在 sideload 覆盖安装时通常随用户数据一起保留，是容器重置后的救命副本。
+    private var documentsBookBackupDirectory: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("本地小说", isDirectory: true)
+            .appendingPathComponent("_书架备份", isDirectory: true)
+    }
+
+    private func backupLocalBookToDocuments(_ url: URL) {
+        let fm = FileManager.default
+        let directory = documentsBookBackupDirectory
+        if !fm.fileExists(atPath: directory.path) {
+            try? fm.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+        let target = directory.appendingPathComponent(url.lastPathComponent)
+        guard !fm.fileExists(atPath: target.path) else { return }
+        try? fm.copyItem(at: url, to: target)
+    }
+
+    /// 修复覆盖安装后失效的本地书绝对路径。
+    ///
+    /// sideload 重签安装会改变 App 容器 UUID，`bookUrl` 里存的旧绝对路径
+    /// (`/var/mobile/Containers/Data/Application/<旧UUID>/.../LocalBooks/x.txt`)
+    /// 在新容器里不存在，但书文件已被系统一并搬到新容器的同一相对位置。
+    /// 这里按文件名在当前 `localDirectory` 重新定位：
+    /// · 找到 → 更新 bookUrl + originName，迁移阅读进度与章节缓存索引；
+    /// · 找不到（文件真的被删）→ 保留记录，由书架显示「文件已丢失」让用户重新导入。
+    private func healStaleLocalBookPaths() async {
+        let directory = localDirectory
+        let stale = books.enumerated().filter { item in
+            guard item.element.origin == "local",
+                  let url = URL(string: item.element.bookUrl), url.isFileURL else { return false }
+            return !FileManager.default.fileExists(atPath: url.path)
+        }
+        guard !stale.isEmpty else { return }
+
+        // 当前容器里实际存在的本地书文件（文件名 → URL）
+        let available: [String: URL]
+        do {
+            let entries = try FileManager.default.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles]
+            )
+            available = Dictionary(uniqueKeysWithValues: entries.compactMap { url in
+                guard (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { return nil }
+                return (url.lastPathComponent, url)
+            })
+        } catch {
+            return
+        }
+
+        // 容器整体重置时 LocalBooks 可能为空，再从 Documents 备份目录找
+        let backupDir = documentsBookBackupDirectory
+        var backupAvailable: [String: URL] = [:]
+        if let backupEntries = try? FileManager.default.contentsOfDirectory(
+            at: backupDir, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles]
+        ) {
+            for url in backupEntries where (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true {
+                backupAvailable[url.lastPathComponent] = url
+            }
+        }
+
+        var updated = books
+        var healedCount = 0
+        var progressMigrations: [(String, String)] = []
+        for (index, book) in stale {
+            guard let oldURL = URL(string: book.bookUrl) else { continue }
+            let filename = oldURL.lastPathComponent
+            // 优先精确匹配文件名；文件名被系统改过（大小写）时做一次不区分大小写的兜底
+            var match = available[filename]
+                ?? available.first(where: { $0.key.lowercased() == filename.lowercased() })?.value
+            if match == nil, let backup = backupAvailable[filename]
+                ?? backupAvailable.first(where: { $0.key.lowercased() == filename.lowercased() })?.value {
+                // 从 Documents 备份复制回当前 LocalBooks，保证 bookUrl 指向稳定的应用内路径
+                try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                let target = directory.appendingPathComponent(backup.lastPathComponent)
+                if (try? FileManager.default.copyItem(at: backup, to: target)) != nil {
+                    match = target
+                }
+            }
+            guard let target = match else { continue }
+            updated[index].bookUrl = target.absoluteString
+            updated[index].originName = target.lastPathComponent
+            progressMigrations.append((book.bookUrl, target.absoluteString))
+            healedCount += 1
+        }
+        guard healedCount > 0 else { return }
+        guard await persist(updated) else { return }
+
+        // 迁移阅读进度（pendingProgress 的 key 是 bookUrl）
+        for (old, new) in progressMigrations {
+            if let progress = pendingProgress.removeValue(forKey: old) {
+                pendingProgress[new] = progress
+            }
+        }
+        persistPendingProgress()
+        // 章节缓存的 key 也是旧 bookUrl，但本地书每次打开会重新解析文件重建目录，
+        // 这里不删缓存（删了反而丢目录），失配的旧缓存由缓存自己的 LRU 淘汰。
     }
 
     /// A reader holds a snapshot. Save only the setting it changed, retaining
@@ -624,6 +729,9 @@ final class BookLibraryModel: ObservableObject {
             let url = file.url
             do {
                 let stored = try await localFiles.importFile(from: url)
+                // 额外在 Documents（用户可见、sideload 覆盖安装通常保留）备份一份。
+                // 这样即使 App 数据容器被整体重置，也能从备份目录把书找回来。
+                backupLocalBookToDocuments(stored)
                 do {
                     try await addLocalFile(at: stored)
                 } catch {
