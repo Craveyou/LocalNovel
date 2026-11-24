@@ -1,5 +1,23 @@
 import SwiftUI
 
+/// 章末「下一章」的请求通道。
+/// 阅读页写入目标章并递增 token 后 dismiss 回章节列表；
+/// 章节列表用 `.onChange(of: token)` 消费（onAppear 从 NavigationLink 详情返回时不保证触发，
+/// 这是 b44 只回目录的根因），再 push 目标章。这样导航栈里始终只有一层阅读页，
+/// 点系统返回直接回目录，不会退到上一章。
+@MainActor
+final class LNReaderNavigation: ObservableObject {
+    static let shared = LNReaderNavigation()
+    @Published var token: Int = 0
+    var requested: LNChapter?
+    private init() {}
+
+    func requestNext(_ chapter: LNChapter) {
+        requested = chapter
+        token &+= 1
+    }
+}
+
 /// 三类共用阅读页（阶段 2：正文 + 插图；阶段 3 起加 [图NN] 混排；阶段 4-6 加媒体）。
 struct LNReaderView: View {
     let book: LNBook
@@ -7,6 +25,8 @@ struct LNReaderView: View {
     let source: any LNLibrarySource
     /// 完整章节列表（用于末尾「下一章」跳转）；不传则无跳转
     var chapters: [LNChapter] = []
+
+    @Environment(\.dismiss) private var dismiss
 
     @State private var content: LNChapterContent?
     @State private var errorMessage: String?
@@ -104,11 +124,12 @@ struct LNReaderView: View {
                             .foregroundStyle(ReadingTheme.ink.opacity(0.4))
                     }
                     if let next = nextChapter {
-                        // 章末跳转：直接 push 下一章。
-                        // 之前的 dismiss + 共享状态方案不可靠：返回后章节列表的 onAppear
-                        // 不保证触发（尤其从 NavigationLink 详情返回时），导致点了只回到目录。
-                        NavigationLink {
-                            LNReaderView(book: book, chapter: next, source: source, chapters: chapters)
+                        // 章末跳转：请求章节列表 push 下一章后自己退栈。
+                        // 不直接 NavigationLink push，否则每翻一章就多一层栈，
+                        // 系统返回会逐章回退而不是回目录。
+                        Button {
+                            LNReaderNavigation.shared.requestNext(next)
+                            dismiss()
                         } label: {
                             HStack(spacing: 8) {
                                 Text("下一章：\(next.displayName)")
