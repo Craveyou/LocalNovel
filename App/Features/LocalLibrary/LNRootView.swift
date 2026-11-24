@@ -210,13 +210,12 @@ struct LNChapterListView: View {
     @State private var selected: Set<LNChapter.ID> = []
     @State private var confirmDelete = false
     @ObservedObject private var nav = LNReaderNavigation.shared
-    @State private var activeChapter: LNChapter?
     @State private var showReader = false
 
     var body: some View {
         List(chapters, id: \.path, selection: $selected) { chapter in
             Button {
-                activeChapter = chapter
+                nav.current = chapter
                 showReader = true
             } label: {
                 HStack {
@@ -235,22 +234,11 @@ struct LNChapterListView: View {
             }
         }
         .environment(\.editMode, $editMode)
-        // 章末「下一章」：监听共享 token（从阅读页 dismiss 回来后 onChange 必定触发，
-        // 不像 onAppear 那样不稳定），把目标章设为当前 reader 并 push。
-        // 这样栈里始终只有一层阅读页，系统返回直接回目录。
-        .onChange(of: nav.token) { _ in
-            guard let requested = nav.requested else { return }
-            nav.requested = nil
-            // 等 dismiss 动画完成后再 push，避免转场冲突
-            Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 250_000_000)
-                activeChapter = requested
-                showReader = true
-            }
-        }
+        // 章末「下一章」：阅读页直接改 nav.current 原地换章（不退栈、无过渡），
+        // 这里不再需要监听 token/dismiss——栈里始终只有一层阅读页，系统返回直接回目录。
         .readingNavigationDestination(isPresented: $showReader) {
-            if let activeChapter {
-                LNReaderView(book: book, chapter: activeChapter, source: source, chapters: chapters)
+            if let current = nav.current {
+                LNReaderView(book: book, chapter: current, source: source, chapters: chapters)
             }
         }
         .navigationTitle(book.title)

@@ -1,32 +1,31 @@
 import SwiftUI
 
-/// 章末「下一章」的请求通道。
-/// 阅读页写入目标章并递增 token 后 dismiss 回章节列表；
-/// 章节列表用 `.onChange(of: token)` 消费（onAppear 从 NavigationLink 详情返回时不保证触发，
-/// 这是 b44 只回目录的根因），再 push 目标章。这样导航栈里始终只有一层阅读页，
-/// 点系统返回直接回目录，不会退到上一章。
+/// 「当前正在读的章」唯一事实源。
+/// 章节列表点章 → 写 current 并 push；阅读页章末「下一章」→ 直接改 current，
+/// 阅读页观察它原地换内容，**不退栈**。这样：
+/// - 换章无「回目录再进下一章」的过渡动画；
+/// - 导航栈里始终只有一层阅读页，系统返回直接回目录，不会退到上一章。
 @MainActor
 final class LNReaderNavigation: ObservableObject {
     static let shared = LNReaderNavigation()
-    @Published var token: Int = 0
-    var requested: LNChapter?
+    @Published var current: LNChapter?
     private init() {}
-
-    func requestNext(_ chapter: LNChapter) {
-        requested = chapter
-        token &+= 1
-    }
 }
 
 /// 三类共用阅读页（阶段 2：正文 + 插图；阶段 3 起加 [图NN] 混排；阶段 4-6 加媒体）。
 struct LNReaderView: View {
+    static let topAnchorID = "ln-reader-top-anchor"
+
     let book: LNBook
     let chapter: LNChapter
     let source: any LNLibrarySource
     /// 完整章节列表（用于末尾「下一章」跳转）；不传则无跳转
     var chapters: [LNChapter] = []
 
-    @Environment(\.dismiss) private var dismiss
+    /// 实际显示的章：优先取共享 current（章末「下一章」原地换章就靠它），
+    /// 兜底用构造参数（阅读页尚未被 current 覆盖时）。
+    @ObservedObject private var nav = LNReaderNavigation.shared
+    private var displayChapter: LNChapter { nav.current ?? chapter }
 
     @State private var content: LNChapterContent?
     @State private var errorMessage: String?
@@ -46,10 +45,11 @@ struct LNReaderView: View {
             }
         }
         .background(ReadingTheme.canvas.ignoresSafeArea())
-        .navigationTitle(chapter.displayName)
+        .navigationTitle(displayChapter.displayName)
         .navigationBarTitleDisplayMode(.inline)
         .lnHidesTabBar()
-        .task(id: chapter.id) { await load() }
+        // 章变化（含原地换章）时重新加载；flow 清空交给 load() 开头处理
+        .task(id: displayChapter.id) { await load() }
         .sheet(item: $showingImage) { item in
             LNImagePreview(item: item, source: source)
         }
@@ -63,8 +63,11 @@ struct LNReaderView: View {
             ReadingUnavailableView("这一章没有可显示的内容", systemImage: "doc.questionmark",
                                    description: Text("检查目录里是否有正文 txt / 图片 / 音视频。"))
         } else {
+            ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 14) {
+                    // 换章后滚动回顶部的锚点
+                    Color.clear.frame(height: 0).id(LNReaderView.topAnchorID)
                     if flow.isEmpty {
                         // 原排布：正文逐段 → 插图 → 章末媒体
                         ForEach(content.paragraphs.indices, id: \.self) { i in
@@ -124,12 +127,10 @@ struct LNReaderView: View {
                             .foregroundStyle(ReadingTheme.ink.opacity(0.4))
                     }
                     if let next = nextChapter {
-                        // 章末跳转：请求章节列表 push 下一章后自己退栈。
-                        // 不直接 NavigationLink push，否则每翻一章就多一层栈，
-                        // 系统返回会逐章回退而不是回目录。
+                        // 章末跳转：直接原地换章（共享 current），不退栈、无过渡动画；
+                        // 返回键依旧回目录，因为栈里始终只有这一层阅读页。
                         Button {
-                            LNReaderNavigation.shared.requestNext(next)
-                            dismiss()
+                            LNReaderNavigation.shared.current = next
                         } label: {
                             HStack(spacing: 8) {
                                 Text("下一章：\(next.displayName)")
@@ -150,6 +151,11 @@ struct LNReaderView: View {
                 }
                 .padding(.horizontal, 18)
                 .padding(.vertical, 14)
+            }
+            // 原地换章后把滚动位置拉回顶部（内容替换不会自动复位）
+            .onChange(of: displayChapter.id) { _ in
+                proxy.scrollTo(LNReaderView.topAnchorID, anchor: .top)
+            }
             }
             // 逐段开启 textSelection 会为每个 Text 建一套选择层，滚动很吃亏；
             // 挂在 ScrollView 上效果一样，开销只算一次。
@@ -173,14 +179,18 @@ struct LNReaderView: View {
 
     /// 当前章的下一章（按章节列表顺序）
     private var nextChapter: LNChapter? {
-        guard let index = chapters.firstIndex(where: { $0.path == chapter.path }),
+        guard let index = chapters.firstIndex(where: { $0.path == displayChapter.path }),
               chapters.indices.contains(index + 1) else { return nil }
         return chapters[index + 1]
     }
 
     private func load() async {
+        // 换章先清旧内容：避免原地换章时短暂停留在上一章的正文上
+        flow = []
+        content = nil
+        errorMessage = nil
         do {
-            let loaded = try await LNContentLoader.load(chapter, source: source)
+            let loaded = try await LNContentLoader.load(displayChapter, source: source)
             flow = LNInlineFlow.blocks(paragraphs: loaded.paragraphs,
                                        images: loaded.images,
                                        category: book.category)

@@ -6,6 +6,12 @@ import AVFoundation
 ///
 /// 重要：内嵌播放器与全屏播放器**必须共用同一个 AVPlayer 实例**。
 /// 之前两处各自 `AVPlayer(url:)`，全屏时两个播放器同时在播 → 双音轨。
+///
+/// 实现要点（b47）：
+/// - 加载后**不设 rate**：AVPlayer 对未播放的实例直接设 `rate = 1.0` 会立刻开播，
+///   这就是「没点播放自己响」的根因；倍速只在正在播放时套用。
+/// - 长按手势不能挂在 SwiftUI 层（会被 AVPlayerViewController 的系统手势吞掉），
+///   改为在自定义 UIViewRepresentable 里给播放器视图挂 UIGestureRecognizer 并行识别。
 struct LNVideoView: View {
     let item: LNMediaItem
     let source: any LNLibrarySource
@@ -29,7 +35,7 @@ struct LNVideoView: View {
                     .foregroundStyle(.secondary)
             } else if let player {
                 ZStack {
-                    VideoPlayer(player: player)
+                    LNPlayerSurface(player: player, onLongPress: cycleSpeed)
                         .frame(height: 240)
                         .clipShape(RoundedRectangle(cornerRadius: 12))
                         // 全屏时内嵌画面仍然渲染同一 player，视觉上没问题（只有一个音轨）
@@ -59,10 +65,6 @@ struct LNVideoView: View {
                             }
                         }
                 }
-                // 长按循环倍速
-                .onLongPressGesture(minimumDuration: 0.5) {
-                    cycleSpeed()
-                }
                 .overlay(alignment: .center) {
                     if let speedHint {
                         Text(speedHint)
@@ -72,6 +74,12 @@ struct LNVideoView: View {
                             .background(Color.black.opacity(0.7), in: Capsule())
                             .transition(.opacity)
                     }
+                }
+                // 播放/暂停由系统控制条接管；用户点播放时把记住的倍速套回去
+                // （VideoPlayer 的 play 固定以 1.0 开播）
+                .onReceive(player.publisher(for: \.timeControlStatus)) { status in
+                    guard status == .playing, player.rate != speed else { return }
+                    player.rate = speed
                 }
             } else {
                 ZStack {
@@ -115,7 +123,7 @@ struct LNVideoView: View {
             return
         }
         let p = AVPlayer(url: url)
-        p.rate = speed
+        // 注意：这里绝不能 p.rate = speed —— 未播放的 player 直接设 rate 会立刻开播
         player = p
         let asset = AVURLAsset(url: url)
         if let cm = try? await asset.load(.duration) {
@@ -126,7 +134,11 @@ struct LNVideoView: View {
 
     private func applySpeed(_ value: Float) {
         speed = value
-        player?.rate = value
+        // 暂停状态下直接设 rate 会把视频启动起来；只在正在播放时改 rate，
+        // 暂停时先记住，等用户点播放后由 timeControlStatus 监听套用。
+        if let player, player.timeControlStatus == .playing {
+            player.rate = value
+        }
     }
 
     private func cycleSpeed() {
@@ -233,5 +245,69 @@ private struct LNVideoFullscreen: View {
     /// 请求横屏：优先用项目的 ReaderScreenOrientation，它封装了 iOS 16 的 requestGeometryUpdate
     private func requestLandscape() {
         ReaderScreenOrientation.apply("5")  // landscapeLeft
+    }
+}
+
+/// AVPlayerViewController 的 SwiftUI 包装：
+/// 系统播放控制条照常可用，同时给画面挂一个与系统手势**并行识别**的长按手势。
+///
+/// 为什么不用 SwiftUI 的 `.onLongPressGesture`：VideoPlayer / AVPlayerViewController
+/// 内部的 UIKit 手势（点按呼出控制条等）优先级更高，SwiftUI 层的长按收不到任何事件。
+private struct LNPlayerSurface: UIViewRepresentable {
+    let player: AVPlayer
+    let onLongPress: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(onLongPress: onLongPress) }
+
+    func makeUIView(context: Context) -> UIView {
+        let container = UIView()
+        container.backgroundColor = .black
+
+        let controller = AVPlayerViewController()
+        controller.player = player
+        controller.showsPlaybackControls = true
+        let surface = controller.view ?? UIView()
+        surface.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        surface.frame = container.bounds
+        container.addSubview(surface)
+        // 必须持有 controller，否则控制条会被释放
+        context.coordinator.controller = controller
+
+        let longPress = UILongPressGestureRecognizer(
+            target: context.coordinator,
+            action: #selector(Coordinator.handle(_:))
+        )
+        longPress.minimumPressDuration = 0.4
+        longPress.cancelsTouchesInView = false
+        longPress.delegate = context.coordinator
+        container.addGestureRecognizer(longPress)
+        return container
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        context.coordinator.onLongPress = onLongPress
+        if context.coordinator.controller?.player !== player {
+            context.coordinator.controller?.player = player
+        }
+    }
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var onLongPress: () -> Void
+        weak var controller: AVPlayerViewController?
+
+        init(onLongPress: @escaping () -> Void) {
+            self.onLongPress = onLongPress
+        }
+
+        @objc func handle(_ gesture: UILongPressGestureRecognizer) {
+            guard gesture.state == .began else { return }
+            onLongPress()
+        }
+
+        // 与系统播放控件的手势并行识别，互不阻断
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                               shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+            true
+        }
     }
 }
