@@ -1,0 +1,1190 @@
+#!/usr/bin/env python3
+"""S1 等价验证：用 Python 复刻 Core 层算法，在真实目录树上跑测试用例。
+
+与 Swift 文件一一对应：
+  NaturalSort.swift / MediaResolver.swift / BookScanner.swift / BookSections.swift
+  ChapterSplitter.swift / EpubParser.swift / ChapterTitleCleaner.swift
+
+覆盖：自然排序、全角数字、媒体分类、章节装配、三分区扫描、
+      漫画「部 → 话」多级层级、pdf 单话、单文件小说自动分章、epub 解析、旧结构兼容。
+"""
+from __future__ import annotations
+
+import os
+import re
+import sys
+import tempfile
+import unicodedata
+import zipfile
+from dataclasses import dataclass, field
+from functools import cmp_to_key
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+SAMPLE = ROOT / "SampleBook"
+
+# ---------------------------------------------------------------- 等价实现
+
+TEXT_EXT = {"txt", "text", "md", "markdown"}
+IMAGE_EXT = {"jpg", "jpeg", "png", "gif", "webp", "heic", "heif", "bmp", "tiff", "tif", "apng"}
+VIDEO_EXT = {"mp4", "mov", "m4v"}
+AUDIO_EXT = {"mp3", "m4a", "aac", "wav", "aiff", "aif", "flac", "caf"}
+ANIMATED_EXT = {"gif", "apng"}
+NOVEL_EXT = {"txt", "text", "md", "markdown", "epub", "pdf"}
+SECTIONS = {"novel": "小说", "comic": "漫画", "organized": "整理", "shortDrama": "短剧"}
+LOOSE_VIDEO_EXT = VIDEO_EXT | {"avi", "mkv", "wmv", "flv", "webm", "ts", "m2ts", "mts",
+                               "rmvb", "rm", "3gp", "mpg", "mpeg", "vob", "ogv", "asf", "divx"}
+
+# ---------------------------------------------------------------- 单文件章节分流（对齐 MediaResolver.resolveSingleFile）
+
+def resolve_single(path: Path):
+    """返回 (kind, text, images, av)：短剧的一集视频不再被当成正文。"""
+    ext = path.suffix.lower().lstrip(".")
+    if ext == "pdf":
+        return ("pdf", None, [], [])
+    if ext in IMAGE_EXT:
+        return ("image", None, [path.name], [])
+    if ext in VIDEO_EXT or ext in LOOSE_VIDEO_EXT:
+        return ("video", None, [], [path.name])
+    if ext in AUDIO_EXT:
+        return ("audio", None, [], [path.name])
+    return ("text", path.name, [], [])
+
+
+def nas_drama_chapters(book: Path):
+    """对齐 NASPlanner.dramaChapters 的一层：图片目录 = 剧照包，视频 = 每集。"""
+    out = []
+    for sub in [d for d in book.iterdir() if d.is_dir()]:
+        files = [f for f in sub.iterdir() if f.is_file()]
+        images = [f for f in files if f.suffix.lower().lstrip(".") in IMAGE_EXT]
+        videos = [f for f in files if f.suffix.lower().lstrip(".") in VIDEO_EXT]
+        if images:
+            out.append((sub.name, "images", None))
+        for v in sorted(videos, key=lambda f: f.name):
+            out.append((v.stem, "video", sub.name))
+    return out
+
+
+
+def normalize(s: str) -> str:
+    """对齐 Swift：NFC 合成 + 全角 ASCII/空格转半角"""
+    s = unicodedata.normalize("NFC", s)
+    out = []
+    for ch in s:
+        v = ord(ch)
+        if v == 0x3000:
+            out.append(" ")
+        elif 0xFF01 <= v <= 0xFF5E:
+            out.append(chr(v - 0xFEE0))
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def tokenize(s: str):
+    return re.findall(r"\d+|\D+", s)
+
+
+def cmp_numbers(a: str, b: str) -> int:
+    x, y = a.lstrip("0") or "0", b.lstrip("0") or "0"
+    if len(x) != len(y):
+        return -1 if len(x) < len(y) else 1
+    return (x > y) - (x < y)
+
+
+def cmp_text(a: str, b: str) -> int:
+    return (a > b) - (a < b)
+
+
+def natural_less(a_raw: str, b_raw: str) -> bool:
+    a, b = normalize(a_raw), normalize(b_raw)
+    if a == b:
+        return a_raw < b_raw
+    ta, tb = tokenize(a), tokenize(b)
+    for x, y in zip(ta, tb):
+        if x.isdigit() and y.isdigit():
+            r = cmp_numbers(x, y)
+        else:
+            r = cmp_text(x, y)
+        if r:
+            return r < 0
+    return len(ta) < len(tb)
+
+
+def natural_cmp(a, b):
+    return 0 if a == b else (-1 if natural_less(a, b) else 1)
+
+
+def natural_sorted(items, key=lambda x: x):
+    return sorted(items, key=cmp_to_key(lambda x, y: natural_cmp(key(x), key(y))))
+
+
+def ext(name: str) -> str:
+    return name.rsplit(".", 1)[-1].lower() if "." in name else ""
+
+
+def stem(name: str) -> str:
+    return name.rsplit(".", 1)[0] if "." in name else name
+
+
+def is_hidden(name: str) -> bool:
+    return name.startswith(".") or name in {"Thumbs.db", "desktop.ini", "放书说明.txt"}
+
+
+def classify(name: str):
+    e = ext(name)
+    if e in TEXT_EXT:
+        return "text"
+    if e in IMAGE_EXT:
+        return "image"
+    if e in VIDEO_EXT:
+        return "video"
+    if e in AUDIO_EXT:
+        return "audio"
+    return None
+
+
+def image_sequence(name: str):
+    s = normalize(stem(name))
+    return int(s) if s.isdigit() else None
+
+
+def animated_by_ext(url: Path) -> bool:
+    return ext(url.name) in ANIMATED_EXT
+
+
+@dataclass
+class MediaItem:
+    url: Path
+    kind: str
+    sequence: int | None
+    is_animated: bool = False
+
+    @property
+    def file_name(self):
+        return self.url.name
+
+
+@dataclass
+class Chapter:
+    url: Path
+    raw_name: str
+    title: str
+    kind: str = "folder"      # folder / file / slice
+    group: str | None = None
+    start: int | None = None  # slice 起始偏移(AST 码点，示例文本均为 BMP)
+    length: int | None = None
+
+    @property
+    def display_title(self):
+        if self.group and self.group != self.title:
+            return f"{self.group} · {self.title}"
+        return self.title
+
+
+@dataclass
+class ChapterContent:
+    chapter: Chapter
+    text_url: Path | None
+    images: list[MediaItem]
+    av: list[MediaItem]
+    ignored: list[str] = field(default_factory=list)
+    pdf_url: Path | None = None
+
+
+@dataclass
+class Book:
+    path: Path
+    title: str
+    category: str
+    chapters: list[Chapter]
+    series: str | None = None
+
+
+def resolve_chapter(ch: Chapter, animated_detector=animated_by_ext) -> ChapterContent:
+    if ch.kind != "folder":
+        if ext(ch.url.name) == "pdf":
+            return ChapterContent(ch, None, [], [], [], ch.url)
+        kind = classify(ch.url.name)
+        if kind in ("video", "audio"):
+            return ChapterContent(ch, None, [], [MediaItem(ch.url, kind, None)], [], None)
+        return ChapterContent(ch, ch.url, [], [], [], None)
+    if not ch.url.is_dir():
+        return ChapterContent(ch, None, [], [], [], None)
+
+    texts, images, av, ignored = [], [], [], []
+    pdf_url = None
+    for p in sorted(ch.url.iterdir(), key=lambda x: x.name):
+        name = p.name
+        if is_hidden(name) or not p.is_file():
+            continue
+        if ext(name) == "pdf":
+            if pdf_url is None:
+                pdf_url = p
+            else:
+                ignored.append(name)
+            continue
+        kind = classify(name)
+        if kind is None:
+            ignored.append(name)
+            continue
+        if kind == "text":
+            texts.append(p)
+        elif kind == "image":
+            anim = animated_detector(p)
+            images.append(MediaItem(p, "animatedImage" if anim else "image",
+                                    image_sequence(name), anim))
+        elif kind in ("video", "audio"):
+            av.append(MediaItem(p, kind, None))
+
+    texts = natural_sorted(texts, key=lambda p: p.name)
+    text_url = texts[0] if texts else None
+    ignored += [p.name for p in texts[1:]]
+
+    with_seq = [m for m in images if m.sequence is not None]
+    no_seq = [m for m in images if m.sequence is None]
+
+    def seq_cmp(a, b):
+        sc = (a.sequence > b.sequence) - (a.sequence < b.sequence)
+        return sc if sc else natural_cmp(a.file_name, b.file_name)
+
+    with_seq.sort(key=cmp_to_key(seq_cmp))
+    no_seq = natural_sorted(no_seq, key=lambda m: m.file_name)
+    av = natural_sorted(av, key=lambda m: m.file_name)
+    return ChapterContent(ch, text_url, with_seq + no_seq, av, ignored, pdf_url)
+
+
+def subdirectories(folder: Path):
+    if not folder.is_dir():
+        return []
+    dirs = [p for p in folder.iterdir() if p.is_dir() and not is_hidden(p.name)]
+    return natural_sorted(dirs, key=lambda p: p.name)
+
+
+def files_in(folder: Path):
+    if not folder.is_dir():
+        return []
+    return [p for p in folder.iterdir() if p.is_file() and not is_hidden(p.name)]
+
+
+# ---------------- 小说 ----------------
+
+def scan_novel(root: Path):
+    """每个电子书文件一本书；根目录下的子文件夹 = 一个系列（"系列 · 子系列"）"""
+    found: list[tuple[Path, str | None]] = []
+
+    def collect(d: Path, depth: int, series: list[str]):
+        for p in sorted(d.iterdir()):
+            if is_hidden(p.name):
+                continue
+            if p.is_dir():
+                if depth < 3:
+                    collect(p, depth + 1, series + [p.name])
+            elif ext(p.name) in NOVEL_EXT:
+                found.append((p, " · ".join(series) if series else None))
+
+    if root.is_dir():
+        collect(root, 0, [])
+    books = [Book(p, stem(p.name), "novel",
+                  [Chapter(p, p.name, stem(p.name), "slice")], series)
+             for p, series in found]
+    return natural_sorted(books, key=lambda b: b.title)
+
+
+# ---------------- 漫画 ----------------
+
+def collect_comic(dir_path: Path, book_root: Path, depth: int, group: list[str]):
+    if depth > 5:
+        return []
+    images = [p for p in files_in(dir_path) if ext(p.name) in IMAGE_EXT]
+    pdfs = [p for p in files_in(dir_path) if ext(p.name) == "pdf"]
+    is_root = dir_path == book_root
+
+    chapters: list[Chapter] = []
+    if images:
+        chapters.append(Chapter(dir_path, dir_path.name, dir_path.name,
+                                "folder", " · ".join(group)))
+
+    pdf_group = "" if is_root else " · ".join(group + [dir_path.name])
+    for pdf in pdfs:
+        chapters.append(Chapter(pdf, pdf.name, stem(pdf.name), "file", pdf_group))
+
+    if depth < 5:
+        next_group = group if is_root else group + [dir_path.name]
+        for sub in subdirectories(dir_path):
+            chapters += collect_comic(sub, book_root, depth + 1, next_group)
+    return chapters
+
+
+def sort_comic_chapters(chapters: list[Chapter]):
+    """先按分组（卷名 / 格式包名）、再按话名自然排序，等价于 Swift ComicScanner.sortChapters。"""
+    out = natural_sorted(chapters, key=lambda c: str(c.url))
+    out = natural_sorted(out, key=lambda c: c.title)
+    named = natural_sorted([c for c in out if c.group], key=lambda c: c.group or "")
+    return named + [c for c in out if not c.group]
+
+
+def scan_comic(root: Path):
+    books: list[Book] = []
+    for folder in subdirectories(root):
+        chapters = collect_comic(folder, folder, 0, [])
+        if chapters:
+            books.append(Book(folder, folder.name, "comic", sort_comic_chapters(chapters)))
+    if not books and root.is_dir():
+        has_media = any(ext(p.name) in IMAGE_EXT or ext(p.name) == "pdf"
+                        for p in files_in(root))
+        if has_media:
+            chapters = collect_comic(root, root, 0, [])
+            if chapters:
+                books.append(Book(root, root.name, "comic", chapters))
+    return books
+
+
+# ---------------- 短剧 ----------------
+
+def collect_short(dir_path: Path, root: Path, depth: int, group: list[str]):
+    files = [p for p in files_in(dir_path)]
+    images = [p for p in files if ext(p.name) in IMAGE_EXT]
+    videos = [p for p in files if ext(p.name) in VIDEO_EXT]
+    is_root = dir_path == root
+    own_group = [] if is_root else group + [dir_path.name]
+    out: list[Chapter] = []
+
+    if images:
+        out.append(Chapter(dir_path, dir_path.name,
+                           "剧照" if is_root else dir_path.name, "folder", None))
+
+    video_group = " · ".join(own_group) if own_group else None
+    for v in natural_sorted(videos, key=lambda p: p.name):
+        out.append(Chapter(v, v.name, stem(v.name), "file", video_group))
+
+    if depth < 3:
+        for sub in subdirectories(dir_path):
+            out += collect_short(sub, root, depth + 1, own_group)
+    return out
+
+
+def sort_short(chapters: list[Chapter]):
+    """剧照在前，其余按 包名 → 集名 自然排序"""
+    images = [c for c in chapters if c.kind == "folder"]
+    rest = [c for c in chapters if c.kind != "folder"]
+    named = natural_sorted([c for c in rest if c.group], key=lambda c: c.group or "")
+    loose = [c for c in rest if not c.group]
+    return images + named + loose
+
+
+def scan_short_drama(root: Path):
+    if not root.is_dir():
+        return []
+    books: list[Book] = []
+    for folder in subdirectories(root):
+        chapters = collect_short(folder, folder, 0, [])
+        if chapters:
+            books.append(Book(folder, folder.name, "shortDrama", sort_short(chapters)))
+    for v in [p for p in files_in(root) if ext(p.name) in VIDEO_EXT]:
+        books.append(Book(v, stem(v.name), "shortDrama",
+                          [Chapter(v, v.name, stem(v.name), "file", None)]))
+    return natural_sorted(books, key=lambda b: b.title)
+
+# ---------------- 整理 ----------------
+
+def scan_organized(root: Path):
+    if not root.is_dir():
+        return []
+    dirs = subdirectories(root)
+    media = [p for p in files_in(root) if classify(p.name) is not None]
+
+    if not dirs:
+        if not media:
+            return []
+        return [Book(root, root.name, "organized",
+                     [Chapter(root, root.name, root.name)])]
+
+    if subdirectories(dirs[0]):
+        books = []
+        for bf in dirs:
+            chapters = [Chapter(cf, cf.name, cf.name) for cf in subdirectories(bf)]
+            books.append(Book(bf, bf.name, "organized",
+                              natural_sorted(chapters, key=lambda c: c.raw_name)))
+        return natural_sorted(books, key=lambda b: b.title)
+
+    chapters = natural_sorted([Chapter(cf, cf.name, cf.name) for cf in dirs],
+                              key=lambda c: c.raw_name)
+    return [Book(root, root.name, "organized", chapters)]
+
+
+# ---------------- 入口 ----------------
+
+def scan_sections(root: Path):
+    """返回 (layout, books)"""
+    if not root.is_dir():
+        return ("unreadable", [])
+
+    items = [p for p in root.iterdir() if not is_hidden(p.name)]
+    dirs = natural_sorted([p for p in items if p.is_dir()], key=lambda p: p.name)
+    has_section_child = any(p.name in SECTIONS.values() for p in dirs)
+
+    # 情形 1：直接选中某个分区
+    if root.name in SECTIONS.values() and not has_section_child:
+        key = next(k for k, v in SECTIONS.items() if v == root.name)
+        scanner = {"novel": scan_novel, "comic": scan_comic, "organized": scan_organized,
+                   "shortDrama": scan_short_drama}[key]
+        return ("singleSection", scanner(root))
+
+    # 情形 2：三分区书库根
+    present = [p for p in dirs if p.name in SECTIONS.values()]
+    if present:
+        books: list[Book] = []
+        for section in present:
+            key = next(k for k, v in SECTIONS.items() if v == section.name)
+            scanner = {"novel": scan_novel, "comic": scan_comic,
+                       "organized": scan_organized, "shortDrama": scan_short_drama}[key]
+            books += scanner(section)
+        for plain in dirs:
+            if plain.name not in SECTIONS.values():
+                books += scan_organized(plain)
+        return ("sections", natural_sorted(books, key=lambda b: b.title))
+
+    # 情形 3：旧书库
+    legacy = scan_organized(root)
+    if legacy:
+        return ("legacyRoot", legacy)
+    return ("empty", [])
+
+
+# ---------------- 分章 ----------------
+
+HEADING_RE = re.compile(
+    r"^[\s\u3000]*("
+    r"第[0-9０-９一二三四五六七八九十百千万零〇两]{1,8}[章节回卷话集篇部]"
+    r"|Chapter\s+\d{1,4}"
+    r"|(序章|序言|楔子|引子|前言|尾声|终章|后记|番外|外传)[\s\u3000:：·、-]*"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def split_text(text: str):
+    """对齐 Swift ChapterSplitter.split，返回 [(title, start, length)]"""
+    if not text:
+        return [("", 0, 0)]
+    headings = []
+    pos = 0
+    for line in text.splitlines(keepends=True):
+        line_start = pos
+        pos += len(line)
+        bare = line.strip()
+        if bare and len(bare) <= 48 and HEADING_RE.match(bare):
+            headings.append((re.sub(r"  +", " ", bare), line_start, pos))
+
+    if len(headings) < 2:
+        return [("", 0, len(text))]
+
+    slices = []
+    if headings[0][1] > 0:
+        head = text[:headings[0][1]]
+        if head.strip():
+            slices.append(("开篇", 0, headings[0][1]))
+    for i, (title, start, body_start) in enumerate(headings):
+        end = headings[i + 1][1] if i + 1 < len(headings) else len(text)
+        body_start = min(body_start, end)
+        if body_start < end:
+            slices.append((title or f"第 {i + 1} 章", body_start, end - body_start))
+        else:
+            slices.append((title or f"第 {i + 1} 章", start, end - start))
+    return slices
+
+
+# ---------------- epub ----------------
+
+def epub_slices(path: Path):
+    """对齐 EpubParser：container.xml → opf → spine → xhtml 取文字"""
+    try:
+        with zipfile.ZipFile(path) as z:
+            container = z.read("META-INF/container.xml").decode("utf-8", "ignore")
+            m = re.search(r'full-path\s*=\s*"([^"]+)"', container)
+            if not m:
+                return []
+            opf_path = m.group(1)
+            opf = z.read(opf_path).decode("utf-8", "ignore")
+            base = opf_path.rsplit("/", 1)[0] if "/" in opf_path else ""
+
+            manifest = {}
+            for attrs in re.findall(r"(?is)<item\b([^>]*)>", opf):
+                i = re.search(r'id\s*=\s*"([^"]+)"', attrs)
+                h = re.search(r'href\s*=\s*"([^"]+)"', attrs)
+                med = re.search(r'media-type\s*=\s*"([^"]+)"', attrs)
+                if i and h and (not med or "html" in med.group(1)):
+                    manifest[i.group(1)] = h.group(1)
+            spine = re.findall(r'(?is)<itemref\b[^>]*idref\s*=\s*"([^"]+)"', opf)
+
+            names = [manifest[s] for s in spine if s in manifest] or sorted(manifest.values())
+            result = []
+            for href in names:
+                link = (base + "/" + href) if base else href
+                link = re.sub(r"/\./", "/", link)
+                try:
+                    html = z.read(link).decode("utf-8", "ignore")
+                except KeyError:
+                    continue
+                body = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", html)
+                body = re.sub(r"(?i)<br\s*/?>", "\n", body)
+                body = re.sub(r"(?i)</(p|div|h[1-6]|li|tr|section|article|blockquote)>", "\n", body)
+                body = re.sub(r"(?s)<[^>]+>", "", body)
+                body = re.sub(r"&nbsp;", " ", body).replace("&amp;", "&")
+                body = body.strip()
+                if not body:
+                    continue
+                h = re.search(r"(?is)<h1[^>]*>(.*?)</h1>", html) or \
+                    re.search(r"(?is)<title[^>]*>(.*?)</title>", html)
+                title = re.sub(r"(?s)<[^>]+>", "", h.group(1)).strip() if h else ""
+                result.append(title or stem(Path(href).name))
+            return result
+    except Exception:
+        return []
+
+
+# ---------------------------------------------------------------- 测试用例
+
+PASS, FAIL = [], []
+
+
+def check(name, cond, detail=""):
+    (PASS if cond else FAIL).append(name)
+    mark = "PASS" if cond else "FAIL"
+    print(f"  [{mark}] {name}" + (f"  -> {detail}" if detail else ""))
+
+
+def clean_title(raw: str) -> str:
+    patterns = [
+        r"^\s*[\[\(【]?\d+[\]\)】]?\s*[._\-、:：]?\s*",
+        r"^\s*[\[\(【]?\d+[\]\)】]\s*",
+        r"^\s*第[0-9一二三四五六七八九十百千零〇两]+[章节回部卷集篇]\s*[.、:：]?\s*",
+    ]
+    s = normalize(raw)
+    for p in patterns:
+        m = re.match(p, s)
+        if m:
+            s = s[m.end():]
+            break
+    return s.strip() or raw
+
+
+
+# ==== 翻页分页（TextPaginator 的等价实现）====
+# Swift 用 CoreText 逐页测量；这里用「每行字符数 / 每页行数」的简化排版，
+# 验证的是分页区间不重叠、不丢字、段落映射单调、页码反查正确，而不是字形宽度。
+
+def paragraph_starts(paragraphs):
+    starts, offset = [], 0
+    for p in paragraphs:
+        starts.append(offset)
+        offset += len(p) + 1
+    return starts
+
+
+def paragraph_index(location, starts):
+    result = 0
+    for i, start in enumerate(starts):
+        if start <= location:
+            result = i
+        else:
+            break
+    return result
+
+
+def page_index_for_paragraph(paragraph, pages):
+    result = 0
+    for i, (_, _, para) in enumerate(pages):
+        if para <= paragraph:
+            result = i
+        else:
+            break
+    return result
+
+
+def paginate(paragraphs, chars_per_line=20, lines_per_page=12):
+    text = "\n".join(paragraphs)
+    starts = paragraph_starts(paragraphs)
+    total = len(text)
+    pages, location = [], 0
+    while location < total:
+        end, lines = location, 0
+        while lines < lines_per_page and end < total:
+            line_end = min(end + chars_per_line, total)
+            nl = text.find("\n", end, line_end)
+            if nl >= 0:
+                line_end = nl + 1
+            end = line_end
+            lines += 1
+        if end <= location:
+            break
+        chunk = text[location:end]
+        if chunk.strip():
+            pages.append((location, end - location, paragraph_index(location, starts)))
+        location = end
+    return pages, starts
+
+
+# ---------------------------------------------------------------- 文本编码探测（对齐 TextLoader.decodeAutomatically）
+
+_COMMON_RAW = """的一是了我不人在他有这上们来到时大地为子中你说生国年着就那和要她出也得里后自以会家可下而过天去能对小多然于心学么之都好看起发当没成只如事把还用第样道想作种开美总从无情己面最女但现前些所同日手又行意动方期它头经长儿回位分爱老因很给名法间斯知世什两次使身者被高已亲其进此话常与活正感见明问力理尔点文几定本公特做外孩相西果走将月十实向声车全信重三机工物气每并别真打太新比才便夫再书部水像眼等体却加电主界门利海受听表德少克代员许先口由死安写性马光白或住难望教命花结乐色更拉东神记处让母父应直字场平报友关放至张认接告入笑内英军候民岁往何度山觉路带万男边风解叫任金快原吃妈变通师立象数四失满战远格士音轻目条呢病始达深完今提求清王化空业思切怎非找片钱吗语元喜曾离飞科言干流欢约各即指合反题必该论交终林请医晚制球决传画保读运及则房早院量苦火布品近坐产答星精视五连司奇管类未朋且台夜青北队久乎越观落尽形影红爸百令周吧识步希术留市半热送兴造谈容极随演收首根讲整式取照办强石古华拿计您装似足双转诉米称丽客南领节衣站黑刻统断福城故历惊脸选包紧争另建维绝树系伤示愿持千史谁准联妇纪基买志静诗独复痛消社算义竟确酒需单治卡幸念举仅钟怕共毛句息功官待究跟穿室易游程号居考突皮哪费倒价图具刚脑永歌响商礼细专黄块脚味灵改据般破引食仍存众注笔甚某沉血备习校默务土微娘须试怀料调广苏显赛查密议底列富梦错座参八除跑亮假印设线温虽掉京初养香停际致阳纸李纳验助激够严证帝饭忘趣支春集丈木研班普导顿睡展跳获艺六波察群皇段急庭创区奥器谢弟店否害草排背止组州朝封睛板角况曲馆育忙质河续哥呼若推境遇雨标姐充围案伦护冷警贝雪索剧船险烟依斗值帮汉慢佛肯闻唱沙局伯族低玩资屋击速顾泪洲团圣旁堂兵七露园牛哭旅街劳型烈姑陈莫鱼异抱宝权鲁简态级票怪寻杀律胜份汽右洋范床舞秘午登楼贵吸责例追较职属渐左录丝牙党继托赶章智冲叶胡吉卖坚喝肉遗救修松临藏担戏善卫药悲敢靠村戴词森耳差短祖云规窗散迷油旧适乡架恩投弹铁博雷府压超负勒杂醒洗采毫嘴毕九冰既状乱景席珍童顶派素脱农疑练野按犯拍征坏骨余承置彩灯巨琴免环暗换技翻束增忍餐缺忆判欧层付阵批岛项狗休懂武革良恶恋委拥妙探呀营退摇弄桌熟宣银势奖宫忽套康供优课鸟喊降夏困罪亡鞋健模败伴守挥鲜财孤枪禁恐伙杰迹妹遍盖副坦牌江顺秋菜划授归浪凡预奶雄升编典袋含盛济蒙棋端腿招释介烧误"""
+COMMON_HANZI = {c for c in _COMMON_RAW if not c.isspace()}
+
+
+def text_readability(s: str) -> float:
+    total = 0
+    good = 0.0
+    bad = 0.0
+    for ch in s:
+        if total >= 4000:
+            break
+        total += 1
+        v = ord(ch)
+        if v in (0x09, 0x0A, 0x0D, 0x20):
+            good += 1.0
+        elif 0x21 <= v <= 0x7E:
+            good += 0.9
+        elif 0x4E00 <= v <= 0x9FFF:
+            good += 1.5 if ch in COMMON_HANZI else 0.7
+        elif 0x3000 <= v <= 0x303F or 0xFF01 <= v <= 0xFF65:
+            good += 1.6
+        elif 0x2000 <= v <= 0x206F:
+            good += 1.2
+        elif 0x3040 <= v <= 0x30FF or 0xAC00 <= v <= 0xD7AF:
+            good += 1.0
+        elif 0x3400 <= v <= 0x4DBF or 0x20000 <= v <= 0x2FA1F:
+            bad += 1.0
+        elif v == 0xFFFD:
+            bad += 4.0
+        elif 0xE000 <= v <= 0xF8FF:
+            bad += 4.0
+        else:
+            if v < 0x20:
+                bad += 3.0
+            else:
+                good += 0.5
+    return (good - bad) / total if total else 0.0
+
+
+def text_is_garbled(s: str) -> bool:
+    if any(tag in s for tag in ("锟斤拷", "烫烫烫", "屯屯屯")):
+        return True
+    total = 0
+    bad = 0
+    for ch in s:
+        if total >= 4000:
+            break
+        total += 1
+        v = ord(ch)
+        if v == 0xFFFD or 0xE000 <= v <= 0xF8FF:
+            bad += 1
+    return total > 0 and bad / total > 0.005
+
+
+def looks_like_bomless_utf16(data: bytes) -> bool:
+    if len(data) < 8 or len(data) % 2:
+        return False
+    sample = min(len(data), 512)
+    pairs = sample // 2
+    if not pairs:
+        return False
+    zero_even = sum(1 for i in range(0, sample, 2) if data[i] == 0)
+    zero_odd = sum(1 for i in range(1, sample, 2) if data[i] == 0)
+    return zero_odd / pairs > 0.3 or zero_even / pairs > 0.3
+
+
+def detect_text_encoding(data: bytes) -> str:
+    """复刻 TextLoader.decodeAutomatically 的顺序，返回实际会选用的编码名。"""
+    if data.startswith(b"\xef\xbb\xbf"):
+        return "utf-8"
+    if data.startswith(b"\xff\xfe") or data.startswith(b"\xfe\xff"):
+        return "utf-16"
+    try:
+        s = data.decode("utf-8")
+        if not text_is_garbled(s):
+            return "utf-8"
+    except UnicodeDecodeError:
+        pass
+    if looks_like_bomless_utf16(data):
+        try:
+            s = data.decode("utf-16")
+            if not text_is_garbled(s):
+                return "utf-16"
+        except UnicodeDecodeError:
+            pass
+    best_name, best_score = None, float("-inf")
+    for name in ("gb18030", "big5"):
+        try:
+            s = data.decode(name)
+        except UnicodeDecodeError:
+            continue
+        if text_is_garbled(s):
+            continue
+        score = text_readability(s)
+        if score > best_score:
+            best_name, best_score = name, score
+    if best_name and best_score >= 0.35:
+        return best_name
+    return best_name or "unknown"
+
+
+def main():
+    if not SAMPLE.is_dir():
+        print("缺少示例书，请先运行 make_sample_book.py", file=sys.stderr)
+        return 1
+
+    print("\n== A. 自然排序 ==")
+    cases = [
+        ("数字按数值", ["1", "2", "10", "3"], ["1", "2", "3", "10"]),
+        ("前导零", ["01", "002", "1"], ["01", "1", "002"]),
+        ("全角数字", ["１０", "２", "１"], ["１", "２", "１０"]),
+        ("中英混合", ["a2", "a10", "a1"], ["a1", "a2", "a10"]),
+        ("章节前缀", ["第10章", "第2章", "第1章"], ["第1章", "第2章", "第10章"]),
+    ]
+    for label, raw, expect in cases:
+        got = natural_sorted(raw)
+        check(label, got == expect, f"{raw} -> {got}")
+
+    print("\n== B. 文件名解析 ==")
+    check("纯数字序号", image_sequence("12.png") == 12)
+    check("前导零序号", image_sequence("003.jpg") == 3)
+    check("全角序号", image_sequence("２.gif") == 2)
+    check("非序号文件名", image_sequence("无序号插图.jpg") is None)
+    check("中文名非序号", image_sequence("封面.png") is None)
+    check("动图扩展名", animated_by_ext(Path("2.gif")) and animated_by_ext(Path("x.apng")))
+    check("静态图非动图", not animated_by_ext(Path("1.png")))
+    check("隐藏文件", is_hidden(".DS_Store") and is_hidden("Thumbs.db"))
+    check("未知扩展名", classify("notes.docx") is None)
+
+    print("\n== C. 三分区书库根 ==")
+    layout, books = scan_sections(SAMPLE)
+    check("识别为三分区根", layout == "sections", layout)
+    check("小说 8 本（根目录 5 本 + 系列里 3 本）",
+          len([b for b in books if b.category == "novel"]) == 8,
+          str([b.title for b in books if b.category == "novel"]))
+    check("漫画 3 部",
+          len([b for b in books if b.category == "comic"]) == 3,
+          str([b.title for b in books if b.category == "comic"]))
+    check("整理 2 本",
+          len([b for b in books if b.category == "organized"]) == 2,
+          str([b.title for b in books if b.category == "organized"]))
+
+    print("\n== D. 整理：章节装配（正文 → 图片 → 音视频） ==")
+
+    def chapter_of(raw_name):
+        for b in books:
+            if b.category != "organized":
+                continue
+            for c in b.chapters:
+                if c.raw_name == raw_name:
+                    return resolve_chapter(c)
+        raise KeyError(raw_name)
+
+    c1 = chapter_of("01_序章")
+    check("正文存在", c1.text_url is not None and c1.text_url.name == "正文.txt")
+    check("图片按序号", [m.file_name for m in c1.images] == ["1.png", "2.gif", "3.jpg"],
+          str([m.file_name for m in c1.images]))
+    check("动图被标记", [m.is_animated for m in c1.images] == [False, True, False])
+    check("章末视频", len(c1.av) == 1 and c1.av[0].kind == "video",
+          str([m.file_name for m in c1.av]))
+
+    c2 = chapter_of("02_第一章 起风了")
+    check("10 排在 2 后", [m.file_name for m in c2.images][:3] == ["1.png", "2.png", "10.png"],
+          str([m.file_name for m in c2.images]))
+    check("无序号图排最后", c2.images[-1].file_name == "无序号插图.jpg")
+    check("章末音频", len(c2.av) == 1 and c2.av[0].kind == "audio")
+
+    c3 = chapter_of("03_第二章 无声")
+    check("无图片章节", c3.images == [])
+    check("无音视频章节", c3.av == [])
+    check("仅有正文", c3.text_url is not None)
+
+    c4 = chapter_of("04_空章")
+    check("空章不崩溃", c4.text_url is None and c4.images == [] and c4.av == [])
+
+    c5 = chapter_of("05_异常章")
+    check("多 txt 取第一个", c5.text_url is not None and c5.text_url.name == "正文.txt")
+    check("多余 txt 进忽略列表", "附录.txt" in c5.ignored, str(c5.ignored))
+    check("全角数字序号", [m.file_name for m in c5.images][0] == "２.png",
+          str([m.file_name for m in c5.images]))
+    check("未知文件被忽略", "notes.docx" in c5.ignored)
+    check("隐藏文件不参与", all(".DS_Store" not in m.file_name for m in c5.images))
+    check("无序号图排在序号图后", c5.images[-1].file_name == "cover_extra.jpg")
+
+    print("\n== E. 标题清洗（可选） ==")
+    for raw, expect in [("01_序章", "序章"), ("第01章 起风了", "起风了"), ("纯标题", "纯标题")]:
+        cleaned = clean_title(raw)
+        check(f"clean({raw})", cleaned == expect, cleaned)
+
+    print("\n== F. 漫画：部 → 话 多级层级 ==")
+    comic_books = {b.title: b for b in books if b.category == "comic"}
+    star = comic_books.get("星海旅人")
+    check("漫画按文件夹成书", star is not None, str(list(comic_books)))
+    if star:
+        titles = [c.title for c in star.chapters]
+        check("部下的图片目录各成一话", titles == ["第1话", "第2话", "第5话"], str(titles))
+        check("中间层记为卷名「第1部」", star.chapters[0].group == "第1部",
+              str(star.chapters[0].group))
+        check("列表标题为「第1部 · 第1话」", star.chapters[0].display_title == "第1部 · 第1话",
+              star.chapters[0].display_title)
+        check("图片话带卷名、pdf 话不带卷名（同书混排）",
+              [c.group for c in star.chapters] == ["第1部", "第1部", ""],
+              str([c.group for c in star.chapters]))
+        check("根目录 pdf 成单话", any(c.kind == "file" and c.title == "第5话"
+                                     for c in star.chapters), str(titles))
+        pdf_chapter = next(c for c in star.chapters if c.kind == "file")
+        pc = resolve_chapter(pdf_chapter)
+        check("pdf 单话装配为 pdf 章节", pc.pdf_url is not None and pc.text_url is None)
+        check("pdf 单话无卷名（在漫画根下）", pdf_chapter.group == "",
+              repr(pdf_chapter.group))
+
+    dual = comic_books.get("夜行列车")
+    check("双格式包：同一部书两个包都收进同一本", dual is not None, str(list(comic_books)))
+    if dual:
+        check("两个包各自列为一组",
+              [c.group for c in dual.chapters] == ["PDF包", "PDF包", "图片包", "图片包"],
+              str([(c.group, c.title, c.kind) for c in dual.chapters]))
+        check("PDF 包是 pdf 单话",
+              [c.kind for c in dual.chapters if c.group == "PDF包"] == ["file", "file"],
+              str([c.kind for c in dual.chapters]))
+        check("图片包是图片话",
+              [c.kind for c in dual.chapters if c.group == "图片包"] == ["folder", "folder"],
+              str([c.kind for c in dual.chapters]))
+        check("包内按话名自然排序，不丢任何一版",
+              [c.title for c in dual.chapters] == ["第01话", "第02话", "第01话", "第02话"],
+              str([c.title for c in dual.chapters]))
+        check("分组顺序稳定（同组相邻）",
+              dual.chapters[0].group == dual.chapters[1].group
+              and dual.chapters[2].group == dual.chapters[3].group)
+
+    short = comic_books.get("短篇集")
+    if short:
+        check("单行本 → 第1话 也能识别", short.chapters[0].group == "单行本"
+              and short.chapters[0].title == "第1话",
+              str([(c.group, c.title) for c in short.chapters]))
+
+    print("\n== G. 小说：单文件自动分章 ==")
+    novel_books = {b.title: b for b in books if b.category == "novel"}
+    check("小说书籍标题取文件名", "风起长安" in novel_books, str(list(novel_books)))
+
+    full = (SAMPLE / "小说" / "风起长安.txt").read_text(encoding="utf-8")
+    slices = split_text(full)
+    check("按「第X章」切成 3 章", len(slices) == 3, str([s[0] for s in slices]))
+    check("章节标题正确", [s[0] for s in slices] == ["第一章 起风", "第二章 入城", "第三章 夜雨"],
+          str([s[0] for s in slices]))
+    first = full[slices[0][1]:slices[0][1] + slices[0][2]]
+    check("第一章不含第二章正文", "长安城的春天" in first and "城门开了" not in first)
+    check("切片正文不再重复标题行", not first.lstrip().startswith("第一章"), first[:12])
+
+    short_slices = split_text((SAMPLE / "小说" / "无章节的短篇.txt").read_text(encoding="utf-8"))
+    check("无章节标题 → 整本一章", len(short_slices) == 1, str(short_slices))
+
+    print("\n== G2. 小说：文件夹 = 一个系列 ==")
+    novels = [b for b in books if b.category == "novel"]
+    loose = [b for b in novels if b.series is None]
+    grouped = [b for b in novels if b.series]
+    check("分区根目录的书不属于任何系列", len(loose) == 5, str([b.title for b in loose]))
+    check("系列文件夹里的书带系列名",
+          sorted(b.title for b in grouped) == ["前传", "第一部 启程", "第二部 归途"],
+          str(sorted(b.title for b in grouped)))
+    check("一层文件夹 → 系列名", all(b.series == "银河旧事"
+                                 for b in grouped if b.title != "前传"),
+          str([(b.title, b.series) for b in grouped]))
+    check("嵌套一层 → 「系列 · 子系列」",
+          any(b.series == "长篇三部曲 · 前传" for b in grouped),
+          str([b.series for b in grouped]))
+    names = natural_sorted({b.series for b in grouped})
+    check("系列名去重并自然排序（列表顺序稳定）",
+          names == ["银河旧事", "长篇三部曲 · 前传"], str(names))
+    check("按系列过滤只返回该系列的书",
+          len([b for b in novels if b.series == "银河旧事"]) == 2)
+    check("系列内书籍标题取文件名（不带路径）",
+          all("/" not in b.title for b in grouped))
+
+    print("\n== H. epub 解析 ==")
+    epub_titles = epub_slices(SAMPLE / "小说" / "样例epub.epub")
+    check("按 spine 取到 3 章", len(epub_titles) == 3, str(epub_titles))
+    check("章节标题取 h1", epub_titles == ["第一章 山门", "第二章 试剑", "第三章 下山"],
+          str(epub_titles))
+
+    print("\n== I. 层级识别与旧结构兼容 ==")
+    with tempfile.TemporaryDirectory(prefix="ln-layout-") as td:
+        base = Path(td)
+
+        legacy = base / "旧书库"
+        a1 = legacy / "作者甲"
+        (a1 / "01_序章").mkdir(parents=True)
+        (a1 / "02_第二章").mkdir(parents=True)
+        (a1 / "01_序章" / "正文.txt").write_text("x", encoding="utf-8")
+        layout, got = scan_sections(legacy)
+        check("旧结构 → legacyRoot", layout == "legacyRoot", layout)
+        check("旧结构 1 本 / 2 章", len(got) == 1 and len(got[0].chapters) == 2,
+              f"{len(got)} / {[len(b.chapters) for b in got]}")
+        check("旧结构归入整理", got[0].category == "organized", got[0].category)
+
+        single = base / "小说"
+        single.mkdir()
+        (single / "一本.txt").write_text("第一章 a\nb", encoding="utf-8")
+        layout, got = scan_sections(single)
+        check("直接选分区 → singleSection", layout == "singleSection", layout)
+        check("分区内 1 本小说", len(got) == 1 and got[0].category == "novel")
+
+        three = base / "三分区"
+        (three / "小说").mkdir(parents=True)
+        (three / "漫画").mkdir()
+        (three / "整理").mkdir()
+        (three / "小说" / "书.txt").write_text("第一章 x", encoding="utf-8")
+        (three / "漫画" / "漫" / "第1话").mkdir(parents=True)
+        (three / "漫画" / "漫" / "第1话" / "1.jpg").write_bytes(b"x")
+        (three / "整理" / "作者" / "第1章").mkdir(parents=True)
+        (three / "整理" / "作者" / "第1章" / "正文.txt").write_text("x", encoding="utf-8")
+        layout, got = scan_sections(three)
+        check("三分区根识别", layout == "sections", layout)
+        check("三本书各归其类",
+              {b.category for b in got} == {"novel", "comic", "organized"},
+              str([(b.title, b.category) for b in got]))
+
+        empty = base / "空目录"
+        empty.mkdir()
+        check("空目录 → empty", scan_sections(empty)[0] == "empty")
+
+    print("\n== J. 翻页分页（TextPaginator） ==")
+    paras = [f"第{i}段：" + "字" * (i % 7 * 13 + 5) for i in range(1, 41)]
+    pages, starts = paginate(paras)
+    check("分页结果非空", len(pages) > 3, str(len(pages)))
+    check("页数合理（40 段 / 每页 12 行）", 4 <= len(pages) <= 40, str(len(pages)))
+    check("首页从 0 开始", pages[0][0] == 0, str(pages[0]))
+    joined_end = max(p[0] + p[1] for p in pages)
+    check("最后一页覆盖到全文末尾", joined_end == len("\n".join(paras)),
+          f"{joined_end} vs {len(chr(10).join(paras))}")
+    contiguous = all(pages[i][0] + pages[i][1] <= pages[i + 1][0]
+                     for i in range(len(pages) - 1))
+    check("相邻页不重叠", contiguous)
+    no_gap = all(pages[i][0] + pages[i][1] == pages[i + 1][0]
+                 for i in range(len(pages) - 1))
+    check("相邻页首尾相接（没有丢字）", no_gap)
+    monotonic = all(pages[i][2] <= pages[i + 1][2] for i in range(len(pages) - 1))
+    check("页起始段落单调不减", monotonic)
+    check("页面区间互不相同", len({(p[0], p[1]) for p in pages}) == len(pages))
+    check("段落 0 在首页", page_index_for_paragraph(0, pages) == 0)
+    check("最后一段在末页", page_index_for_paragraph(len(paras) - 1, pages) == len(pages) - 1)
+    back = [page_index_for_paragraph(para, pages) for _, _, para in pages]
+    check("页码反查与分页顺序一致", back == sorted(back), str(back[:8]))
+    every = page_index_for_paragraph(5, pages)
+    check("中间段落反查落在包含它的页",
+          pages[every][0] <= starts[5] <= pages[every][0] + pages[every][1],
+          f"page={every}")
+    check("空段落列表不分页", paginate([], 20, 12)[0] == [])
+    check("纯空白正文不产生空页", paginate([" ", "  "], 20, 12)[0] == [])
+    check("极窄容器不死循环", len(paginate(["长" * 200], 1, 1)[0]) == 200)
+    check("进度文案格式", f"{3}/{len(pages)}" == f"3/{len(pages)}")
+
+    print("\n== K. 漫画结构：常见形态逐条识别 ==")
+    with tempfile.TemporaryDirectory(prefix="ln-comic-") as td:
+        root = Path(td) / "漫画"
+        root.mkdir()
+
+        def touch(folder, names):
+            folder.mkdir(parents=True, exist_ok=True)
+            for n in names:
+                (folder / n).write_bytes(b"x")
+
+        # 1) 只有「话」，没有「部」
+        touch(root / "短篇漫画" / "第01话", ["001.jpg", "002.jpg"])
+        touch(root / "短篇漫画" / "第02话", ["001.jpg"])
+        # 2) 部 → 话 → 图片
+        touch(root / "星海旅人" / "第1部" / "第1话", ["1.jpg", "2.jpg"])
+        touch(root / "星海旅人" / "第1部" / "第2话", ["1.jpg"])
+        touch(root / "星海旅人" / "第2部" / "第1话", ["1.jpg"])
+        # 3) pdf 单话与图片话混排
+        (root / "星海旅人" / "第5话.pdf").write_bytes(b"x")
+        # 4) 漫画名层直接放散图 = 整部一话
+        touch(root / "单张合集", ["a.jpg", "b.jpg", "c.jpg"])
+        # 5) 更深一层：单行本 / 第3话
+        touch(root / "深嵌套" / "单行本" / "第3话", ["1.jpg"])
+        # 6) 排序：第2话 vs 第10话
+        touch(root / "排序测试" / "第2话", ["1.jpg"])
+        touch(root / "排序测试" / "第10话", ["1.jpg"])
+        # 7) 同一部书按格式分成两个包（PDF 包 + 图片包）
+        touch(root / "双格式" / "PDF包", [])
+        (root / "双格式" / "PDF包" / "第01话.pdf").write_bytes(b"x")
+        (root / "双格式" / "PDF包" / "第02话.pdf").write_bytes(b"x")
+        touch(root / "双格式" / "图片包" / "第01话", ["1.jpg", "2.jpg"])
+        touch(root / "双格式" / "图片包" / "第02话", ["1.jpg"])
+        # 8) 包名不叫 PDF / 图片也能分组（包名即分组名）
+        touch(root / "别名包" / "pdf版", [])
+        (root / "别名包" / "pdf版" / "第03话.pdf").write_bytes(b"x")
+        touch(root / "别名包" / "图片版" / "第03话", ["1.jpg"])
+
+        found = {b.title: b for b in scan_comic(root)}
+        check("漫画名文件夹各成一部（7 部）", len(found) == 7, str(sorted(found)))
+        check("没有「部」时话直接成章",
+              [c.title for c in found["短篇漫画"].chapters] == ["第01话", "第02话"],
+              str([c.title for c in found["短篇漫画"].chapters]))
+        star = found["星海旅人"]
+        check("部 + 话 全部识别为 4 话", len(star.chapters) == 4,
+              str([c.display_title for c in star.chapters]))
+        check("卷名取中间层",
+              [c.group for c in star.chapters if c.kind == "folder"] == ["第1部", "第1部", "第2部"],
+              str([(c.group, c.title) for c in star.chapters]))
+        check("pdf 单话 kind=file", [c.kind for c in star.chapters].count("file") == 1)
+        check("散图整部一话（标题取漫画名）",
+              len(found["单张合集"].chapters) == 1
+              and found["单张合集"].chapters[0].title == "单张合集",
+              str([c.title for c in found["单张合集"].chapters]))
+        check("深层中间层并进卷名",
+              found["深嵌套"].chapters[0].group == "单行本",
+              found["深嵌套"].chapters[0].group)
+        check("自然排序：第2话 在第10话 前",
+              [c.title for c in found["排序测试"].chapters] == ["第2话", "第10话"],
+              str([c.title for c in found["排序测试"].chapters]))
+        check("双格式包：两个包分别成组、章节都在",
+              [c.group for c in found["双格式"].chapters] == ["PDF包", "PDF包", "图片包", "图片包"],
+              str([(c.group, c.title) for c in found["双格式"].chapters]))
+        check("双格式包：包内话名自然排序",
+              [c.title for c in found["双格式"].chapters] == ["第01话", "第02话", "第01话", "第02话"],
+              str([c.title for c in found["双格式"].chapters]))
+        check("包名自定义也按包名分组",
+              [c.group for c in found["别名包"].chapters] == ["pdf版", "图片版"],
+              str([(c.group, c.title) for c in found["别名包"].chapters]))
+        check("说明文本里的示例结构能被识别",
+              all(t in found for t in ["星海旅人", "短篇漫画", "深嵌套"]))
+
+
+    print("\n== O. 短剧：剧照包 + 视频包 ==")
+    dramas = {b.title: b for b in books if b.category == "shortDrama"}
+    check("短剧名文件夹各成一部（3 部）", len(dramas) == 3, str(sorted(dramas)))
+    drama = dramas.get("逆光而行")
+    if drama:
+        check("剧照包排最前（按漫画方式连排）",
+              drama.chapters[0].kind == "folder" and drama.chapters[0].title == "剧照",
+              str([(c.title, c.kind, c.group) for c in drama.chapters]))
+        check("剧照包读到 3 张图",
+              len(resolve_chapter(drama.chapters[0]).images) == 3)
+        check("视频包按集列出，组名为「视频」",
+              [c.group for c in drama.chapters[1:]] == ["视频", "视频"],
+              str([(c.group, c.title) for c in drama.chapters]))
+        check("每集都是单文件视频，可装成 av",
+              all(c.kind == "file" for c in drama.chapters[1:])
+              and len(resolve_chapter(drama.chapters[1]).av) == 1)
+    only = dramas.get("只有视频的一部")
+    check("没有剧照也能识别（只有视频）",
+          only is not None and len(only.chapters) == 1 and only.chapters[0].kind == "file",
+          str([(c.title, c.kind) for c in (only.chapters if only else [])]))
+    loose = dramas.get("散装短片")
+    check("根目录散装视频 = 一部单片",
+          loose is not None and len(loose.chapters) == 1
+          and loose.chapters[0].kind == "file", str(loose.title if loose else None))
+
+    print("\n== P. NAS 图片缓存：上限与按最久未修改淘汰 ==")
+    import time as _time
+
+    def cache_measure(folder: Path):
+        files = [f for f in folder.iterdir() if f.is_file()]
+        return sum(f.stat().st_size for f in files), len(files)
+
+    def cache_trim(folder: Path, limit: int):
+        """等价 Swift RemoteImageCache.trim：按 mtime 从旧到新删，直到总量 <= limit"""
+        total, count = cache_measure(folder)
+        if limit <= 0 or total <= limit:
+            return total, count
+        entries = sorted(((f, f.stat().st_size, f.stat().st_mtime)
+                          for f in folder.iterdir() if f.is_file()),
+                         key=lambda x: x[2])
+        remaining = count
+        for f, size, _ in entries:
+            if total <= limit:
+                break
+            f.unlink()
+            total -= size
+            remaining -= 1
+        return max(0, total), max(0, remaining)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp)
+        # 5 张 1 MB 的假图片，越靠前的越旧
+        names = ["a.jpg", "b.jpg", "c.jpg", "d.jpg", "e.jpg"]
+        for i, name in enumerate(names):
+            (folder / name).write_bytes(b"x" * (1024 * 1024))
+            os.utime(folder / name, (_time.time() - 3600 * (len(names) - i),) * 2)
+
+        total, count = cache_trim(folder, 3 * 1024 * 1024)
+        left = sorted(f.name for f in folder.iterdir())
+        check("超出上限时裁到上限以内", total <= 3 * 1024 * 1024 and count == 3, f"{total} {count}")
+        check("优先删最久未修改的（旧的两张被删）",
+              left == ["c.jpg", "d.jpg", "e.jpg"], str(left))
+
+        total2, count2 = cache_trim(folder, 10 * 1024 * 1024)
+        check("未超上限时一个都不动",
+              total2 == total and count2 == 3, f"{total2} {count2}")
+
+        total3, count3 = cache_trim(folder, 0)
+        check("上限 0 = 不限制，不删任何文件", count3 == 3 and total3 == total, f"{total3} {count3}")
+
+        total4, count4 = cache_trim(folder, 1)
+        check("上限极小时清到只剩 1 条以内", count4 <= 1, f"{total4} {count4}")
+
+    print("\n== Q. 本轮：单文件章节分流 / NAS 短剧层级 ==")
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        cases = {
+            "第01集.mp4": ("video", 0, 1),
+            "第02集.mkv": ("video", 0, 1),
+            "001.jpg": ("image", 1, 0),
+            "正文.txt": ("text", 0, 0),
+            "第1话.pdf": ("pdf", 0, 0),
+            "片尾.mp3": ("audio", 0, 1),
+        }
+        for name, (want, n_img, n_av) in cases.items():
+            f = root / name
+            f.write_bytes(b"x")
+            kind, text, images, av = resolve_single(f)
+            check(f"{name} → {want}（不当作正文）",
+                  kind == want and len(images) == n_img and len(av) == n_av,
+                  f"{kind} {len(images)} {len(av)}")
+
+        drama = root / "逆光而行"
+        (drama / "剧照").mkdir(parents=True)
+        (drama / "剧照" / "001.jpg").write_bytes(b"x")
+        (drama / "视频").mkdir()
+        (drama / "视频" / "第01集.mp4").write_bytes(b"x")
+        (drama / "视频" / "第02集.mp4").write_bytes(b"x")
+        plan = nas_drama_chapters(drama)
+        check("NAS 短剧：剧照包在前，视频集按包分组",
+              plan == [("剧照", "images", None),
+                       ("第01集", "video", "视频"),
+                       ("第02集", "video", "视频")], str(plan))
+
+    print("\n== R. 本轮：txt 编码探测（GBK / Big5 / UTF-16 误判） ==")
+    gb_text = ("第一章　风起\n\n"
+               "　　他站在山门口，想起三年前那个下雨的夜晚。师父说：“你若真想学剑，就得先学会等。”\n\n"
+               "　　等什么呢？他当时不懂。现在似乎懂了一点——等风来，等雨停，等一个人回头。\n") * 3
+    b5_text = ("第一章　風起\n\n"
+               "　　他站在山門口，想起三年前那個下雨的夜晚。師父說：「你若真想學劍，就得先學會等。」\n\n"
+               "　　等什麼呢？他當時不懂。現在似乎懂了一點——等風來，等雨停，等一個人回頭。\n") * 3
+
+    check("UTF-8 文件识别为 UTF-8",
+          detect_text_encoding(gb_text.encode("utf-8")) == "utf-8")
+    check("GBK 文件识别为 GB18030（不再被 UTF-16 抢走）",
+          detect_text_encoding(gb_text.encode("gb18030")) == "gb18030")
+    check("Big5 文件识别为 Big5",
+          detect_text_encoding(b5_text.encode("big5")) == "big5")
+    check("UTF-16（带 BOM）识别为 UTF-16",
+          detect_text_encoding(gb_text.encode("utf-16")) == "utf-16")
+    check("GBK 字节按 UTF-16 硬解会被判为不可读（这就是原来的乱码）",
+          text_readability(gb_text.encode("gb18030").decode("utf-16-le", errors="replace")) < 0.6)
+    check("解错的候选不会压过解对的候选",
+          text_readability(gb_text.encode("gb18030").decode("gb18030"))
+          > text_readability(gb_text.encode("gb18030").decode("big5", errors="replace")))
+
+    print(f"\n结果：{len(PASS)} 通过 / {len(FAIL)} 失败")
+    if FAIL:
+        print("失败项：" + ", ".join(FAIL))
+        return 1
+    print("S1 Core 算法等价验证通过。")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
