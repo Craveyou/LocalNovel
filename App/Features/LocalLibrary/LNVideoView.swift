@@ -4,16 +4,17 @@ import AVFoundation
 
 /// 章末视频 / 短剧单集：点击播放、不自动播放；支持全屏、长按倍速、旋转画面。
 ///
-/// 重要：内嵌播放器与全屏播放器**必须共用同一个 AVPlayer 实例**。
-/// 之前两处各自 `AVPlayer(url:)`，全屏时两个播放器同时在播 → 双音轨。
+/// 重要：内嵌播放器与全屏播放器**必须共用同一个 AVPlayer 实例**，
+/// 否则两处同播 → 双音轨。
 ///
-/// 实现要点：
-/// - 加载后**不设 rate**：AVPlayer 对未播放的实例直接设 `rate = 1.0` 会立刻开播，
-///   这就是「没点播放自己响」的根因；倍速只在正在播放时套用。
-/// - 长按手势不能挂在 SwiftUI 层（会被 AVPlayerViewController 的系统手势吞掉），
-///   用 LNPlayerSurface 在播放器视图上挂 UIGestureRecognizer 并行识别。
-/// - 播放器必须以 childViewController 方式装配（addChild/didMove），
-///   只 addSubview 不 addChild 在新系统上会黑屏（b47 的教训）。
+/// 实现要点（b50，整体搬自 LocalNovel 的成熟实现）：
+/// - 播放器用 **UIViewControllerRepresentable 直接返回 AVPlayerViewController**，
+///   SwiftUI 自动完成 childViewController 装配。之前手写 UIViewRepresentable
+///   + addChild 的装配链路在 LazyVStack/弹层里反复黑屏（b47-b49 的教训）。
+/// - 加载后**不设 rate**：AVPlayer 对未播放的实例直接设 `rate = 1.0` 会立刻开播
+///   （「没点播放自己响」的根因）；倍速只在正在播放时套用。
+/// - 长按手势挂在 controller.view 上（cancelsTouchesInView=false + 并行识别），
+///   系统播放控件照常响应；SwiftUI 层手势会被系统手势吞掉，不能用。
 struct LNVideoView: View {
     let item: LNMediaItem
     let source: any LNLibrarySource
@@ -255,113 +256,49 @@ private struct LNVideoFullscreen: View {
     }
 }
 
-/// AVPlayerViewController 的 SwiftUI 包装：
-/// - 以 childViewController 方式正式装配（黑屏修复的关键，只 addSubview 不够）；
-/// - 系统播放控制条照常可用；
-/// - 挂一个与系统手势**并行识别**的长按手势用于循环切换倍速。
-///
-/// 为什么不用 SwiftUI 的 `.onLongPressGesture`：AVPlayerViewController
-/// 内部的 UIKit 手势（点按呼出控制条等）优先级更高，SwiftUI 层的长按收不到任何事件。
-private struct LNPlayerSurface: UIViewRepresentable {
+/// AVPlayerViewController 的 SwiftUI 宿主（搬自 LocalNovel 的 FullscreenPlayerHost）：
+/// **UIViewControllerRepresentable 直接返回控制器**，SwiftUI 自动装配 child，
+/// 不存在手动 addSubview/addChild 的坑。长按手势挂 controller.view 上，
+/// 与系统播放控件并行识别（照搬 LocalNovel 的 RateBoostGesture）。
+private struct LNPlayerSurface: UIViewControllerRepresentable {
     let player: AVPlayer
     let onLongPress: () -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(onLongPress: onLongPress) }
 
-    func makeUIView(context: Context) -> AttachContainerView {
-        let container = AttachContainerView()
-        container.backgroundColor = .black
-
+    func makeUIViewController(context: Context) -> AVPlayerViewController {
         let controller = AVPlayerViewController()
         controller.player = player
         controller.showsPlaybackControls = true
-        context.coordinator.controller = controller
-        // ★ b48 黑屏根因：漏了这行，attachIfNeeded 的 guard let container 永远失败，
-        //   播放器视图从未被 addSubview —— 章内/全屏全部纯黑
-        context.coordinator.container = container
-        container.coordinator = context.coordinator
+        controller.videoGravity = .resizeAspect
+        controller.allowsPictureInPicturePlayback = false
+        controller.view.backgroundColor = .black
 
         let longPress = UILongPressGestureRecognizer(
             target: context.coordinator,
             action: #selector(Coordinator.handle(_:))
         )
         longPress.minimumPressDuration = 0.4
+        longPress.allowableMovement = 24
         longPress.cancelsTouchesInView = false
         longPress.delegate = context.coordinator
-        container.addGestureRecognizer(longPress)
-        return container
+        controller.view.addGestureRecognizer(longPress)
+        return controller
     }
 
-    func updateUIView(_ uiView: AttachContainerView, context: Context) {
+    func updateUIViewController(_ uiViewController: AVPlayerViewController, context: Context) {
         context.coordinator.onLongPress = onLongPress
-        if context.coordinator.controller?.player !== player {
-            context.coordinator.controller?.player = player
+        if uiViewController.player !== player {
+            uiViewController.player = player
         }
-        // 首次 updateUIView 时可能还没进视图层级，didMoveToWindow 回调会兜底再试
-        context.coordinator.attachIfNeeded()
     }
 
     @MainActor
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
         var onLongPress: () -> Void
-        var controller: AVPlayerViewController?
-        weak var container: AttachContainerView?
-        private var attached = false
 
         init(onLongPress: @escaping () -> Void) {
             self.onLongPress = onLongPress
-        }
-
-        /// 正式装配：找到宿主 VC → addChild → 加视图 + 四边约束 → didMove。
-        /// 只 addSubview 不 addChild 时，新系统上渲染层/控制条会失效（黑屏）。
-        func attachIfNeeded() {
-            guard let controller, let surface = controller.view,
-                  let container, !attached else { return }
-            guard surface.superview == nil else {
-                attached = true
-                return
-            }
-            // 未进入视图层级时不装配，等 didMoveToWindow 回调再试；
-            // 否则会走错分支（层级未建立时找不到宿主 VC）
-            guard container.window != nil else { return }
-            if let parent = parentViewController(of: container) {
-                parent.addChild(controller)
-                surface.translatesAutoresizingMaskIntoConstraints = false
-                container.addSubview(surface)
-                NSLayoutConstraint.activate([
-                    surface.topAnchor.constraint(equalTo: container.topAnchor),
-                    surface.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-                    surface.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-                    surface.trailingAnchor.constraint(equalTo: container.trailingAnchor)
-                ])
-                controller.didMove(toParent: parent)
-                attached = true
-            } else {
-                // 兑底：找不到宿主 VC 也先把视图挂上，至少画面能渲染
-                surface.frame = container.bounds
-                surface.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-                container.addSubview(surface)
-                attached = true
-            }
-        }
-
-        /// 视图离开窗口（被滚动回收/销毁）时摘除 child 关系，避免父 VC 持续持有泄漏
-        func detachIfNeeded() {
-            guard attached, let controller, let surface = controller.view,
-                  controller.parent != nil else { return }
-            controller.willMove(toParent: nil)
-            surface.removeFromSuperview()
-            controller.removeFromParent()
-            attached = false
-        }
-
-        private func parentViewController(of view: UIView) -> UIViewController? {
-            var responder: UIResponder? = view.next
-            while let r = responder {
-                if let vc = r as? UIViewController { return vc }
-                responder = r.next
-            }
-            return nil
         }
 
         @objc func handle(_ gesture: UILongPressGestureRecognizer) {
@@ -374,20 +311,5 @@ private struct LNPlayerSurface: UIViewRepresentable {
                                shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
             true
         }
-    }
-}
-
-/// 容器视图：进窗口时触发装配、离窗口时触发摘除。
-private final class AttachContainerView: UIView {
-    var coordinator: LNPlayerSurface.Coordinator?
-
-    override func didMoveToWindow() {
-        super.didMoveToWindow()
-        if window != nil { coordinator?.attachIfNeeded() }
-    }
-
-    override func willMove(toWindow newWindow: UIWindow?) {
-        super.willMove(toWindow: newWindow)
-        if newWindow == nil { coordinator?.detachIfNeeded() }
     }
 }
