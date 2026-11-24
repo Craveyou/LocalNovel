@@ -1356,32 +1356,7 @@ struct FeiniuBrowserView: View {
                     if !entries.isEmpty {
                         Section {
                             ForEach(entries, id: \.path) { entry in
-                                if entry.isDirectory {
-                                    NavigationLink {
-                                        FeiniuBrowserView(connection: connection, path: entry.path)
-                                    } label: {
-                                        entryRow(entry, systemImage: "folder")
-                                    }
-                                } else {
-                                    Button {
-                                        Task { await importEntry(entry) }
-                                    } label: {
-                                        HStack {
-                                            entryRow(entry, systemImage: "doc.text")
-                                            if downloading == entry.path {
-                                                ProgressView().padding(.leading, 6)
-                                            }
-                                        }
-                                    }
-                                    .disabled(downloading != nil)
-                                }
-                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                    Button(role: .destructive) {
-                                        Task { await deleteEntry(entry) }
-                                    } label: {
-                                        Label("删除", systemImage: "trash")
-                                    }
-                                }
+                                entryListRow(entry)
                             }
                         } header: {
                             HStack {
@@ -1490,6 +1465,38 @@ struct FeiniuBrowserView: View {
             }
         } catch {
             errorMessage = error.localizedDescription
+        }
+    }
+
+    @ViewBuilder
+    private func entryListRow(_ entry: NASEntry) -> some View {
+        Group {
+            if entry.isDirectory {
+                NavigationLink {
+                    FeiniuBrowserView(connection: connection, path: entry.path)
+                } label: {
+                    entryRow(entry, systemImage: "folder")
+                }
+            } else {
+                Button {
+                    Task { await importEntry(entry) }
+                } label: {
+                    HStack {
+                        entryRow(entry, systemImage: "doc.text")
+                        if downloading == entry.path {
+                            ProgressView().padding(.leading, 6)
+                        }
+                    }
+                }
+                .disabled(downloading != nil)
+            }
+        }
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button(role: .destructive) {
+                Task { await deleteEntry(entry) }
+            } label: {
+                Label("删除", systemImage: "trash")
+            }
         }
     }
 
