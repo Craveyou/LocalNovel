@@ -312,14 +312,14 @@ private struct LNPlayerSurface: UIViewRepresentable {
         /// 正式装配：找到宿主 VC → addChild → 加视图 + 四边约束 → didMove。
         /// 只 addSubview 不 addChild 时，新系统上渲染层/控制条会失效（黑屏）。
         func attachIfNeeded() {
-            guard let controller, let container, !attached else { return }
-            guard controller.view.superview == nil else {
+            guard let controller, let surface = controller.view,
+                  let container, !attached else { return }
+            guard surface.superview == nil else {
                 attached = true
                 return
             }
             if let parent = parentViewController(of: container) {
                 parent.addChild(controller)
-                let surface = controller.view
                 surface.translatesAutoresizingMaskIntoConstraints = false
                 container.addSubview(surface)
                 NSLayoutConstraint.activate([
@@ -335,9 +335,10 @@ private struct LNPlayerSurface: UIViewRepresentable {
 
         /// 视图离开窗口（被滚动回收/销毁）时摘除 child 关系，避免父 VC 持续持有泄漏
         func detachIfNeeded() {
-            guard attached, let controller, controller.parent != nil else { return }
+            guard attached, let controller, let surface = controller.view,
+                  controller.parent != nil else { return }
             controller.willMove(toParent: nil)
-            controller.view.removeFromSuperview()
+            surface.removeFromSuperview()
             controller.removeFromParent()
             attached = false
         }
@@ -365,7 +366,7 @@ private struct LNPlayerSurface: UIViewRepresentable {
 }
 
 /// 容器视图：进窗口时触发装配、离窗口时触发摘除。
-final class AttachContainerView: UIView {
+private final class AttachContainerView: UIView {
     var coordinator: LNPlayerSurface.Coordinator?
 
     override func didMoveToWindow() {
