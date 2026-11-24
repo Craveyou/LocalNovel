@@ -16,8 +16,18 @@ struct LNLoadedImage: @unchecked Sendable {
 /// · 用 `CGImageSourceCreateThumbnailAtIndex` 只解目标尺寸（比全图解码快数倍、内存只有 1/N）；
 /// · 解码全部在后台并发队列，主线程只做赋值；
 /// · 结果进 NSCache（按像素成本计费，上限 128MB），滚回去不再重解。
+///
+/// ⚠️ 条漫清晰度：`kCGImageSourceThumbnailMaxPixelSize` 限制的是**最长边**。
+/// 若直接传 1440，一张 800×5000 的条漫会被压成 230×1440，宽度只有 230px，
+/// 撑满 430pt 屏幕就糊了。这里改成「按目标宽度反算长边」：
+/// 先读原图像素宽高 → 目标宽度 = maxPixel → 需要的最长边 = max(宽, 高) × (maxPixel / 宽)，
+/// 再用一个总像素上限兜底防止超长图 OOM。
 final class LNImageLoader: @unchecked Sendable {
     static let shared = LNImageLoader()
+
+    /// 单张图解码后的像素总量上限（约 40MB 内存）。超长条漫超过就整体缩小，
+    /// 保证不会一张图吃掉几百 MB。
+    private static let maxTotalPixels: CGFloat = 10_000_000
 
     private let cache = NSCache<NSString, UIImage>()
     private let queue = DispatchQueue(label: "ln.image.decode",
@@ -71,10 +81,39 @@ final class LNImageLoader: @unchecked Sendable {
     private static func decode(url: URL, maxPixel: CGFloat) -> LNLoadedImage? {
         let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
         guard let source = CGImageSourceCreateWithURL(url as CFURL, sourceOptions) else { return nil }
+
+        // 读原图像素宽高（不解码像素，只读元数据，很快）
+        var pixelWidth: CGFloat = 0
+        var pixelHeight: CGFloat = 0
+        if let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] {
+            pixelWidth = CGFloat((props[kCGImagePropertyPixelWidth] as? NSNumber)?.doubleValue ?? 0)
+            pixelHeight = CGFloat((props[kCGImagePropertyPixelHeight] as? NSNumber)?.doubleValue ?? 0)
+        }
+
+        // 目标宽度 = maxPixel（屏幕点宽 × 2，Retina 够清晰；不放大原图，只缩小）。
+        // ImageIO 只能限制最长边，所以由「缩放后的宽高」反算最长边。
+        let targetLongEdge: Int
+        if pixelWidth > 0, pixelHeight > 0 {
+            // 缩放系数：原图比目标宽才缩；原图本来就窄（条漫常见）则保持原尺寸，不插值放大
+            let scale = min(1, maxPixel / pixelWidth)
+            var outWidth = pixelWidth * scale
+            var outHeight = pixelHeight * scale
+            // 总像素兜底：超长条漫（如 800×20000）整张高清解会吃掉几百 MB，
+            // 超过上限就按 sqrt 比例整体再缩一档（此时宽度会小于目标，但避免 OOM）
+            if outWidth * outHeight > maxTotalPixels {
+                let guardScale = sqrt(maxTotalPixels / (outWidth * outHeight))
+                outWidth *= guardScale
+                outHeight *= guardScale
+            }
+            targetLongEdge = max(240, Int(max(outWidth, outHeight)))
+        } else {
+            targetLongEdge = Int(maxPixel)
+        }
+
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,   // 处理 EXIF 旋转
-            kCGImageSourceThumbnailMaxPixelSize: Int(maxPixel),
+            kCGImageSourceThumbnailMaxPixelSize: targetLongEdge,
             kCGImageSourceShouldCacheImmediately: true
         ]
         guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)

@@ -75,14 +75,8 @@ jobs:
           cd "${{ inputs.workdir || '.' }}"
           pod install --repo-update
 
-      - name: 列出 scheme（诊断）
-        run: |
-          set -euo pipefail
-          if [ -n "${{ inputs.workspace }}" ]; then
-            xcodebuild -workspace "${{ inputs.workspace }}" -list || true
-          else
-            xcodebuild -project "${{ inputs.project }}" -list || true
-          fi
+      # 「列出 scheme」诊断步骤已移除：它每次固定耗 30 秒且只在编译失败时才有价值，
+      # 需要排查时用 Actions 页面手动跑一次即可，不为每次构建付这笔成本。
 
       - name: 编译未签名 archive
         run: |
