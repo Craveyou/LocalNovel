@@ -54,7 +54,7 @@ enum LNTabBarController {
             controller.tabBar.transform = hidden
                 ? CGAffineTransform(translationX: 0, y: height)
                 : .identity
-            for child in controller.viewControllers {
+            for child in controller.viewControllers ?? [] {
                 child.additionalSafeAreaInsets.bottom += hidden ? -height : height
             }
             controller.view.setNeedsLayout()
