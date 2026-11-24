@@ -436,13 +436,10 @@ private enum NASNetwork {
 
     /// 预检结果缓存：外网每次列目录都会先问"445 通不通"，不通要白等满 1.5s。
     /// 同一网络下这个结果短时间内不会变，缓存 5 秒能把连续浏览的延迟直接砍掉。
-    private static let probeLock = NSLock()
-    private static var probeCache: [String: (reachable: Bool, at: Date)] = [:]
+    private static let probeCache = NASTimedCache<Bool>()
 
     static func invalidateProbeCache() {
-        probeLock.lock()
-        probeCache.removeAll()
-        probeLock.unlock()
+        probeCache.clear()
     }
 
     static func canReachSMB(host: String, port: Int, timeout: TimeInterval = 1.5) async -> Bool {
@@ -451,12 +448,7 @@ private enum NASNetwork {
               let nwPort = NWEndpoint.Port(rawValue: UInt16(port)) else { return false }
 
         let cacheKey = "\(trimmed):\(port)"
-        probeLock.lock()
-        if let hit = probeCache[cacheKey], Date().timeIntervalSince(hit.at) < 5 {
-            probeLock.unlock()
-            return hit.reachable
-        }
-        probeLock.unlock()
+        if let hit = probeCache.value(for: cacheKey, ttl: 5) { return hit }
 
         let endpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(trimmed), port: nwPort)
         let reachable = await withCheckedContinuation { continuation in
@@ -481,9 +473,7 @@ private enum NASNetwork {
             timer.setEventHandler { box.finish(false) }
             timer.resume()
         }
-        probeLock.lock()
-        probeCache[cacheKey] = (reachable, Date())
-        probeLock.unlock()
+        probeCache.set(reachable, for: cacheKey)
         return reachable
     }
 }
@@ -724,6 +714,29 @@ private enum FeiniuWebDAV {
     }
 }
 
+/// 线程安全的小缓存（Swift 6 下 async 上下文不能直接用 NSLock，
+/// 所以把锁和可变字典封装进 @unchecked Sendable 类，方法都是同步的）。
+private final class NASTimedCache<V: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [String: (value: V, at: Date)] = [:]
+
+    func value(for key: String, ttl: TimeInterval) -> V? {
+        lock.lock(); defer { lock.unlock() }
+        guard let hit = storage[key], Date().timeIntervalSince(hit.at) < ttl else { return nil }
+        return hit.value
+    }
+
+    func set(_ value: V, for key: String) {
+        lock.lock(); defer { lock.unlock() }
+        storage[key] = (value, Date())
+    }
+
+    func clear() {
+        lock.lock(); defer { lock.unlock() }
+        storage.removeAll()
+    }
+}
+
 /// 自动探测结果缓存：key 为连接 id，value 为上次成功的协议。
 /// 网络切换后缓存可能失效，list 失败时会自动重新探测并切换。
 enum FeiniuNASService {
@@ -808,13 +821,10 @@ enum FeiniuNASService {
     /// 这样断开 WiFi / 换到外面 WiFi 后，即便缓存是 SMB，也不会拿内网 IP 去连导致卡死。
     /// 目录列表缓存：外网上一张图片就要列一次父目录（LNNASSource.localURL），
     /// 没有缓存的话预取 8 张图就是 8 次 PROPFIND。缓存 30 秒，覆盖一次章节阅读。
-    private static let listLock = NSLock()
-    private static var listCache: [String: (entries: [NASEntry], at: Date)] = [:]
+    private static let listCache = NASTimedCache<[NASEntry]>()
 
     static func invalidateListCache() {
-        listLock.lock()
-        listCache.removeAll()
-        listLock.unlock()
+        listCache.clear()
     }
 
     private static func listCacheKey(_ connection: FeiniuConnection, _ path: String) -> String {
@@ -824,12 +834,7 @@ enum FeiniuNASService {
     static func list(_ connection: FeiniuConnection, path: String) async throws -> [NASEntry] {
         // 先查缓存（刷新/下拉时会主动清）
         let key = listCacheKey(connection, path)
-        listLock.lock()
-        if let hit = listCache[key], Date().timeIntervalSince(hit.at) < 30 {
-            listLock.unlock()
-            return hit.entries
-        }
-        listLock.unlock()
+        if let hit = listCache.value(for: key, ttl: 30) { return hit }
 
         let smbReachable = await NASNetwork.canReachSMB(host: connection.smbHost, port: connection.smbPort)
         let expected: NASProtocol = smbReachable ? .smb : .webdav
@@ -845,9 +850,7 @@ enum FeiniuNASService {
             let proto = try await resolve(connection)
             entries = try await fetch(connection, proto: proto, path: path)
         }
-        listLock.lock()
-        listCache[key] = (entries, Date())
-        listLock.unlock()
+        listCache.set(entries, for: key)
         return entries
     }
 

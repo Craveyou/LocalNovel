@@ -32,7 +32,8 @@ extension View {
 
 enum LNTabBarController {
     /// 记录哪些 tabBarController 当前被我们隐藏过（按对象地址），保证 inset 加减严格对称。
-    private static var hiddenTabs = Set<ObjectIdentifier>()
+    /// @MainActor 隔离：只在主线程方法里读写，同时满足 Swift 6 严格并发检查。
+    @MainActor private static var hiddenTabs = Set<ObjectIdentifier>()
 
     static func setHidden(_ hidden: Bool) {
         Task { @MainActor in apply(hidden) }
